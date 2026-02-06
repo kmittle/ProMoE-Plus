@@ -35,7 +35,7 @@ class SparseMoeBlock(nn.Module):
         moe_intermediate_size, 
         shared_expert_intermediate_size,
         top_k=2,
-        load_balance_loss_coef=0.001,
+        load_balance_loss_coef=0,
         norm_topk_prob=False,
         seq_aux=False,
         use_shared_expert=True,
