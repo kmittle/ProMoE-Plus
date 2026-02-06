@@ -17,7 +17,7 @@ DiT_B_config:
     num_routed_experts: 12
     moe_intermediate_size: 1536  # 768 // (1+1 shared) * mlp_ration (4)
     shared_expert_intermediate_size: 1536  # 768 // (1+1 shared) * mlp_ration (4)
-    aux_loss_coef: 0
+    load_balance_loss_coef: 0
     norm_topk_prob: False
     seq_aux: False
     use_shared_expert: True
