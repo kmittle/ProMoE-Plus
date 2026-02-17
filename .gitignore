@@ -9,3 +9,7 @@ image_paths_cache.txt
 *.npz
 *.pb
 .DS_Store
+
+########################################
+.claude
+CLAUDE.md
