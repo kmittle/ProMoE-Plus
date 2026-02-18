@@ -13,7 +13,7 @@ world_size = pmi_world_size * gpus_per_machine
 
 # ---------------------------Dataset Parameter---------------------------------
 cfg.num_classes = 1000
-cfg.data_path = "/path/to/ImageNet/train"
+cfg.data_path = "../imagenet/train"
 
 cfg.img_num_workers = 8
 cfg.prefetch_factor = 2
@@ -26,7 +26,8 @@ cfg.image_size = 256
 
 # ---------------------------Mode Parameters-----------------------------------
 cfg.vae_type = "sd-vae-ft-mse"
-cfg.sd_vae_ft_mse_vae_path = "stabilityai/sd-vae-ft-mse"
+# cfg.sd_vae_ft_mse_vae_path = "stabilityai/sd-vae-ft-mse"
+cfg.sd_vae_ft_mse_vae_path = "./pretrained_ckpt/vae"
 
 # ----------------- DiT model
 cfg.DiT_S_config = {
@@ -182,7 +183,7 @@ cfg.ECDiT_L_E8_config = {
 
 # ---------------------------Training Settings---------------------------------
 ### train
-cfg.use_pre_latents = False
+cfg.use_pre_latents = True
 cfg.resume_checkpoint = False
 cfg.use_gradient_checkpointing = False
 

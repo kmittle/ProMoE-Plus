@@ -10,6 +10,9 @@ image_paths_cache.txt
 *.pb
 .DS_Store
 
+
+/pretrained_ckpt
+
 ########################################
 .claude
 CLAUDE.md

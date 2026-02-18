@@ -37,6 +37,7 @@ from models.models_TCDiT import DiT as TCDiT
 from models.models_ECDiT import DiT as ECDiT
 from models.models_DiffMoE import DiT as DiffMoE
 from models.models_ProMoE_TC import DiT as ProMoE_TC
+from models.models_ProMoE_TC_symmetric import DiT as ProMoE_TC_symmetric
 from models.models_ProMoE_EC import DiT as ProMoE_EC
 
 model_dict = {
@@ -49,6 +50,7 @@ model_dict = {
     "DiffMoE_L_E8": (DiffMoE, "DiffMoE_DiT_L_E8_config"),
     "DiffMoE_XL_E8": (DiffMoE, "DiffMoE_DiT_XL_E8_config"),
     "ProMoE_TC_S": (ProMoE_TC, "DiT_S_config"),
+    "ProMoE_TC_S_symmetric": (ProMoE_TC_symmetric, "DiT_S_config"),
     "ProMoE_TC_B": (ProMoE_TC, "DiT_B_config"),
     "ProMoE_TC_L": (ProMoE_TC, "DiT_L_config"),
     "ProMoE_TC_XL": (ProMoE_TC, "DiT_XL_config"),
@@ -414,7 +416,12 @@ def worker(gpu, cfg):
     
     logging.info('Initializing VAE')
     if not cfg.use_pre_latents:
-        vae = AutoencoderKL.from_pretrained(cfg.sd_vae_ft_mse_vae_path)  # [B, 16, 1, 32, 32] img 256x256
+        use_local_files_only = cfg.sd_vae_ft_mse_vae_path not in [None, ""]
+        vae = AutoencoderKL.from_pretrained(
+            "stabilityai/sd-vae-ft-mse",
+            cache_dir=cfg.sd_vae_ft_mse_vae_path,
+            local_files_only=use_local_files_only,
+        )  # [B, 16, 1, 32, 32] img 256x256
         vae = vae.eval().to(gpu)
         
         for param in vae.parameters():
