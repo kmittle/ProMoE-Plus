@@ -139,6 +139,12 @@ class Evaluator:
         with open_npz_array(npz_path, "arr_0") as reader:
             return self.compute_activations(reader.read_batches(self.batch_size))
 
+    def read_activations_from_folder(
+        self, folder: str, max_count: Optional[int] = None
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        reader = ImageFolderReader(folder, max_count=max_count)
+        return self.compute_activations(reader.read_batches(self.batch_size))
+
     def compute_activations(self, batches: Iterable[np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
         """
         Compute image features for downstream evals.
@@ -449,6 +455,36 @@ class NpzArrayReader(ABC):
 
         rem = self.remaining()
         num_batches = rem // batch_size + int(rem % batch_size != 0)
+        return BatchIterator(gen_fn, num_batches)
+
+
+class ImageFolderReader:
+    """Read images directly from a directory, yielding NHWC uint8 batches."""
+
+    def __init__(self, folder: str, max_count: Optional[int] = None):
+        from PIL import Image as _Image
+        self._Image = _Image
+        all_files = sorted(
+            f for f in os.listdir(folder)
+            if f.lower().endswith(('.png', '.jpg', '.jpeg'))
+        )
+        if max_count is not None:
+            all_files = all_files[:max_count]
+        self.paths = [os.path.join(folder, f) for f in all_files]
+
+    def read_batches(self, batch_size: int) -> Iterable[np.ndarray]:
+        total = len(self.paths)
+        num_batches = total // batch_size + int(total % batch_size != 0)
+
+        def gen_fn():
+            for start in range(0, total, batch_size):
+                batch_paths = self.paths[start : start + batch_size]
+                imgs = []
+                for p in batch_paths:
+                    img = self._Image.open(p).convert("RGB")
+                    imgs.append(np.array(img))
+                yield np.stack(imgs, axis=0)
+
         return BatchIterator(gen_fn, num_batches)
 
 
