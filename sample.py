@@ -202,7 +202,12 @@ def worker(gpu, cfg):
     logging.info('Initializing VAE, Inception')
 
     # [model] vae
-    vae = AutoencoderKL.from_pretrained(cfg.sd_vae_ft_mse_vae_path)  # [B, 16, 1, 32, 32] img 256x256
+    use_local_files_only = cfg.sd_vae_ft_mse_vae_path not in [None, ""]
+    vae = AutoencoderKL.from_pretrained(
+        "stabilityai/sd-vae-ft-mse",
+        cache_dir=cfg.sd_vae_ft_mse_vae_path,
+        local_files_only=use_local_files_only,
+    )  # [B, 16, 1, 32, 32] img 256x256
     vae = vae.eval().to(gpu)
     latent_shape = (4, 1, cfg.image_size // 8, cfg.image_size // 8)
 
@@ -226,7 +231,9 @@ def worker(gpu, cfg):
             folder_name = f"img{cfg.image_size}_cfg{current_guide_scale}_seed{cfg.global_seed}_FID{int(cfg.num_fid_samples/1000)}K_bs{cfg.sample_batch_size}_ema"
             cfg.sample_folder_dir = osp.join(cfg.output_dir, 'sample', f'step{ckpt_step}', folder_name)
             os.makedirs(cfg.sample_folder_dir, exist_ok=True)
-            logging.info(f"Saving .png samples at {cfg.sample_folder_dir} with guide_scale={current_guide_scale}")
+            cfg.save_img_format = getattr(cfg, 'save_img_format', 'jpg')
+            cfg.save_img_quality = getattr(cfg, 'save_img_quality', 95)
+            logging.info(f"Saving .{cfg.save_img_format} samples at {cfg.sample_folder_dir} with guide_scale={current_guide_scale}")
             cfg.sample_images_folder_dir = osp.join(cfg.sample_folder_dir, 'images')
             os.makedirs(cfg.sample_images_folder_dir, exist_ok=True)
             if cfg.save_inception_features:
@@ -283,7 +290,7 @@ def worker(gpu, cfg):
                 else:
                     batch_complete = True
                     for img_idx in range(n):
-                        image_pattern = os.path.join(cfg.sample_images_folder_dir, f"img{global_index * n + img_idx:06d}_class*.png")
+                        image_pattern = os.path.join(cfg.sample_images_folder_dir, f"img{global_index * n + img_idx:06d}_class*.*")
                         matching_files = glob.glob(image_pattern)
                         if not matching_files:
                             batch_complete = False
@@ -335,12 +342,17 @@ def worker(gpu, cfg):
                     class_label = y[img_idx].item()
                     sample = sample.cpu()
                     sample = sample.permute(1, 2, 0).numpy().astype(np.uint8)
-                    image_filename = f"img{global_index * n + img_idx:06d}_class{class_label}.png"
+                    image_filename = f"img{global_index * n + img_idx:06d}_class{class_label}.{cfg.save_img_format}"
                     image_path = os.path.join(cfg.sample_images_folder_dir, image_filename)
-            
-                    def save_image(img_array, path):
+
+                    img_format = cfg.save_img_format
+                    img_quality = cfg.save_img_quality
+                    def save_image(img_array, path, fmt=img_format, quality=img_quality):
                         img = Image.fromarray(img_array)
-                        img.save(path)
+                        if fmt == 'jpg':
+                            img.save(path, quality=quality)
+                        else:
+                            img.save(path)
                     
                     save_executor.submit(save_image, sample, image_path)
 
