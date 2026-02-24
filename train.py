@@ -38,8 +38,8 @@ from models.models_ECDiT import DiT as ECDiT
 from models.models_DiffMoE import DiT as DiffMoE
 from models.models_ProMoE_TC import DiT as ProMoE_TC
 from models.models_ProMoE_TC_symmetric import DiT as ProMoE_TC_symmetric
-from models.models_ProMoE_EC import DiT as ProMoE_EC
 from models.models_ProMoE_TC_sigmoid import DiT as ProMoE_TC_sigmoid
+from models.models_ProMoE_EC import DiT as ProMoE_EC
 
 model_dict = {
     "DiT_B": (DiT, "DiT_B_config"),
