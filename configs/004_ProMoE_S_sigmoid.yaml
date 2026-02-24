@@ -1,4 +1,4 @@
-model_name: "ProMoE_TC_S"
+model_name: "ProMoE_TC_S_sigmoid"
 
 gpu_ids: [0, 1, 2]
 
