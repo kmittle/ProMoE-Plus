@@ -263,15 +263,26 @@ class SparseMoeBlock(nn.Module):
         
         centers_norm = F.normalize(valid_centers, p=2, dim=1)
         means_norm = F.normalize(cluster_means, p=2, dim=1)
-        
-        sim_matrix = centers_norm @ means_norm.T
-        
+
+        sim_matrix = centers_norm @ means_norm.T  # [N, N]
+
         temperature = self.routing_contrastive_temperature
-        labels = torch.arange(sim_matrix.size(0), device=device)
         logits = sim_matrix / temperature
-        
-        loss = F.cross_entropy(logits, labels)
-        
+
+        # Sigmoid-based contrastive loss: avoid softmax normalization
+        # Positive pairs (diagonal): -log(sigmoid(logit))
+        # Negative pairs (off-diagonal): -log(1 - sigmoid(logit)) = -log(sigmoid(-logit))
+        N = logits.size(0)
+        positive_mask = torch.eye(N, device=device, dtype=torch.bool)
+
+        pos_logits = logits[positive_mask]  # [N]
+        neg_logits = logits[~positive_mask]  # [N*(N-1)]
+
+        pos_loss = -F.logsigmoid(pos_logits).mean()
+        neg_loss = -F.logsigmoid(-neg_logits).mean()
+
+        loss = pos_loss + neg_loss
+
         return loss
 
     def _init_weights(self):

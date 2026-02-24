@@ -39,6 +39,7 @@ from models.models_DiffMoE import DiT as DiffMoE
 from models.models_ProMoE_TC import DiT as ProMoE_TC
 from models.models_ProMoE_TC_symmetric import DiT as ProMoE_TC_symmetric
 from models.models_ProMoE_EC import DiT as ProMoE_EC
+from models.models_ProMoE_TC_sigmoid import DiT as ProMoE_TC_sigmoid
 
 model_dict = {
     "DiT_B": (DiT, "DiT_B_config"),
@@ -55,6 +56,7 @@ model_dict = {
     "ProMoE_TC_L": (ProMoE_TC, "DiT_L_config"),
     "ProMoE_TC_XL": (ProMoE_TC, "DiT_XL_config"),
     "ProMoE_EC_L": (ProMoE_EC, "DiT_L_config"),
+    "ProMoE_TC_S_sigmoid": (ProMoE_TC_sigmoid, "DiT_S_config"),
 }
 
 class CustomImageFolder(Dataset):
