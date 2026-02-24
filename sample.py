@@ -395,7 +395,7 @@ def worker(gpu, cfg):
                         print(f"Saved .npz file to {npz_path} [shape={activations.shape}].")
                         return npz_path
                     logging.info(filenames)
-                    create_npz_from_sample_folder(sample_dir, num=ori_total_samples)
+                    create_npz_from_sample_folder(sample_dir)
                     logging.info("Done.")
     
     torch.cuda.synchronize()
