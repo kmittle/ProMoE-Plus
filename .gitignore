@@ -8,6 +8,7 @@ image_paths_cache.txt
 *.zip
 *.npz
 *.pb
+*.nfs*
 .DS_Store
 
 

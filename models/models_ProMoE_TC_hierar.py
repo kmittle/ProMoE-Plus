@@ -29,10 +29,10 @@ class AddAuxiliaryLoss(torch.autograd.Function):
 
 class SparseMoeBlock(nn.Module):
     def __init__(
-        self, 
-        num_routed_experts, 
-        hidden_size, 
-        moe_intermediate_size, 
+        self,
+        num_routed_experts,
+        hidden_size,
+        moe_intermediate_size,
         shared_expert_intermediate_size,
         top_k=2,
         load_balance_loss_coef=0,
@@ -44,6 +44,8 @@ class SparseMoeBlock(nn.Module):
         routing_contrastive_lam=0,
         use_top_k_for_routing_contrastive=False,
         routing_contrastive_temperature=0.1,
+        num_sub_prototype=4,
+        sub_prototype_diversity_lam=0.1,
         **kwargs,
     ):
         super().__init__()
@@ -55,9 +57,11 @@ class SparseMoeBlock(nn.Module):
         self.seq_aux = seq_aux
         self.hidden_size = hidden_size
         self.top_k = top_k
+        self.num_sub_prototype = num_sub_prototype
 
-        self.cluster_centers = nn.Parameter(torch.randn(num_routed_experts, hidden_size))
-        
+        # Hierarchical cluster centers: each expert has num_sub_prototype sub-prototypes
+        self.cluster_centers = nn.Parameter(torch.randn(num_routed_experts, num_sub_prototype, hidden_size))
+
         self.alpha = load_balance_loss_coef
         self.use_shared_expert = use_shared_expert
         self.use_uncond_expert = use_uncond_expert
@@ -66,18 +70,19 @@ class SparseMoeBlock(nn.Module):
         self.routing_contrastive_lam = routing_contrastive_lam
         self.use_top_k_for_routing_contrastive = use_top_k_for_routing_contrastive
         self.routing_contrastive_temperature = routing_contrastive_temperature
-        
+        self.sub_prototype_diversity_lam = sub_prototype_diversity_lam
+
         self.experts = nn.ModuleList(
-            [MoeMLP(hidden_size=hidden_size, intermediate_size=moe_intermediate_size) 
+            [MoeMLP(hidden_size=hidden_size, intermediate_size=moe_intermediate_size)
              for _ in range(self.num_experts)]
         )
-        
+
         if use_shared_expert:
             self.shared_expert = MoeMLP(
-                hidden_size=hidden_size, 
+                hidden_size=hidden_size,
                 intermediate_size=shared_expert_intermediate_size
             )
-        
+
         self._init_weights()
 
     def compute_router(self, hidden_states, labels):
@@ -108,11 +113,17 @@ class SparseMoeBlock(nn.Module):
         if cond_mask.any():
             cond_positions = torch.where(cond_mask)[0]
             cond_input = flat_input[cond_positions]
-            
-            input_norm = F.normalize(cond_input, p=2, dim=1)
-            cluster_norm = F.normalize(self.cluster_centers, p=2, dim=1)
-            
-            cos_sim = input_norm @ cluster_norm.T
+
+            input_norm = F.normalize(cond_input, p=2, dim=1)  # [num_cond, D]
+            # cluster_centers: [E, S, D] -> [E*S, D]
+            all_sub_protos = self.cluster_centers.view(-1, self.hidden_size)
+            all_sub_protos_norm = F.normalize(all_sub_protos, p=2, dim=1)
+
+            # Cosine similarity with all sub-prototypes: [num_cond, E*S]
+            cos_sim_all = input_norm @ all_sub_protos_norm.T
+            # Reshape to [num_cond, E, S], take max over sub-prototype dim
+            cos_sim_all = cos_sim_all.view(-1, self.num_routed_experts, self.num_sub_prototype)
+            cos_sim, _ = cos_sim_all.max(dim=2)  # [num_cond, E]
 
             if self.router_weight_mode == "softmax":
                 cond_weights = F.softmax(cos_sim, dim=1)
@@ -123,9 +134,9 @@ class SparseMoeBlock(nn.Module):
                 cond_weights = cos_sim
             else:
                 raise ValueError(f"Unsupported router_weight_mode: {self.router_weight_mode}")
-            
+
             topk_scores, topk_idx = torch.topk(cond_weights, k=self.top_k, dim=1)
-            
+
             router_weights[cond_positions] = topk_scores.to(router_weights.dtype)
             expert_indices[cond_positions] = topk_idx
 
@@ -195,7 +206,7 @@ class SparseMoeBlock(nn.Module):
             final_output += shared_output
         
         loss = load_balance_loss  # None
-        ### routing contrastive loss
+        ### routing contrastive loss (inter-expert)
         if self.training and self.routing_contrastive_lam > 0:
             flat_labels = labels.view(batch_size, 1).expand(-1, seq_len).reshape(-1)
             if self.use_uncond_expert:
@@ -203,9 +214,9 @@ class SparseMoeBlock(nn.Module):
                 cond_mask = ~uncond_mask
             else:
                 cond_mask = torch.ones(batch_size * seq_len, dtype=torch.bool, device=hidden_states.device)
-            
+
             cond_token_embeddings = flat_input[cond_mask]  # [num_cond_tokens, hidden_dim]
-            
+
             if self.use_top_k_for_routing_contrastive:
                 # top-k
                 topk_expert_indices = expert_indices.view(batch_size * seq_len, self.top_k)[cond_mask]  # [num_cond_tokens, top_k]
@@ -214,42 +225,51 @@ class SparseMoeBlock(nn.Module):
                 # top-1
                 top1_expert_indices = expert_indices.view(batch_size * seq_len, self.top_k)[:, 0]  # [batch_size * seq_len]
                 cond_cluster_assignments = top1_expert_indices[cond_mask]  # [num_cond_tokens]
-            
+
             routing_contrastive_loss = self.compute_routing_contrastive_loss(
                 cond_token_embeddings,
                 cond_cluster_assignments,
                 use_top_k=self.use_top_k_for_routing_contrastive
             )
-            
+
             routing_contrastive_loss = routing_contrastive_loss * self.routing_contrastive_lam
             if loss is not None:
                 loss += routing_contrastive_loss
             else:
                 loss = routing_contrastive_loss
-        
+
+        ### sub-prototype diversity loss (intra-expert)
+        if self.training and self.sub_prototype_diversity_lam > 0:
+            diversity_loss = self.compute_sub_prototype_diversity_loss() * self.sub_prototype_diversity_lam
+            if loss is not None:
+                loss += diversity_loss
+            else:
+                loss = diversity_loss
+
         return final_output, loss
     
     def compute_routing_contrastive_loss(self, token_embeddings, cluster_assignments, use_top_k=False):
         """
-        cluster_centers: [num_clusters, hidden_size]
+        cluster_centers: [num_clusters, num_sub_prototype, hidden_size]
         token_embeddings: [num_tokens, hidden_size]
-        cluster_assignments: 
+        cluster_assignments:
             - use_top_k=False: [num_tokens]
             - use_top_k=True: [num_tokens, top_k]
         """
-        cluster_centers = self.cluster_centers
-        num_clusters = cluster_centers.size(0)
-        device = cluster_centers.device
-        
+        # Use mean of sub-prototypes as each expert's representation
+        cluster_centers_mean = self.cluster_centers.mean(dim=1)  # [num_clusters, hidden_size]
+        num_clusters = cluster_centers_mean.size(0)
+        device = cluster_centers_mean.device
+
         cluster_means = []
         valid_clusters = []
-        
+
         for cluster_id in range(num_clusters):
             if use_top_k:
                 mask = (cluster_assignments == cluster_id).any(dim=1)
             else:
                 mask = (cluster_assignments == cluster_id)
-                     
+
             if mask.sum() > 0:
                 cluster_mean = token_embeddings[mask].mean(dim=0, keepdim=True)
                 cluster_means.append(cluster_mean)
@@ -257,22 +277,38 @@ class SparseMoeBlock(nn.Module):
 
         if len(valid_clusters) < 2:
             return torch.tensor(0.0, device=device)
-        
+
         cluster_means = torch.cat(cluster_means, dim=0)  # [num_valid_clusters, hidden_size]
-        valid_centers = cluster_centers[valid_clusters]  # [num_valid_clusters, hidden_size]
-        
+        valid_centers = cluster_centers_mean[valid_clusters]  # [num_valid_clusters, hidden_size]
+
         centers_norm = F.normalize(valid_centers, p=2, dim=1)
         means_norm = F.normalize(cluster_means, p=2, dim=1)
-        
+
         sim_matrix = centers_norm @ means_norm.T
-        
+
         temperature = self.routing_contrastive_temperature
         labels = torch.arange(sim_matrix.size(0), device=device)
         logits = sim_matrix / temperature
-        
+
         loss = F.cross_entropy(logits, labels)
-        
+
         return loss
+
+    def compute_sub_prototype_diversity_loss(self):
+        """
+        Penalize intra-expert sub-prototype similarity to encourage diversity.
+        For each expert, compute pairwise cosine similarity between its sub-prototypes
+        and penalize the mean of off-diagonal elements.
+        """
+        # cluster_centers: [E, S, D]
+        sub_protos_norm = F.normalize(self.cluster_centers, p=2, dim=2)  # [E, S, D]
+        # Pairwise cosine similarity within each expert: [E, S, S]
+        sim_matrices = torch.bmm(sub_protos_norm, sub_protos_norm.transpose(1, 2))
+        # Mask out diagonal (self-similarity = 1.0)
+        mask = ~torch.eye(self.num_sub_prototype, device=self.cluster_centers.device, dtype=torch.bool).unsqueeze(0)
+        # Mean of off-diagonal similarities across all experts
+        off_diag_sims = sim_matrices[mask.expand_as(sim_matrices)]
+        return off_diag_sims.mean()
 
     def _init_weights(self):
         nn.init.normal_(self.cluster_centers, mean=0.0, std=0.02)
