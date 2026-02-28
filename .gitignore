@@ -18,5 +18,5 @@ image_paths_cache.txt
 .claude
 /CLAUDE.md
 
-/*.sh
+# /*.sh
 /*.log
