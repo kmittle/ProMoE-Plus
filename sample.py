@@ -231,7 +231,7 @@ def worker(gpu, cfg):
             folder_name = f"img{cfg.image_size}_cfg{current_guide_scale}_seed{cfg.global_seed}_FID{int(cfg.num_fid_samples/1000)}K_bs{cfg.sample_batch_size}_ema"
             cfg.sample_folder_dir = osp.join(cfg.output_dir, 'sample', f'step{ckpt_step}', folder_name)
             os.makedirs(cfg.sample_folder_dir, exist_ok=True)
-            cfg.save_img_format = getattr(cfg, 'save_img_format', 'jpg')
+            cfg.save_img_format = getattr(cfg, 'save_img_format', 'png')
             cfg.save_img_quality = getattr(cfg, 'save_img_quality', 95)
             logging.info(f"Saving .{cfg.save_img_format} samples at {cfg.sample_folder_dir} with guide_scale={current_guide_scale}")
             cfg.sample_images_folder_dir = osp.join(cfg.sample_folder_dir, 'images')
