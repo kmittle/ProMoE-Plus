@@ -1,28 +1,28 @@
 #!/bin/bash
 
-export CUDA_VISIBLE_DEVICES=0,1,2
+export CUDA_VISIBLE_DEVICES=0,1,2,3
 
-CONFIG="configs/004_ProMoE_S_hierar.yaml"
-LOG="log_ProMoE_S_hierar.log"
+CONFIG="configs/004_ProMoE_B_hierar.yaml"
+LOG="log_ProMoE_B_hierar.log"
 
-# ============ Training (stop at 700K) ============
+# ============ Training (stop at 500K) ============
 python train.py --config $CONFIG \
  2>&1 | tee $LOG
 
 # ============ Sampling ============
 python sample.py \
  --config $CONFIG \
- --step_list_for_sample 100000,300000,500000 \
+ --step_list_for_sample 300000,500000 \
  --guide_scale_list 1.0,1.5 \
  2>&1 | tee -a $LOG
 
 # ============ Evaluation ============
-SAMPLE_BASE="outputs/ProMoE_TC_S_hierar/004_ProMoE_S_hierar/sample"
-STEPS="100000 300000 500000"
+SAMPLE_BASE="outputs/ProMoE_TC_B_hierar/004_ProMoE_B_hierar/sample"
+STEPS="300000 500000"
 SCALES="1.0 1.5"
 SEED=0
 FID_K=50
-BS=48
+BS=128
 
 eval "$(conda shell.bash hook 2>/dev/null)"
 conda activate promoe_eval

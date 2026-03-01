@@ -1,4 +1,4 @@
-model_name: "ProMoE_TC_S"
+model_name: "ProMoE_TC_B_hierar_expert"
 
 gpu_ids: [0, 1, 2, 3]
 
@@ -10,13 +10,14 @@ weight_decay: 0
 use_pre_latents: True
 resume_checkpoint: True
 log_interval: 10
+num_steps: 500000
 
-DiT_S_config:
+DiT_B_config:
   qk_norm: False
   MoE_config:
     num_routed_experts: 12
-    moe_intermediate_size: 768  # 384 // (1+1 shared) * mlp_ration (4)
-    shared_expert_intermediate_size: 768  # 384 // (1+1 shared) * mlp_ration (4)
+    moe_intermediate_size: 1536  # 2d, used for unconditional expert
+    shared_expert_intermediate_size: 1536  # 2d
     load_balance_loss_coef: 0
     norm_topk_prob: False
     seq_aux: False
@@ -28,6 +29,7 @@ DiT_S_config:
     routing_contrastive_lam: 1
     use_top_k_for_routing_contrastive: True
     routing_contrastive_temperature: 0.07
+    cost_penalty_lam: 1.0
 
 
 ###### For sample

@@ -58,6 +58,8 @@ model_dict = {
     "ProMoE_TC_S_hierar": (ProMoE_TC_hierar, "DiT_S_config"),
     "ProMoE_TC_S_hierar_expert": (ProMoE_TC_hierar_expert, "DiT_S_config"),
     "ProMoE_TC_B": (ProMoE_TC, "DiT_B_config"),
+    "ProMoE_TC_B_hierar": (ProMoE_TC_hierar, "DiT_B_config"),
+    "ProMoE_TC_B_hierar_expert": (ProMoE_TC_hierar_expert, "DiT_B_config"),
     "ProMoE_TC_L": (ProMoE_TC, "DiT_L_config"),
     "ProMoE_TC_XL": (ProMoE_TC, "DiT_XL_config"),
     "ProMoE_EC_L": (ProMoE_EC, "DiT_L_config"),

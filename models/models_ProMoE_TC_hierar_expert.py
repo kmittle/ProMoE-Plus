@@ -69,11 +69,11 @@ class SparseMoeBlock(nn.Module):
         self.routing_contrastive_temperature = routing_contrastive_temperature
         self.cost_penalty_lam = cost_penalty_lam
 
-        # Routed experts: middle_dim linearly from 1d to 2d
+        # Routed experts: middle_dim linearly from 1d to 3d
         expert_intermediate_sizes = []
         for i in range(num_routed_experts):
             if num_routed_experts > 1:
-                ratio = 1.0 + i / (num_routed_experts - 1)
+                ratio = 1.0 + 2.0 * i / (num_routed_experts - 1)
             else:
                 ratio = 2.0
             expert_intermediate_sizes.append(int(hidden_size * ratio))
@@ -91,7 +91,7 @@ class SparseMoeBlock(nn.Module):
 
         # Cost penalty weights: normalized by expert size ratio
         ratios = torch.tensor(
-            [1.0 + i / (num_routed_experts - 1) if num_routed_experts > 1 else 2.0
+            [1.0 + 2.0 * i / (num_routed_experts - 1) if num_routed_experts > 1 else 2.0
              for i in range(num_routed_experts)],
             dtype=torch.float32
         )
