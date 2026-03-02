@@ -443,6 +443,9 @@ def worker(gpu, cfg):
 
     logging.info('Initializing VAE')
     if not cfg.use_pre_latents:
+        if cfg.rank == 0:
+            load_vae(cfg.sd_vae_ft_mse_vae_path)
+        dist.barrier()
         vae = load_vae(cfg.sd_vae_ft_mse_vae_path)  # [B, 16, 1, 32, 32] img 256x256
         vae = vae.eval().to(gpu)
 
@@ -450,9 +453,14 @@ def worker(gpu, cfg):
             param.requires_grad = False
 
     # Initialize teacher encoder for REPA
+    # Only rank 0 downloads; others wait, then all load from local cache.
     if use_repa:
         enc_type = repa_config.get('enc_type', 'dinov2-vit-b')
         proj_coeff = repa_config.get('proj_coeff', 0.5)
+        if cfg.rank == 0:
+            logging.info(f'Rank 0: downloading/caching REPA teacher encoder: {enc_type}')
+            load_teacher_encoder(enc_type, resolution=cfg.image_size)
+        dist.barrier()  # wait for rank 0 to finish caching
         logging.info(f'Initializing REPA teacher encoder: {enc_type}, proj_coeff={proj_coeff}')
         teacher_encoder, teacher_embed_dim = load_teacher_encoder(
             enc_type, resolution=cfg.image_size

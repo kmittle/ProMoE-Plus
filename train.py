@@ -414,9 +414,12 @@ def worker(gpu, cfg):
     
     logging.info('Initializing VAE')
     if not cfg.use_pre_latents:
+        if cfg.rank == 0:
+            load_vae(cfg.sd_vae_ft_mse_vae_path)
+        dist.barrier()
         vae = load_vae(cfg.sd_vae_ft_mse_vae_path)  # [B, 16, 1, 32, 32] img 256x256
         vae = vae.eval().to(gpu)
-        
+
         for param in vae.parameters():
             param.requires_grad = False
 
