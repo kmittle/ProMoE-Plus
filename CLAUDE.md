@@ -93,6 +93,10 @@ Model `forward()` returns either a plain tensor (DiT) or a tuple for models with
 - Extracts Inception features for FID computation alongside generated images (optional, `save_inception_features=True`)
 - Output: `outputs/{model_name}/{custom_cfg_name}/sample/step{N}/`
 
+### Pretrained Weights
+- VAE loading uses `load_vae()` from `utils.py`: checks `pretrained_ckpt/vae/{repo_id}/` for a local copy first; if absent, downloads from HuggingFace and saves locally for future use.
+- All three entry points (`train.py`, `sample.py`, `preprocess/preprocess_vae.py`) use this cached loading path.
+
 ## Important Notes
 - All paper results use `qk_norm=False`. Enable `qk_norm=True` for training beyond 2M steps.
 - Token-Choice routing is default; use Expert-Choice (`models_ProMoE_EC.py`) for DDPM training.
