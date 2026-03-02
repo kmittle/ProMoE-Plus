@@ -15,9 +15,6 @@ image_paths_cache.txt
 /pretrained_ckpt
 
 ########################################
-.claude
-/CLAUDE.md
-
 /*.log
 
 run.sh
