@@ -38,6 +38,9 @@ from models.models_ECDiT import DiT as ECDiT
 from models.models_DiffMoE import DiT as DiffMoE
 from models.models_ProMoE_TC import DiT as ProMoE_TC
 from models.models_ProMoE_EC import DiT as ProMoE_EC
+from models.models_ProMoE_TC_repa import DiT as ProMoE_TC_REPA
+from repa.encoder import load_teacher_encoder, extract_teacher_features
+from repa.loss import compute_repa_loss
 
 model_dict = {
     "DiT_B": (DiT, "DiT_B_config"),
@@ -53,16 +56,25 @@ model_dict = {
     "ProMoE_TC_L": (ProMoE_TC, "DiT_L_config"),
     "ProMoE_TC_XL": (ProMoE_TC, "DiT_XL_config"),
     "ProMoE_EC_L": (ProMoE_EC, "DiT_L_config"),
+    # REPA variants
+    "ProMoE_TC_REPA_S": (ProMoE_TC_REPA, "DiT_S_config"),
+    "ProMoE_TC_REPA_B": (ProMoE_TC_REPA, "DiT_B_config"),
+    "ProMoE_TC_REPA_L": (ProMoE_TC_REPA, "DiT_L_config"),
+    "ProMoE_TC_REPA_XL": (ProMoE_TC_REPA, "DiT_XL_config"),
 }
 
+
 class CustomImageFolder(Dataset):
-    def __init__(self, root_dir, cfg=None):
+    """Dataset that returns (img_path, label, latent_z, raw_image) when load_raw_image=True."""
+    def __init__(self, root_dir, cfg=None, load_raw_image=False):
         self.root_dir = root_dir
         self.CACHE_FILE = 'preprocess/image_paths_cache.txt'
         self.image_paths = self._load_or_generate_image_paths()
         self.class_to_idx = self._get_class_to_idx()
         self.latent_dir_name = 'sd-vae-ft-mse_Latents_256img_npz'
         self.latent_shape = (4, 1, cfg.image_size // 8, cfg.image_size // 8)
+        self.load_raw_image = load_raw_image
+        self.image_size = cfg.image_size
 
     def _load_or_generate_image_paths(self):
         if os.path.exists(self.CACHE_FILE) and os.path.getsize(self.CACHE_FILE) > 0:
@@ -76,7 +88,7 @@ class CustomImageFolder(Dataset):
         # Save to cache for future use
         with open(self.CACHE_FILE, 'w') as f:
             f.write('\n'.join(image_paths))
-        
+
         logging.info(f"****************Generated cache for image paths: {self.CACHE_FILE}")
         return image_paths
 
@@ -112,7 +124,7 @@ class CustomImageFolder(Dataset):
 
     def __len__(self):
         return len(self.image_paths)
-    
+
     def __getitem__(self, idx):
         img_path = self.image_paths[idx]
 
@@ -123,18 +135,31 @@ class CustomImageFolder(Dataset):
         latent_path = img_path.replace('train', self.latent_dir_name)
         latent_path = os.path.splitext(latent_path)[0] + '.latent.npz'
 
+        # Determine flip for consistency between latent and raw image
+        do_flip = torch.rand(1) < 0.5
+
         if osp.exists(latent_path):
             npz_data = np.load(latent_path)
-            if torch.rand(1) < 0.5:  # randomly hflip
-                latent_z_data = npz_data['latent']
+            if do_flip:
+                latent_z_data = npz_data['latent_flip']
             else:
-                latent_z_data = npz_data['latent_flip'] 
+                latent_z_data = npz_data['latent']
             latent_z = torch.from_numpy(latent_z_data)
         else:
             latent_z = torch.zeros(self.latent_shape)
             logging.info(f"{latent_path} is not exists!!!!")
 
+        if self.load_raw_image:
+            # Load raw image as tensor in [0, 1] for teacher encoder
+            raw_image = Image.open(img_path).convert('RGB')
+            raw_image = center_crop_arr(raw_image, self.image_size)
+            if do_flip:
+                raw_image = raw_image.transpose(Image.FLIP_LEFT_RIGHT)
+            raw_image = torch.from_numpy(np.array(raw_image)).permute(2, 0, 1).float() / 255.0  # [C, H, W] in [0, 1]
+            return img_path, label, latent_z, raw_image
+
         return img_path, label, latent_z
+
 
 @torch.no_grad()
 def update_ema(ema_model, model, decay=0.9999):
@@ -180,7 +205,7 @@ def setup_logging(output_dir, rank):
             'CRITICAL': 'bold_red',
         }
     )
-    
+
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
 
@@ -207,52 +232,52 @@ def load_latest_checkpoint(model, ema_model, optimizer, checkpoint_dir='checkpoi
         checkpoints_to_try = [checkpoint_path]
     else:
         checkpoints_to_try = sorted(
-            glob.glob(os.path.join(checkpoint_dir, 'ckpt_step_*.pth')), 
-            key=os.path.getmtime, 
+            glob.glob(os.path.join(checkpoint_dir, 'ckpt_step_*.pth')),
+            key=os.path.getmtime,
             reverse=True
         )
         if not checkpoints_to_try:
             logging.error(f"No checkpoints found in directory: {checkpoint_dir}")
             return 0
-    
+
     for i, checkpoint_path in enumerate(checkpoints_to_try):
         try:
             logging.info(f"Loading checkpoint: {checkpoint_path}")
             checkpoint = torch.load(checkpoint_path, map_location='cpu')
-            
+
             missing_keys, unexpected_keys = model.load_state_dict(
-                checkpoint['model_state_dict'], 
+                checkpoint['model_state_dict'],
                 strict=False
             )
             assert len(missing_keys) == 0, f"Missing keys: {len(missing_keys)} keys"
-            
+
             if 'ema_model_state_dict' in checkpoint:
                 ema_model.load_state_dict(checkpoint['ema_model_state_dict'], strict=False)
                 logging.info("EMA model loaded")
-            
+
             if 'optimizer_state_dict' in checkpoint:
                 try:
                     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
                     logging.info("Optimizer loaded")
                 except Exception as e:
                     logging.error(f"Failed to load optimizer state: {str(e)}")
-            
+
             step = checkpoint.get('step', 0)
             logging.info(f'✓ Successfully loaded checkpoint from step {step}')
             return step
-        
+
         except Exception as e:
             error_msg = f"Failed to load checkpoint {checkpoint_path}: {str(e)}"
             if len(checkpoints_to_try) > 1:
                 error_msg += f" (attempt {i+1}/{len(checkpoints_to_try)})"
             logging.error(error_msg)
-            
+
             import traceback
             logging.debug(traceback.format_exc())
-            
+
             if resume_checkpoint_step is not None:
                 return 0
-    
+
     logging.error("Could not load any checkpoint. Training from scratch.")
     return 0
 
@@ -299,7 +324,7 @@ def get_sigmas_timesteps(u, shift, num_train_timesteps, n_dim=4, dtype=torch.flo
     timesteps = (sigma * num_train_timesteps).to(dtype=dtype)
     while len(sigma.shape) < n_dim:
         sigma = sigma.unsqueeze(-1)
-    
+
     return timesteps, sigma
 
 def compute_density_for_timestep_sampling(
@@ -320,12 +345,12 @@ def compute_density_for_timestep_sampling(
 
 def main(**kwargs):
     deep_update(cfg, kwargs)
-    
+
     if 'gpu_ids' in kwargs and kwargs['gpu_ids'] is not None:
         gpu_ids = ','.join(map(str, kwargs['gpu_ids']))
         os.environ['CUDA_VISIBLE_DEVICES'] = gpu_ids
         print(f"Set CUDA_VISIBLE_DEVICES to {gpu_ids}")
-    
+
     if 'MASTER_ADDR' not in os.environ:
         os.environ['MASTER_ADDR']='localhost'
         os.environ['MASTER_PORT']= find_free_port()
@@ -371,12 +396,16 @@ def worker(gpu, cfg):
 
     if cfg.rank == 0:
         writer = SummaryWriter(log_dir=osp.join(cfg.output_dir, "tensorboard"))
-    
+
     cfg.train_img_num = getattr(cfg, 'train_img_num', None)
-    
+
+    # REPA config
+    repa_config = getattr(cfg, 'repa_config', None)
+    use_repa = repa_config is not None
+
     data_path = cfg.data_path
     if cfg.use_pre_latents:
-        img_dataset = CustomImageFolder(data_path, cfg=cfg)
+        img_dataset = CustomImageFolder(data_path, cfg=cfg, load_raw_image=use_repa)
     else:
         transform = transforms.Compose([
             transforms.Lambda(center_crop_lambda),
@@ -411,18 +440,36 @@ def worker(gpu, cfg):
     if total_images % batch_size != 0:
         steps_per_epoch += 1
     logging.info(f"----------------------Image Num {total_images} , Total number of steps per epoch: {steps_per_epoch // cfg.world_size}")
-    
+
     logging.info('Initializing VAE')
     if not cfg.use_pre_latents:
         vae = load_vae(cfg.sd_vae_ft_mse_vae_path)  # [B, 16, 1, 32, 32] img 256x256
         vae = vae.eval().to(gpu)
-        
+
         for param in vae.parameters():
             param.requires_grad = False
+
+    # Initialize teacher encoder for REPA
+    if use_repa:
+        enc_type = repa_config.get('enc_type', 'dinov2-vit-b')
+        proj_coeff = repa_config.get('proj_coeff', 0.5)
+        logging.info(f'Initializing REPA teacher encoder: {enc_type}, proj_coeff={proj_coeff}')
+        teacher_encoder, teacher_embed_dim = load_teacher_encoder(
+            enc_type, resolution=cfg.image_size
+        )
+        teacher_encoder = teacher_encoder.to(gpu)
+        logging.info(f'Teacher encoder embed_dim: {teacher_embed_dim}')
 
     logging.info('Initializing transformer models (non-ema and ema)')
     model_class, config_name = model_dict[cfg.model_name]
     model_cfg = getattr(cfg, config_name)
+
+    # Validate z_dims match teacher embed_dim
+    if use_repa:
+        model_repa_cfg = model_cfg.get('repa_config', {})
+        for z_dim in model_repa_cfg.get('z_dims', []):
+            assert z_dim == teacher_embed_dim, \
+                f"repa_config.z_dims entry ({z_dim}) must match teacher embed_dim ({teacher_embed_dim})"
     logging.info(f'model_cfg: {model_cfg}')
     model = model_class(**model_cfg)
     model = model.to(gpu)
@@ -456,7 +503,7 @@ def worker(gpu, cfg):
 
     model.train()
     model_ema.eval()
-    
+
     logging.info('Start the training loop')
 
     epoch = 0
@@ -471,14 +518,29 @@ def worker(gpu, cfg):
             img_batch = next(image_rank_iter)
 
         if cfg.use_pre_latents:
-            rank_img_paths, rank_img_y, rank_img_z = img_batch
+            if use_repa:
+                rank_img_paths, rank_img_y, rank_img_z, rank_raw_images = img_batch
+                rank_raw_images = rank_raw_images.to(gpu, non_blocking=True)  # [B, C, H, W] in [0, 1]
+            else:
+                rank_img_paths, rank_img_y, rank_img_z = img_batch
             rank_img_y, rank_img_z = rank_img_y.to(gpu, non_blocking=True), rank_img_z.to(gpu, non_blocking=True)
             rank_img_z_is_all_zero = torch.all(rank_img_z == 0).item()
             assert not rank_img_z_is_all_zero, "error: rank_img_z is all zero"
         else:
             rank_images, rank_img_y = img_batch
             rank_images, rank_img_y = rank_images.to(gpu, non_blocking=True), rank_img_y.to(gpu, non_blocking=True)
+            if use_repa:
+                # Convert from [-1, 1] (VAE normalized) to [0, 1] for teacher encoder
+                rank_raw_images = (rank_images + 1.0) / 2.0  # [B, C, H, W] in [0, 1]
             rank_images = rearrange(rank_images, "B C H W -> B C 1 H W")
+
+        # Extract teacher features for REPA
+        if use_repa:
+            with torch.no_grad():
+                with amp.autocast(dtype=cfg.param_dtype, enabled=use_amp):
+                    teacher_z = extract_teacher_features(
+                        teacher_encoder, rank_raw_images, repa_config['enc_type']
+                    )  # (B, num_patches, teacher_embed_dim)
 
         rank_img_u = compute_density_for_timestep_sampling(
             weighting_scheme=cfg.weighting_scheme,
@@ -506,7 +568,7 @@ def worker(gpu, cfg):
         ################################# VAE preprocess
         context = rank_img_y
         t, sigmas, z = rank_img_t, rank_img_sigma, rank_img_z
-        
+
         arg_c = {'context': context, 'use_gradient_checkpointing': cfg.use_gradient_checkpointing}
 
         noise = torch.randn_like(z)
@@ -514,27 +576,40 @@ def worker(gpu, cfg):
 
         with amp.autocast(dtype=cfg.param_dtype, enabled=use_amp):
             model_output = model(noised_z_in, t, **arg_c)
-        
+
         loss_dict = {}
         loss_dict["loss"] = 0
-        if isinstance(model_output, tuple):
-            loss_dict["cp_loss"] = 0
-            ########## DiffMoE loss
-            loss_stratgy_name = model_output[1]
-            if loss_stratgy_name == "Capacity_Pred":
-                layer_idx_list, ones_list, pred_c_list, CapacityPred_loss_weight = model_output[2:]
-                for layer_idx, ones, pred_c in zip(layer_idx_list, ones_list, pred_c_list):
-                    loss_dict[f"Capacity_Pred_loss_{layer_idx}"] = nn.BCEWithLogitsLoss()(pred_c, ones)
-                    loss_dict["loss"] += loss_dict[f"Capacity_Pred_loss_{layer_idx}"]  * CapacityPred_loss_weight
-                    loss_dict["cp_loss"] += loss_dict[f"Capacity_Pred_loss_{layer_idx}"]  * CapacityPred_loss_weight
-            else:
-                raise Exception("not defined training loss")
 
-            model_pred = model_output[0]
+        # Handle model output: REPA models return (pred, zs_proj)
+        if isinstance(model_output, tuple):
+            model_pred, zs_proj = model_output
+
+            # Check if this is a DiffMoE-style tuple (string identifier at index 1)
+            if isinstance(zs_proj, str):
+                # DiffMoE loss path
+                loss_dict["cp_loss"] = 0
+                loss_stratgy_name = zs_proj
+                if loss_stratgy_name == "Capacity_Pred":
+                    layer_idx_list, ones_list, pred_c_list, CapacityPred_loss_weight = model_output[2:]
+                    for layer_idx, ones, pred_c in zip(layer_idx_list, ones_list, pred_c_list):
+                        loss_dict[f"Capacity_Pred_loss_{layer_idx}"] = nn.BCEWithLogitsLoss()(pred_c, ones)
+                        loss_dict["loss"] += loss_dict[f"Capacity_Pred_loss_{layer_idx}"]  * CapacityPred_loss_weight
+                        loss_dict["cp_loss"] += loss_dict[f"Capacity_Pred_loss_{layer_idx}"]  * CapacityPred_loss_weight
+                else:
+                    raise Exception("not defined training loss")
+                model_pred = model_output[0]
+                zs_proj = None
+
             if model_pred.shape[1] != noised_z_in.shape[1]:
                 model_pred, _ = model_pred.chunk(2, dim=1)
-
             model_pred = model_pred.unsqueeze(2)
+
+            # REPA projection loss
+            if use_repa and zs_proj is not None:
+                repa_loss = compute_repa_loss(teacher_z, zs_proj)
+                loss_dict["repa_loss"] = repa_loss
+                loss_dict["loss"] += repa_loss * proj_coeff
+
         elif model_output.shape[1] != noised_z_in.shape[1]:
             ########## DiT loss
             model_pred, _ = model_output.chunk(2, dim=1)
@@ -543,7 +618,7 @@ def worker(gpu, cfg):
             model_pred = model_output
 
         target = noise - z
-        
+
         mse_loss = (model_pred - target) ** 2
         mse_loss = torch.stack([u.mean() for u in mse_loss])
         mse_loss = sum(mse_loss) / len(mse_loss)
@@ -554,9 +629,15 @@ def worker(gpu, cfg):
         loss = loss_dict["loss"].mean()
 
         if step % cfg.log_interval == 0:
-            logging.info(f"epoch {epoch}-step {step} loss: {loss}")
+            log_msg = f"epoch {epoch}-step {step} loss: {loss}"
+            if use_repa and "repa_loss" in loss_dict:
+                log_msg += f" repa_loss: {loss_dict['repa_loss'].item():.4f}"
+            logging.info(log_msg)
         if cfg.rank == 0:
             writer.add_scalar('Loss/train', loss.item(), step)
+            writer.add_scalar('Loss/mse', loss_dict["mse_loss"].item(), step)
+            if use_repa and "repa_loss" in loss_dict:
+                writer.add_scalar('Loss/repa', loss_dict["repa_loss"].item(), step)
 
         # backward
         scaler.scale(loss / cfg.grad_mix).backward()
@@ -564,18 +645,18 @@ def worker(gpu, cfg):
         grad_norm = clip_grad_norm_(model.parameters(), cfg.max_grad_norm)
         scaler.step(optimizer)
         scaler.update()
-        optimizer.zero_grad()          
+        optimizer.zero_grad()
         update_ema(model_ema, model.module)
-        
+
         if cfg.rank == 0 and step != 0 and step % cfg.save_ckpt_interval == 0:
             save_checkpoint(model, model_ema, optimizer, step, cfg.checkpoint_dir)
-        
+
         step += 1
 
     if cfg.rank == 0:
         logging.info('Congratulations! The training is completed!')
         writer.close()
-    
+
     # barrier to ensure all ranks are completed
     torch.cuda.synchronize()
     dist.barrier()
@@ -583,12 +664,12 @@ def worker(gpu, cfg):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Train MoE')
+    parser = argparse.ArgumentParser(description='Train MoE with REPA')
     parser.add_argument('--config', type=str, required=True, help='Path to the YAML configuration file')
     args = parser.parse_args()
 
     with open(args.config, 'r') as file:
         custom_cfg = yaml.safe_load(file)
-    
+
     custom_cfg['custom_cfg_name'] = osp.splitext(osp.basename(args.config))[0]
     main(**custom_cfg)

@@ -6,11 +6,25 @@ from .modules import get_2d_sincos_pos_embed, Attention, modulate, TimestepEmbed
 
 
 #################################################################################
+#                             Projector for REPA                               #
+#################################################################################
+def build_repa_projector(hidden_size, projector_dim, z_dim):
+    """3-layer MLP projector following REPA (SiT) design."""
+    return nn.Sequential(
+        nn.Linear(hidden_size, projector_dim),
+        nn.SiLU(),
+        nn.Linear(projector_dim, projector_dim),
+        nn.SiLU(),
+        nn.Linear(projector_dim, z_dim),
+    )
+
+
+#################################################################################
 #                                ProMoE Layer                                  #
 #################################################################################
 class AddAuxiliaryLoss(torch.autograd.Function):
     """
-    The trick function of adding auxiliary (aux) loss, 
+    The trick function of adding auxiliary (aux) loss,
     which includes the gradient of the aux loss during backpropagation.
     """
     @staticmethod
@@ -29,10 +43,10 @@ class AddAuxiliaryLoss(torch.autograd.Function):
 
 class SparseMoeBlock(nn.Module):
     def __init__(
-        self, 
-        num_routed_experts, 
-        hidden_size, 
-        moe_intermediate_size, 
+        self,
+        num_routed_experts,
+        hidden_size,
+        moe_intermediate_size,
         shared_expert_intermediate_size,
         top_k=2,
         load_balance_loss_coef=0,
@@ -57,7 +71,7 @@ class SparseMoeBlock(nn.Module):
         self.top_k = top_k
 
         self.cluster_centers = nn.Parameter(torch.randn(num_routed_experts, hidden_size))
-        
+
         self.alpha = load_balance_loss_coef
         self.use_shared_expert = use_shared_expert
         self.use_uncond_expert = use_uncond_expert
@@ -66,18 +80,18 @@ class SparseMoeBlock(nn.Module):
         self.routing_contrastive_lam = routing_contrastive_lam
         self.use_top_k_for_routing_contrastive = use_top_k_for_routing_contrastive
         self.routing_contrastive_temperature = routing_contrastive_temperature
-        
+
         self.experts = nn.ModuleList(
-            [MoeMLP(hidden_size=hidden_size, intermediate_size=moe_intermediate_size) 
+            [MoeMLP(hidden_size=hidden_size, intermediate_size=moe_intermediate_size)
              for _ in range(self.num_experts)]
         )
-        
+
         if use_shared_expert:
             self.shared_expert = MoeMLP(
-                hidden_size=hidden_size, 
+                hidden_size=hidden_size,
                 intermediate_size=shared_expert_intermediate_size
             )
-        
+
         self._init_weights()
 
     def compute_router(self, hidden_states, labels):
@@ -99,7 +113,7 @@ class SparseMoeBlock(nn.Module):
         expert_indices = torch.zeros(
             batch_size * seq_len, self.top_k, device=device, dtype=torch.long
         )
-        
+
         if uncond_mask is not None and uncond_mask.any():
             uncond_positions = torch.where(uncond_mask)[0]
             router_weights[uncond_positions, 0] = 1.0
@@ -108,10 +122,10 @@ class SparseMoeBlock(nn.Module):
         if cond_mask.any():
             cond_positions = torch.where(cond_mask)[0]
             cond_input = flat_input[cond_positions]
-            
+
             input_norm = F.normalize(cond_input, p=2, dim=1)
             cluster_norm = F.normalize(self.cluster_centers, p=2, dim=1)
-            
+
             cos_sim = input_norm @ cluster_norm.T
 
             if self.router_weight_mode == "softmax":
@@ -123,9 +137,9 @@ class SparseMoeBlock(nn.Module):
                 cond_weights = cos_sim
             else:
                 raise ValueError(f"Unsupported router_weight_mode: {self.router_weight_mode}")
-            
+
             topk_scores, topk_idx = torch.topk(cond_weights, k=self.top_k, dim=1)
-            
+
             router_weights[cond_positions] = topk_scores.to(router_weights.dtype)
             expert_indices[cond_positions] = topk_idx
 
@@ -155,21 +169,21 @@ class SparseMoeBlock(nn.Module):
                 load_balance_loss = (Pi * fi).sum() * self.alpha
         else:
             load_balance_loss = None
-        
+
         return router_weights, expert_indices, load_balance_loss
 
     def forward(self, hidden_states: torch.Tensor, labels: torch.Tensor):
         ### token assignment
         router_weights, expert_indices, load_balance_loss = self.compute_router(hidden_states, labels)
         batch_size, seq_len, hidden_dim = hidden_states.shape
-        
+
         flat_input = hidden_states.view(-1, hidden_dim)
         flat_weights = router_weights.view(-1, self.top_k)
         flat_indices = expert_indices.view(-1, self.top_k)
         total_tokens = batch_size * seq_len
-        
+
         final_output = torch.zeros(total_tokens, hidden_dim, device=hidden_states.device)
-        
+
         ### process routed experts and unconditional expert
         for expert_id in range(self.num_experts):
             expert_mask = (flat_indices == expert_id).any(dim=1)
@@ -186,14 +200,14 @@ class SparseMoeBlock(nn.Module):
                 dummy_input = torch.zeros(1, hidden_dim, device=hidden_states.device)
                 dummy_output = self.experts[expert_id](dummy_input).float()
                 final_output[0] += dummy_output[0] * 0
-        
+
         final_output = final_output.view(batch_size, seq_len, hidden_dim)
-        
+
         ### process shared experts
         if self.use_shared_expert:
             shared_output = self.shared_expert(hidden_states)
             final_output += shared_output
-        
+
         loss = load_balance_loss  # None
         ### routing contrastive loss
         if self.training and self.routing_contrastive_lam > 0:
@@ -203,9 +217,9 @@ class SparseMoeBlock(nn.Module):
                 cond_mask = ~uncond_mask
             else:
                 cond_mask = torch.ones(batch_size * seq_len, dtype=torch.bool, device=hidden_states.device)
-            
+
             cond_token_embeddings = flat_input[cond_mask]  # [num_cond_tokens, hidden_dim]
-            
+
             if self.use_top_k_for_routing_contrastive:
                 # top-k
                 topk_expert_indices = expert_indices.view(batch_size * seq_len, self.top_k)[cond_mask]  # [num_cond_tokens, top_k]
@@ -214,42 +228,42 @@ class SparseMoeBlock(nn.Module):
                 # top-1
                 top1_expert_indices = expert_indices.view(batch_size * seq_len, self.top_k)[:, 0]  # [batch_size * seq_len]
                 cond_cluster_assignments = top1_expert_indices[cond_mask]  # [num_cond_tokens]
-            
+
             routing_contrastive_loss = self.compute_routing_contrastive_loss(
                 cond_token_embeddings,
                 cond_cluster_assignments,
                 use_top_k=self.use_top_k_for_routing_contrastive
             )
-            
+
             routing_contrastive_loss = routing_contrastive_loss * self.routing_contrastive_lam
             if loss is not None:
                 loss += routing_contrastive_loss
             else:
                 loss = routing_contrastive_loss
-        
+
         return final_output, loss
-    
+
     def compute_routing_contrastive_loss(self, token_embeddings, cluster_assignments, use_top_k=False):
         """
         cluster_centers: [num_clusters, hidden_size]
         token_embeddings: [num_tokens, hidden_size]
-        cluster_assignments: 
+        cluster_assignments:
             - use_top_k=False: [num_tokens]
             - use_top_k=True: [num_tokens, top_k]
         """
         cluster_centers = self.cluster_centers
         num_clusters = cluster_centers.size(0)
         device = cluster_centers.device
-        
+
         cluster_means = []
         valid_clusters = []
-        
+
         for cluster_id in range(num_clusters):
             if use_top_k:
                 mask = (cluster_assignments == cluster_id).any(dim=1)
             else:
                 mask = (cluster_assignments == cluster_id)
-                     
+
             if mask.sum() > 0:
                 cluster_mean = token_embeddings[mask].mean(dim=0, keepdim=True)
                 cluster_means.append(cluster_mean)
@@ -257,21 +271,21 @@ class SparseMoeBlock(nn.Module):
 
         if len(valid_clusters) < 2:
             return torch.tensor(0.0, device=device)
-        
+
         cluster_means = torch.cat(cluster_means, dim=0)  # [num_valid_clusters, hidden_size]
         valid_centers = cluster_centers[valid_clusters]  # [num_valid_clusters, hidden_size]
-        
+
         centers_norm = F.normalize(valid_centers, p=2, dim=1)
         means_norm = F.normalize(cluster_means, p=2, dim=1)
-        
+
         sim_matrix = centers_norm @ means_norm.T
-        
+
         temperature = self.routing_contrastive_temperature
         labels = torch.arange(sim_matrix.size(0), device=device)
         logits = sim_matrix / temperature
-        
+
         loss = F.cross_entropy(logits, labels)
-        
+
         return loss
 
     def _init_weights(self):
@@ -286,7 +300,7 @@ class DiTBlock(nn.Module):
     """
     A DiT block with adaptive layer norm zero (adaLN-Zero) conditioning.
     """
-    def __init__(self, hidden_size, num_heads, head_dim=None, mlp_ratio=4.0, 
+    def __init__(self, hidden_size, num_heads, head_dim=None, mlp_ratio=4.0,
                  use_swiglu=False, MoE_config=None,
                  use_moe=False,
                  **block_kwargs):
@@ -330,7 +344,7 @@ class DiTBlock(nn.Module):
 
 class DiT(nn.Module):
     """
-    Diffusion model with a Transformer backbone.
+    Diffusion model with a Transformer backbone + REPA projectors.
     """
     def __init__(
         self,
@@ -348,6 +362,7 @@ class DiT(nn.Module):
         use_swiglu=False,
         MoE_config=None,
         head_dim=None,
+        repa_config=None,
     ):
         super().__init__()
         self.learn_sigma = learn_sigma
@@ -370,11 +385,26 @@ class DiT(nn.Module):
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, hidden_size), requires_grad=False)
 
         self.blocks = nn.ModuleList([
-            DiTBlock(hidden_size, num_heads // (1 if use_moe_flag[i] else 1), head_dim=head_dim, mlp_ratio=mlp_ratio, qk_norm=qk_norm, 
+            DiTBlock(hidden_size, num_heads // (1 if use_moe_flag[i] else 1), head_dim=head_dim, mlp_ratio=mlp_ratio, qk_norm=qk_norm,
                      use_swiglu=use_swiglu, MoE_config=MoE_config, use_moe=use_moe_flag[i]) for i in range(depth)
         ])
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
         self.init_MoeMLP= MoE_config.init_MoeMLP
+
+        # REPA: projector heads for representation alignment
+        if repa_config is not None:
+            self.encoder_depth = repa_config.get('encoder_depth', 4)
+            assert self.encoder_depth <= depth, \
+                f"repa_config.encoder_depth ({self.encoder_depth}) must be <= model depth ({depth})"
+            z_dims = repa_config.get('z_dims', [768])
+            projector_dim = repa_config.get('projector_dim', 2048)
+            self.projectors = nn.ModuleList([
+                build_repa_projector(hidden_size, projector_dim, z_dim) for z_dim in z_dims
+            ])
+        else:
+            self.encoder_depth = None
+            self.projectors = None
+
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -413,7 +443,7 @@ class DiT(nn.Module):
         nn.init.constant_(self.final_layer.linear.weight, 0)
         nn.init.constant_(self.final_layer.linear.bias, 0)
 
-        # new init 
+        # new init
         def init_MoeMLP(module, std=0.006):
             nn.init.normal_(module.gate_proj.weight, std=std)
             nn.init.normal_(module.up_proj.weight, std=std)
@@ -441,25 +471,38 @@ class DiT(nn.Module):
 
     def forward(self, x, timestep, context, **kwargs):
         """
-        Forward pass of DiT.
+        Forward pass of DiT with optional REPA projections.
         x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
         timestep: (N,) tensor of diffusion timesteps
         context: (N,) tensor of class labels
+
+        Returns:
+            x: (N, out_channels, H, W) model prediction
+            zs_proj: list of (N, T, z_dim) projected features, or None if no projectors
         """
         y = context
         if len(x.shape) != 4:
             x = x.squeeze(2)
 
         x = self.x_embedder(x) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
+        N, T, D = x.shape
         t = self.t_embedder(timestep)                   # (N, D)
         y, labels = self.y_embedder(y, self.training)    # (N, D)
         c = t + y                                # (N, D)
-        for block in self.blocks:
+
+        zs_proj = None
+        for i, block in enumerate(self.blocks):
             x = block(x, c, labels)                      # (N, T, D)
+            # Extract projected features at encoder_depth for REPA alignment (training only)
+            if self.training and self.projectors is not None and (i + 1) == self.encoder_depth:
+                zs_proj = [proj(x.reshape(-1, D)).reshape(N, T, -1) for proj in self.projectors]
+
         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
         x = self.unpatchify(x)                   # (N, out_channels, H, W)
 
-        return x 
+        if not self.training:
+            return x
+        return x, zs_proj
 
     def forward_with_cfg(self, x, t, y, cfg_scale):
         """
@@ -469,7 +512,6 @@ class DiT(nn.Module):
         half = x[: len(x) // 2]
         combined = torch.cat([half, half], dim=0)
         model_out = self.forward(combined, t, y)
-        model_out = model_out[0]
         # For exact reproducibility reasons, we apply classifier-free guidance on only
         # three channels by default. The standard approach to cfg applies it to all channels.
         # This can be done by uncommenting the following line and commenting-out the line following that.

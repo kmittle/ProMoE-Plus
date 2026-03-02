@@ -16,7 +16,11 @@ pip install -r requirements.txt
 
 ### Training
 ```bash
+# Standard ProMoE training
 python train.py --config configs/004_ProMoE_L.yaml
+
+# REPA-enabled training (aligns with frozen DINOv2 teacher)
+python train_with_repa.py --config configs/004_ProMoE_B_repa.yaml
 ```
 
 ### Sampling
@@ -52,7 +56,7 @@ CUDA_VISIBLE_DEVICES=0 python run_eval.py /path/to/generated/images
 - The YAML filename (minus extension) becomes `custom_cfg_name`, which determines the output subdirectory: `outputs/{model_name}/{custom_cfg_name}/`.
 
 ### Model Registry
-`train.py` and `sample.py` contain a `model_dict` mapping `model_name` strings to `(ModelClass, config_key)` pairs. Adding a new model requires an entry here. Note that `sample.py` imports `model_dict` from `train.py`.
+`train.py` and `train_with_repa.py` each define a `model_dict` mapping `model_name` strings to `(ModelClass, config_key)` pairs. `sample.py` merges both dicts so it can sample from any model variant. Adding a new model requires an entry in the appropriate training script's `model_dict`.
 
 ### Model Hierarchy (in `models/`)
 - `modules.py` — Shared building blocks: `Attention`, `PatchEmbed`, `TimestepEmbedder`, `LabelEmbedder`, `FinalLayer`, `MLP`/`Mlp`, `SwiGLU`, `MoeMLP`, and sinusoidal position embedding utilities.
@@ -61,11 +65,25 @@ CUDA_VISIBLE_DEVICES=0 python run_eval.py /path/to/generated/images
 - `models_DiffMoE.py` — DiffMoE baseline with capacity prediction.
 - **`models_ProMoE_TC.py`** — Main proposed model. `SparseMoeBlock` implements two-step routing: (1) conditional routing separates uncond tokens (class=1000) to a dedicated expert, (2) prototypical routing assigns cond tokens via cosine similarity to learnable `cluster_centers`. Includes routing contrastive loss via `AddAuxiliaryLoss` autograd trick.
 - `models_ProMoE_EC.py` — Expert-Choice variant of ProMoE (recommended for DDPM training).
+- `models_ProMoE_TC_repa.py` — ProMoE-TC with REPA projectors. Adds MLP projectors (`build_repa_projector`) that align intermediate DiT features with a frozen DINOv2 teacher encoder. In training, `forward()` returns `(pred, zs_proj)` where `zs_proj` is a list of projected features for REPA loss; in eval mode returns only `pred`.
 
 ### Auxiliary Loss Convention
 Model `forward()` returns either a plain tensor (DiT) or a tuple for models with auxiliary losses:
 - **DiffMoE**: Returns `(pred, "Capacity_Pred", layer_idx_list, ones_list, pred_c_list, loss_weight)`. Training loop computes BCEWithLogitsLoss for capacity prediction.
 - **ProMoE**: Uses `AddAuxiliaryLoss` autograd function to inject contrastive loss gradients directly into the forward pass — returns a plain tensor but the auxiliary loss gradient flows through automatically.
+- **ProMoE-REPA**: Returns `(pred, zs_proj)` during training. The training loop in `train_with_repa.py` computes `compute_repa_loss(teacher_z, zs_proj)` and adds it weighted by `proj_coeff`. Total loss = MSE + REPA loss * `proj_coeff` + routing contrastive loss (via autograd).
+
+### REPA Module (`repa/`)
+- `repa/encoder.py` — Loads frozen DINOv2 teacher encoders (`dinov2-vit-{b,l,g}` and `dinov2reg-vit-{b,l,g}`). Downloads via torch.hub on first use, caches to `pretrained_ckpt/encoder/`. Handles positional embedding resampling for target resolution.
+- `repa/loss.py` — `compute_repa_loss(z_teacher, z_student_list)`: negative cosine similarity between teacher patch features and projected student features, averaged across alignment points.
+- `train_with_repa.py` — Extended training loop that loads raw images alongside VAE latents, extracts teacher features with `extract_teacher_features()`, and adds REPA projection loss to the total loss.
+
+### REPA Parameters (in YAML `repa_config`)
+- `enc_type`: Teacher encoder model (e.g., `"dinov2-vit-b"`)
+- `encoder_depth`: Which transformer layer to extract student features from (e.g., 4)
+- `z_dims`: List of projection dimensions for alignment (e.g., `[768]`)
+- `projector_dim`: Hidden size of the 3-layer MLP projector (e.g., 2048)
+- `proj_coeff`: Weight of REPA loss in total loss (e.g., 0.5)
 
 ### Key MoE Parameters (in YAML `MoE_config`)
 - `num_routed_experts`: Number of routable experts (typically 12)
@@ -95,11 +113,13 @@ Model `forward()` returns either a plain tensor (DiT) or a tuple for models with
 
 ### Pretrained Weights
 - VAE loading uses `load_vae()` from `utils.py`: checks `pretrained_ckpt/vae/{repo_id}/` for a local copy first; if absent, downloads from HuggingFace and saves locally for future use.
-- All three entry points (`train.py`, `sample.py`, `preprocess/preprocess_vae.py`) use this cached loading path.
+- All training entry points (`train.py`, `train_with_repa.py`, `sample.py`, `preprocess/preprocess_vae.py`) use this cached loading path.
+- REPA teacher encoders (DINOv2) are cached to `pretrained_ckpt/encoder/` after first download via torch.hub.
 
 ## Important Notes
 - All paper results use `qk_norm=False`. Enable `qk_norm=True` for training beyond 2M steps.
 - Token-Choice routing is default; use Expert-Choice (`models_ProMoE_EC.py`) for DDPM training.
-- Evaluation requires a separate TensorFlow environment and the reference batch `VIRTUAL_imagenet256_labeled.npz` from OpenAI's guided-diffusion.
+- Evaluation requires a separate TensorFlow environment and the reference batch `VIRTUAL_imagenet256_labeled.npz` from OpenAI's guided-diffusion. `evaluation/download_ref_batches.py` can auto-download these.
 - `cfg.data_path` in `config.py` must be set to your ImageNet train directory.
 - Multi-GPU sampling produces different random sequences than single-GPU (different class label ordering).
+- REPA training requires raw images (not just pre-computed latents) since the teacher encoder operates on pixel space. The dataset returns `(path, label, latent, raw_image)` when `load_raw_image=True`.

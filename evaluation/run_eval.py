@@ -6,6 +6,8 @@ from tqdm import tqdm
 import argparse
 import subprocess
 
+from download_ref_batches import ensure_ref_batches
+
 def run_evaluator(ref_npz_path, generated_npz_path):
     evaluator_script = 'evaluator.py'
     if not os.path.exists(evaluator_script):
@@ -133,6 +135,9 @@ def main():
     parser.add_argument("--no-eval", action="store_true", help="If specified, skip the subsequent evaluation script.")
 
     args = parser.parse_args()
+
+    # Auto-download reference batches if missing
+    ensure_ref_batches()
 
     args.output = args.image_folder + ".npz"
     
