@@ -1,3 +1,5 @@
+import os
+import logging
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -339,6 +341,23 @@ class FIDInceptionE_2(torchvision.models.inception.InceptionE):
 
         outputs = [branch1x1, branch3x3, branch3x3dbl, branch_pool]
         return torch.cat(outputs, 1)
+
+
+def load_vae(hf_repo_id, local_root="pretrained_ckpt/vae"):
+    """Load VAE from local cache if available, otherwise download from HuggingFace and save locally."""
+    from diffusers.models import AutoencoderKL
+
+    local_path = os.path.join(local_root, hf_repo_id.replace("/", "--"))
+    if os.path.isdir(local_path) and os.listdir(local_path):
+        logging.info(f"Loading VAE from local path: {local_path}")
+        vae = AutoencoderKL.from_pretrained(local_path)
+    else:
+        logging.info(f"Local VAE not found at {local_path}, downloading from HuggingFace: {hf_repo_id}")
+        vae = AutoencoderKL.from_pretrained(hf_repo_id)
+        os.makedirs(local_path, exist_ok=True)
+        vae.save_pretrained(local_path)
+        logging.info(f"VAE saved to {local_path}")
+    return vae
 
 
 def find_free_port():

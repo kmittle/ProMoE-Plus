@@ -21,7 +21,7 @@ from tqdm import tqdm
 import math
 import inspect
 from concurrent.futures import ThreadPoolExecutor
-from utils import InceptionV3, deep_update, find_free_port, str_to_float_list, str_to_int_list
+from utils import InceptionV3, deep_update, find_free_port, load_vae, str_to_float_list, str_to_int_list
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
@@ -202,7 +202,7 @@ def worker(gpu, cfg):
     logging.info('Initializing VAE, Inception')
 
     # [model] vae
-    vae = AutoencoderKL.from_pretrained(cfg.sd_vae_ft_mse_vae_path)  # [B, 16, 1, 32, 32] img 256x256
+    vae = load_vae(cfg.sd_vae_ft_mse_vae_path)  # [B, 16, 1, 32, 32] img 256x256
     vae = vae.eval().to(gpu)
     latent_shape = (4, 1, cfg.image_size // 8, cfg.image_size // 8)
 

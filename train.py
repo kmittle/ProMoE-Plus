@@ -26,7 +26,7 @@ from torch.utils.tensorboard import SummaryWriter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from torch.nn.parallel import DistributedDataParallel
 from collections import OrderedDict
-from utils import deep_update, find_free_port
+from utils import deep_update, find_free_port, load_vae
 from torch.nn.utils import clip_grad_norm_
 
 os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
@@ -414,7 +414,7 @@ def worker(gpu, cfg):
     
     logging.info('Initializing VAE')
     if not cfg.use_pre_latents:
-        vae = AutoencoderKL.from_pretrained(cfg.sd_vae_ft_mse_vae_path)  # [B, 16, 1, 32, 32] img 256x256
+        vae = load_vae(cfg.sd_vae_ft_mse_vae_path)  # [B, 16, 1, 32, 32] img 256x256
         vae = vae.eval().to(gpu)
         
         for param in vae.parameters():

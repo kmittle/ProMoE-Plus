@@ -46,20 +46,26 @@ CUDA_VISIBLE_DEVICES=0 python run_eval.py /path/to/generated/images
 ## Architecture
 
 ### Configuration System
-- `config.py`: Global defaults using EasyDict. All model size configs (S/B/M/L/XL) and MoE configs are defined here.
+- `config.py`: Global defaults using EasyDict. Defines base model configs (`DiT_S_config` through `DiT_XL_config`) and MoE-specific configs (`DiffMoE_DiT_*`, `TCDiT_*`, `ECDiT_*`).
 - `configs/*.yaml`: Per-experiment overrides deep-merged onto `config.py` defaults at runtime via `deep_update()` in `utils.py`.
-- YAML configs set `model_name`, `gpu_ids`, batch size, learning rate, MoE hyperparameters, and sampling parameters.
+- **Config merging flow**: ProMoE models reuse base DiT configs (e.g., `ProMoE_TC_L` maps to `DiT_L_config` in `model_dict`). The YAML adds `MoE_config` as a nested dict under the base config key (e.g., `DiT_L_config.MoE_config`), which `deep_update()` merges in. This means MoE parameters are not in `config.py` for ProMoE — they come entirely from YAML.
+- The YAML filename (minus extension) becomes `custom_cfg_name`, which determines the output subdirectory: `outputs/{model_name}/{custom_cfg_name}/`.
 
 ### Model Registry
-`train.py` and `sample.py` contain a `model_dict` mapping `model_name` strings to `(ModelClass, config_key)` pairs. Adding a new model requires an entry here.
+`train.py` and `sample.py` contain a `model_dict` mapping `model_name` strings to `(ModelClass, config_key)` pairs. Adding a new model requires an entry here. Note that `sample.py` imports `model_dict` from `train.py`.
 
 ### Model Hierarchy (in `models/`)
-- `modules.py` — Shared building blocks: `Attention`, `PatchEmbed`, `TimestepEmbedder`, `LabelEmbedder`, `FinalLayer`, `MLP`, `SwiGLU`.
+- `modules.py` — Shared building blocks: `Attention`, `PatchEmbed`, `TimestepEmbedder`, `LabelEmbedder`, `FinalLayer`, `MLP`/`Mlp`, `SwiGLU`, `MoeMLP`, and sinusoidal position embedding utilities.
 - `models_DiT.py` — Dense DiT baseline (no MoE). `DiTBlock` uses AdaLN-Zero modulation (6-param per-sample conditioning from timestep+class).
 - `models_TCDiT.py` / `models_ECDiT.py` — Token-Choice and Expert-Choice MoE baselines.
 - `models_DiffMoE.py` — DiffMoE baseline with capacity prediction.
-- **`models_ProMoE_TC.py`** — Main proposed model. `SparseMoeBlock` implements two-step routing: (1) conditional routing separates uncond tokens (class=1000) to a dedicated expert, (2) prototypical routing assigns cond tokens via cosine similarity to learnable cluster centers. Includes routing contrastive loss.
+- **`models_ProMoE_TC.py`** — Main proposed model. `SparseMoeBlock` implements two-step routing: (1) conditional routing separates uncond tokens (class=1000) to a dedicated expert, (2) prototypical routing assigns cond tokens via cosine similarity to learnable `cluster_centers`. Includes routing contrastive loss via `AddAuxiliaryLoss` autograd trick.
 - `models_ProMoE_EC.py` — Expert-Choice variant of ProMoE (recommended for DDPM training).
+
+### Auxiliary Loss Convention
+Model `forward()` returns either a plain tensor (DiT) or a tuple for models with auxiliary losses:
+- **DiffMoE**: Returns `(pred, "Capacity_Pred", layer_idx_list, ones_list, pred_c_list, loss_weight)`. Training loop computes BCEWithLogitsLoss for capacity prediction.
+- **ProMoE**: Uses `AddAuxiliaryLoss` autograd function to inject contrastive loss gradients directly into the forward pass — returns a plain tensor but the auxiliary loss gradient flows through automatically.
 
 ### Key MoE Parameters (in YAML `MoE_config`)
 - `num_routed_experts`: Number of routable experts (typically 12)
@@ -67,33 +73,29 @@ CUDA_VISIBLE_DEVICES=0 python run_eval.py /path/to/generated/images
 - `routing_contrastive_lam`: Weight of contrastive loss (default 1.0)
 - `routing_contrastive_temperature`: Contrastive loss temperature (default 0.07)
 - `use_shared_expert` / `use_uncond_expert`: Toggle shared global expert and dedicated unconditional expert
+- `interleave`: Whether to alternate MoE and dense FFN layers
+- `router_weight_mode`: How to weight expert outputs (`"softmax"`, `"identity"`)
 
 ### Training Pipeline (`train.py`)
-- PyTorch DDP for multi-GPU distributed training
+- PyTorch DDP for multi-GPU distributed training via `mp.spawn`
 - Logit-normal timestep sampling (SD3-style) with Rectified Flow objective
 - Mixed precision with bfloat16; gradient clipping at `max_grad_norm=0.5`
 - EMA model maintained for stable generation
 - Supports both raw image loading and pre-computed VAE latents (`use_pre_latents=True`)
 - Loss = MSE reconstruction + auxiliary losses (routing contrastive for ProMoE, capacity prediction for DiffMoE)
+- Checkpoints saved every `save_ckpt_interval` steps to `outputs/{model_name}/{custom_cfg_name}/checkpoints/`
 
 ### Sampling Pipeline (`sample.py`)
 - FlowMatchEulerDiscreteScheduler from diffusers
-- Classifier-free guidance via `forward_with_cfg` (batches cond+uncond in single forward pass)
-- Extracts Inception features for FID computation alongside generated images
-- Output: `outputs/{model_name}/checkpoints/sample/step{N}/` with PNG images named `img{idx}_class{label}.png`
-
-### Output Directory Structure
-```
-outputs/{model_name}/
-├── checkpoints/
-│   ├── ckpt_step_{N}.pth
-│   └── sample/
-│       └── step{N}/
-│           └── img256_cfg{scale}_seed0_FID{K}K_bs{B}_ema/
-```
+- Classifier-free guidance: runs cond and uncond forward passes separately (not batched together), applies `guidance_scale * (cond - uncond) + uncond`
+- Loads EMA weights (`ema_model_state_dict`) from checkpoints for sampling
+- Supports resumable sampling — skips batches where output images already exist
+- Extracts Inception features for FID computation alongside generated images (optional, `save_inception_features=True`)
+- Output: `outputs/{model_name}/{custom_cfg_name}/sample/step{N}/`
 
 ## Important Notes
 - All paper results use `qk_norm=False`. Enable `qk_norm=True` for training beyond 2M steps.
 - Token-Choice routing is default; use Expert-Choice (`models_ProMoE_EC.py`) for DDPM training.
 - Evaluation requires a separate TensorFlow environment and the reference batch `VIRTUAL_imagenet256_labeled.npz` from OpenAI's guided-diffusion.
 - `cfg.data_path` in `config.py` must be set to your ImageNet train directory.
+- Multi-GPU sampling produces different random sequences than single-GPU (different class label ordering).

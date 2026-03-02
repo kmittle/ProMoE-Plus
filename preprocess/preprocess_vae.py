@@ -18,6 +18,7 @@ from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from torch.utils.data.distributed import DistributedSampler
 from diffusers.models import AutoencoderKL
+from utils import load_vae
 from config import cfg
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -182,7 +183,7 @@ def worker(gpu, cfg):
     logging.info('Start the preprocess loop')
 
     # Initialize VAE
-    vae = AutoencoderKL.from_pretrained(cfg.sd_vae_ft_mse_vae_path)
+    vae = load_vae(cfg.sd_vae_ft_mse_vae_path)
     vae = vae.eval().to(gpu)
 
     # Create ThreadPoolExecutor for saving latents
