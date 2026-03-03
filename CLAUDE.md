@@ -75,6 +75,7 @@ CUDA_VISIBLE_DEVICES=0 python run_eval.py /path/to/generated/images
 - **`models_ProMoE_TC.py`** — Main proposed model. `SparseMoeBlock` implements two-step routing: (1) conditional routing separates uncond tokens (class=1000) to a dedicated expert, (2) prototypical routing assigns cond tokens via cosine similarity to learnable `cluster_centers`. Includes routing contrastive loss via `AddAuxiliaryLoss` autograd trick.
 - `models_ProMoE_EC.py` — Expert-Choice variant of ProMoE (recommended for DDPM training).
 - `models_ProMoE_TC_repa.py` — ProMoE-TC with REPA projectors. Adds MLP projectors (`build_repa_projector`) that align intermediate DiT features with a frozen DINOv2 teacher encoder. In training, `forward()` returns `(pred, zs_proj)` where `zs_proj` is a list of projected features for REPA loss; in eval mode returns only `pred`.
+- `models_ProMoE_TC_repa_shared.py` — REPA variant with shared expert support. Same REPA projector pattern as `models_ProMoE_TC_repa.py` but includes shared expert routing logic.
 
 ### Auxiliary Loss Convention
 Model `forward()` returns either a plain tensor (DiT) or a tuple for models with auxiliary losses:
@@ -140,3 +141,4 @@ Model `forward()` returns either a plain tensor (DiT) or a tuple for models with
 - `cfg.data_path` in `config.py` must be set to your ImageNet train directory.
 - Multi-GPU sampling produces different random sequences than single-GPU (different class label ordering).
 - REPA training requires raw images (not just pre-computed latents) since the teacher encoder operates on pixel space. The dataset returns `(path, label, latent, raw_image)` when `load_raw_image=True`.
+- Offline/air-gapped training: pass `--vae-path /path/to/sd-vae-ft-mse` and `--repa-enc-path /path/to/dinov2_state_dict.pth` to skip automatic downloads. See `ProMoE-REPA.md` for details.
