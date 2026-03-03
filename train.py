@@ -413,11 +413,12 @@ def worker(gpu, cfg):
     logging.info(f"----------------------Image Num {total_images} , Total number of steps per epoch: {steps_per_epoch // cfg.world_size}")
     
     logging.info('Initializing VAE')
+    vae_path = getattr(cfg, 'vae_path', None)
     if not cfg.use_pre_latents:
         if cfg.rank == 0:
-            load_vae(cfg.sd_vae_ft_mse_vae_path)
+            load_vae(cfg.sd_vae_ft_mse_vae_path, vae_path=vae_path)
         dist.barrier()
-        vae = load_vae(cfg.sd_vae_ft_mse_vae_path)  # [B, 16, 1, 32, 32] img 256x256
+        vae = load_vae(cfg.sd_vae_ft_mse_vae_path, vae_path=vae_path)
         vae = vae.eval().to(gpu)
 
         for param in vae.parameters():
@@ -588,10 +589,14 @@ def worker(gpu, cfg):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train MoE')
     parser.add_argument('--config', type=str, required=True, help='Path to the YAML configuration file')
+    parser.add_argument('--vae-path', type=str, default=None,
+                        help='Local path to a pretrained VAE directory (skip auto-download)')
     args = parser.parse_args()
 
     with open(args.config, 'r') as file:
         custom_cfg = yaml.safe_load(file)
-    
+
     custom_cfg['custom_cfg_name'] = osp.splitext(osp.basename(args.config))[0]
+    if args.vae_path is not None:
+        custom_cfg['vae_path'] = args.vae_path
     main(**custom_cfg)

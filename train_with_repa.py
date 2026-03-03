@@ -442,11 +442,12 @@ def worker(gpu, cfg):
     logging.info(f"----------------------Image Num {total_images} , Total number of steps per epoch: {steps_per_epoch // cfg.world_size}")
 
     logging.info('Initializing VAE')
+    vae_path = getattr(cfg, 'vae_path', None)
     if not cfg.use_pre_latents:
         if cfg.rank == 0:
-            load_vae(cfg.sd_vae_ft_mse_vae_path)
+            load_vae(cfg.sd_vae_ft_mse_vae_path, vae_path=vae_path)
         dist.barrier()
-        vae = load_vae(cfg.sd_vae_ft_mse_vae_path)  # [B, 16, 1, 32, 32] img 256x256
+        vae = load_vae(cfg.sd_vae_ft_mse_vae_path, vae_path=vae_path)
         vae = vae.eval().to(gpu)
 
         for param in vae.parameters():
@@ -454,16 +455,17 @@ def worker(gpu, cfg):
 
     # Initialize teacher encoder for REPA
     # Only rank 0 downloads; others wait, then all load from local cache.
+    repa_enc_path = getattr(cfg, 'repa_enc_path', None)
     if use_repa:
         enc_type = repa_config.get('enc_type', 'dinov2-vit-b')
         proj_coeff = repa_config.get('proj_coeff', 0.5)
         if cfg.rank == 0:
             logging.info(f'Rank 0: downloading/caching REPA teacher encoder: {enc_type}')
-            load_teacher_encoder(enc_type, resolution=cfg.image_size)
+            load_teacher_encoder(enc_type, resolution=cfg.image_size, enc_path=repa_enc_path)
         dist.barrier()  # wait for rank 0 to finish caching
         logging.info(f'Initializing REPA teacher encoder: {enc_type}, proj_coeff={proj_coeff}')
         teacher_encoder, teacher_embed_dim = load_teacher_encoder(
-            enc_type, resolution=cfg.image_size
+            enc_type, resolution=cfg.image_size, enc_path=repa_enc_path
         )
         teacher_encoder = teacher_encoder.to(gpu)
         logging.info(f'Teacher encoder embed_dim: {teacher_embed_dim}')
@@ -674,10 +676,18 @@ def worker(gpu, cfg):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train MoE with REPA')
     parser.add_argument('--config', type=str, required=True, help='Path to the YAML configuration file')
+    parser.add_argument('--vae-path', type=str, default=None,
+                        help='Local path to a pretrained VAE directory (skip auto-download)')
+    parser.add_argument('--repa-enc-path', type=str, default=None,
+                        help='Local path to a REPA teacher encoder state_dict file (skip auto-download)')
     args = parser.parse_args()
 
     with open(args.config, 'r') as file:
         custom_cfg = yaml.safe_load(file)
 
     custom_cfg['custom_cfg_name'] = osp.splitext(osp.basename(args.config))[0]
+    if args.vae_path is not None:
+        custom_cfg['vae_path'] = args.vae_path
+    if args.repa_enc_path is not None:
+        custom_cfg['repa_enc_path'] = args.repa_enc_path
     main(**custom_cfg)

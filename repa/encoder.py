@@ -5,7 +5,7 @@ import torch.nn as nn
 import timm.layers.pos_embed
 
 
-def load_teacher_encoder(enc_type, resolution=256, local_root="pretrained_ckpt/encoder"):
+def load_teacher_encoder(enc_type, resolution=256, local_root="pretrained_ckpt/encoder", enc_path=None):
     """
     Load a frozen teacher encoder for REPA alignment.
 
@@ -14,6 +14,13 @@ def load_teacher_encoder(enc_type, resolution=256, local_root="pretrained_ckpt/e
 
     First run:  downloads via torch.hub and saves the full model to local_root.
     Second run: loads directly from local_root, no network needed.
+
+    Args:
+        enc_type: encoder type string.
+        resolution: target image resolution.
+        local_root: root directory for auto-downloaded cache.
+        enc_path: if specified, load state_dict directly from this path
+                  (skip download logic entirely).
 
     Returns:
         encoder: frozen teacher model
@@ -24,7 +31,7 @@ def load_teacher_encoder(enc_type, resolution=256, local_root="pretrained_ckpt/e
     encoder_type, architecture, model_config = parts
 
     if 'dinov2' in encoder_type:
-        encoder, embed_dim = _load_dinov2(encoder_type, model_config, resolution, local_root)
+        encoder, embed_dim = _load_dinov2(encoder_type, model_config, resolution, local_root, enc_path=enc_path)
     else:
         raise NotImplementedError(f"Encoder type '{encoder_type}' not supported. Use 'dinov2' or 'dinov2reg'.")
 
@@ -35,30 +42,37 @@ def load_teacher_encoder(enc_type, resolution=256, local_root="pretrained_ckpt/e
     return encoder, embed_dim
 
 
-def _load_dinov2(encoder_type, model_config, resolution, local_root):
+def _load_dinov2(encoder_type, model_config, resolution, local_root, enc_path=None):
     """Load DINOv2 model, using local cache if available."""
     if 'reg' in encoder_type:
         hub_name = f'dinov2_vit{model_config}14_reg'
     else:
         hub_name = f'dinov2_vit{model_config}14'
 
-    local_path = os.path.join(local_root, hub_name)
-    weights_path = os.path.join(local_path, 'state_dict.pth')
-
-    if os.path.isfile(weights_path):
-        # Local weights exist: build model structure via torch.hub (repo cached after first download),
-        # then load our cached state_dict (avoids re-downloading weights from Meta CDN).
-        logging.info(f"Loading DINOv2 weights from local cache: {weights_path}")
+    if enc_path is not None:
+        # User-specified path: build model structure, load state_dict from given path
+        logging.info(f"Loading DINOv2 weights from user-specified path: {enc_path}")
         encoder = torch.hub.load('facebookresearch/dinov2', hub_name, pretrained=False)
-        state_dict = torch.load(weights_path, map_location='cpu')
+        state_dict = torch.load(enc_path, map_location='cpu')
         encoder.load_state_dict(state_dict)
     else:
-        # First run: download via torch.hub, then cache state_dict locally
-        logging.info(f"Local DINOv2 not found at {local_path}, downloading via torch.hub: {hub_name}")
-        encoder = torch.hub.load('facebookresearch/dinov2', hub_name)
-        os.makedirs(local_path, exist_ok=True)
-        torch.save(encoder.state_dict(), weights_path)
-        logging.info(f"DINOv2 state_dict cached to {weights_path}")
+        local_path = os.path.join(local_root, hub_name)
+        weights_path = os.path.join(local_path, 'state_dict.pth')
+
+        if os.path.isfile(weights_path):
+            # Local weights exist: build model structure via torch.hub (repo cached after first download),
+            # then load our cached state_dict (avoids re-downloading weights from Meta CDN).
+            logging.info(f"Loading DINOv2 weights from local cache: {weights_path}")
+            encoder = torch.hub.load('facebookresearch/dinov2', hub_name, pretrained=False)
+            state_dict = torch.load(weights_path, map_location='cpu')
+            encoder.load_state_dict(state_dict)
+        else:
+            # First run: download via torch.hub, then cache state_dict locally
+            logging.info(f"Local DINOv2 not found at {local_path}, downloading via torch.hub: {hub_name}")
+            encoder = torch.hub.load('facebookresearch/dinov2', hub_name)
+            os.makedirs(local_path, exist_ok=True)
+            torch.save(encoder.state_dict(), weights_path)
+            logging.info(f"DINOv2 state_dict cached to {weights_path}")
 
     embed_dim = encoder.embed_dim
 

@@ -204,10 +204,11 @@ def worker(gpu, cfg):
     logging.info('Initializing VAE, Inception')
 
     # [model] vae — rank 0 downloads first, others wait then load from cache
+    vae_path = getattr(cfg, 'vae_path', None)
     if cfg.rank == 0:
-        load_vae(cfg.sd_vae_ft_mse_vae_path)
+        load_vae(cfg.sd_vae_ft_mse_vae_path, vae_path=vae_path)
     dist.barrier()
-    vae = load_vae(cfg.sd_vae_ft_mse_vae_path)  # [B, 16, 1, 32, 32] img 256x256
+    vae = load_vae(cfg.sd_vae_ft_mse_vae_path, vae_path=vae_path)
     vae = vae.eval().to(gpu)
     latent_shape = (4, 1, cfg.image_size // 8, cfg.image_size // 8)
 
@@ -410,6 +411,8 @@ if __name__ == '__main__':
     parser.add_argument('--num_fid_samples',
                         type=int,
                         default=None)
+    parser.add_argument('--vae-path', type=str, default=None,
+                        help='Local path to a pretrained VAE directory (skip auto-download)')
     args = parser.parse_args()
 
     with open(args.config, 'r') as file:
@@ -429,5 +432,8 @@ if __name__ == '__main__':
         print(f"Setting num_fid_samples from command-line: {args.num_fid_samples}")
         custom_cfg['num_fid_samples'] = args.num_fid_samples
         custom_cfg['save_img_num'] = args.num_fid_samples
+
+    if args.vae_path is not None:
+        custom_cfg['vae_path'] = args.vae_path
 
     main(**custom_cfg)

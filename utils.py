@@ -343,9 +343,21 @@ class FIDInceptionE_2(torchvision.models.inception.InceptionE):
         return torch.cat(outputs, 1)
 
 
-def load_vae(hf_repo_id, local_root="pretrained_ckpt/vae"):
-    """Load VAE from local cache if available, otherwise download from HuggingFace and save locally."""
+def load_vae(hf_repo_id, local_root="pretrained_ckpt/vae", vae_path=None):
+    """Load VAE from local cache if available, otherwise download from HuggingFace and save locally.
+
+    Args:
+        hf_repo_id: HuggingFace repo ID, used when no vae_path is given.
+        local_root: Root directory for auto-downloaded cache.
+        vae_path: If specified, load VAE directly from this local path
+                  (skip download logic entirely).
+    """
     from diffusers.models import AutoencoderKL
+
+    if vae_path is not None:
+        logging.info(f"Loading VAE from user-specified path: {vae_path}")
+        vae = AutoencoderKL.from_pretrained(vae_path)
+        return vae
 
     local_path = os.path.join(local_root, hf_repo_id.replace("/", "--"))
     if os.path.isdir(local_path) and os.listdir(local_path):
