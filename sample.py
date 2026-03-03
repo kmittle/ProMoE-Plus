@@ -203,7 +203,10 @@ def worker(gpu, cfg):
 
     logging.info('Initializing VAE, Inception')
 
-    # [model] vae
+    # [model] vae — rank 0 downloads first, others wait then load from cache
+    if cfg.rank == 0:
+        load_vae(cfg.sd_vae_ft_mse_vae_path)
+    dist.barrier()
     vae = load_vae(cfg.sd_vae_ft_mse_vae_path)  # [B, 16, 1, 32, 32] img 256x256
     vae = vae.eval().to(gpu)
     latent_shape = (4, 1, cfg.image_size // 8, cfg.image_size // 8)

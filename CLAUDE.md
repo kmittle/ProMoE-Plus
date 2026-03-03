@@ -33,6 +33,15 @@ CUDA_VISIBLE_DEVICES=0 python sample.py --config configs/004_ProMoE_L.yaml \
   --step_list_for_sample 200000,300000 --guide_scale_list 1.0,1.5,4.0 --num_fid_samples 10000
 ```
 
+### End-to-End Scripts
+```bash
+# Train REPA variant
+bash scripts/train_repa_B.sh
+
+# Sample + evaluate in one go (handles conda env switching)
+bash scripts/sample_and_eval_repa_B.sh
+```
+
 ### VAE Latent Preprocessing (speeds up training)
 ```bash
 CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python preprocess/preprocess_vae.py \
@@ -73,7 +82,9 @@ Model `forward()` returns either a plain tensor (DiT) or a tuple for models with
 - **ProMoE**: Uses `AddAuxiliaryLoss` autograd function to inject contrastive loss gradients directly into the forward pass — returns a plain tensor but the auxiliary loss gradient flows through automatically.
 - **ProMoE-REPA**: Returns `(pred, zs_proj)` during training. The training loop in `train_with_repa.py` computes `compute_repa_loss(teacher_z, zs_proj)` and adds it weighted by `proj_coeff`. Total loss = MSE + REPA loss * `proj_coeff` + routing contrastive loss (via autograd).
 
-### REPA Module (`repa/`)
+### REPA Module (`repa/` vs `REPA/`)
+- `repa/` (lowercase) — ProMoE's REPA integration: encoder loading, loss computation, used by `train_with_repa.py`.
+- `REPA/` (uppercase) — Separate standalone REPA subproject (original codebase). Treat changes there as scoped work independent from ProMoE.
 - `repa/encoder.py` — Loads frozen DINOv2 teacher encoders (`dinov2-vit-{b,l,g}` and `dinov2reg-vit-{b,l,g}`). Downloads via torch.hub on first use, caches to `pretrained_ckpt/encoder/`. Handles positional embedding resampling for target resolution.
 - `repa/loss.py` — `compute_repa_loss(z_teacher, z_student_list)`: negative cosine similarity between teacher patch features and projected student features, averaged across alignment points.
 - `train_with_repa.py` — Extended training loop that loads raw images alongside VAE latents, extracts teacher features with `extract_teacher_features()`, and adds REPA projection loss to the total loss.
@@ -115,6 +126,12 @@ Model `forward()` returns either a plain tensor (DiT) or a tuple for models with
 - VAE loading uses `load_vae()` from `utils.py`: checks `pretrained_ckpt/vae/{repo_id}/` for a local copy first; if absent, downloads from HuggingFace and saves locally for future use.
 - All training entry points (`train.py`, `train_with_repa.py`, `sample.py`, `preprocess/preprocess_vae.py`) use this cached loading path.
 - REPA teacher encoders (DINOv2) are cached to `pretrained_ckpt/encoder/` after first download via torch.hub.
+
+## Coding Conventions
+- 4-space indentation, `snake_case` for functions/variables, `PascalCase` for classes.
+- Model files follow `models_*.py` naming pattern. Preserve numeric experiment prefixes in config names (e.g., `004_ProMoE_L.yaml`).
+- No formatter or linter is configured — match surrounding style in the file you edit.
+- No `tests/` directory; validate changes with targeted smoke tests (short training run, sample pass).
 
 ## Important Notes
 - All paper results use `qk_norm=False`. Enable `qk_norm=True` for training beyond 2M steps.
