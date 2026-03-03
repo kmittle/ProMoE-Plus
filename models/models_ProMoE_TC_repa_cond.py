@@ -203,11 +203,13 @@ class SparseMoeBlock(nn.Module):
 
         final_output = final_output.view(batch_size, seq_len, hidden_dim)
 
+        # Save routed expert output (before shared expert) for REPA alignment
+        routed_output = final_output
+
         ### process shared experts
-        shared_output = None
         if self.use_shared_expert:
             shared_output = self.shared_expert(hidden_states)
-            final_output += shared_output
+            final_output = routed_output + shared_output
 
         loss = load_balance_loss  # None
         ### routing contrastive loss
@@ -242,7 +244,7 @@ class SparseMoeBlock(nn.Module):
             else:
                 loss = routing_contrastive_loss
 
-        return final_output, loss, shared_output
+        return final_output, loss, routed_output
 
     def compute_routing_contrastive_loss(self, token_embeddings, cluster_assignments, use_top_k=False):
         """
@@ -333,11 +335,11 @@ class DiTBlock(nn.Module):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=1)
         x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
         if self.use_moe:
-            x_mlp, aux_loss, shared_output = self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp), label)
+            x_mlp, aux_loss, routed_output = self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp), label)
             if aux_loss is not None:
                 x_mlp = AddAuxiliaryLoss.apply(x_mlp, aux_loss)
             x = x + gate_mlp.unsqueeze(1) * x_mlp
-            return x, shared_output
+            return x, routed_output
         else:
             x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
             return x, None
@@ -392,7 +394,7 @@ class DiT(nn.Module):
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
         self.init_MoeMLP= MoE_config.init_MoeMLP
 
-        # REPA: projector heads for representation alignment (using shared expert output)
+        # REPA: projector heads for representation alignment (using conditional expert output)
         if repa_config is not None:
             self.encoder_depth = repa_config.get('encoder_depth', 4)
             assert self.encoder_depth <= depth, \
@@ -479,9 +481,12 @@ class DiT(nn.Module):
         timestep: (N,) tensor of diffusion timesteps
         context: (N,) tensor of class labels
 
-        Returns:
+        Returns (training):
             x: (N, out_channels, H, W) model prediction
-            zs_proj: list of (N, T, z_dim) projected features, or None if no projectors
+            zs_proj: list of (num_cond, T, z_dim) projected features (conditional samples only)
+            cond_mask: (N,) bool tensor indicating conditional samples
+        Returns (eval):
+            x: (N, out_channels, H, W) model prediction
         """
         y = context
         if len(x.shape) != 4:
@@ -494,18 +499,23 @@ class DiT(nn.Module):
         c = t + y                                # (N, D)
 
         zs_proj = None
+        cond_mask = None
         for i, block in enumerate(self.blocks):
-            x, shared_output = block(x, c, labels)       # (N, T, D), shared_output: (N, T, D) or None
-            # Extract projected features from shared expert output at encoder_depth for REPA alignment (training only)
+            x, routed_output = block(x, c, labels)       # (N, T, D), routed_output: (N, T, D) or None
+            # Extract projected features from conditional expert output at encoder_depth for REPA alignment (training only)
             if self.training and self.projectors is not None and (i + 1) == self.encoder_depth:
-                zs_proj = [proj(shared_output.reshape(-1, D)).reshape(N, T, -1) for proj in self.projectors]
+                # Only align conditional samples (non-null class)
+                cond_mask = (labels != 1000)              # (N,)
+                cond_routed = routed_output[cond_mask]    # (num_cond, T, D)
+                num_cond = cond_routed.shape[0]
+                zs_proj = [proj(cond_routed.reshape(-1, D)).reshape(num_cond, T, -1) for proj in self.projectors]
 
         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
         x = self.unpatchify(x)                   # (N, out_channels, H, W)
 
         if not self.training:
             return x
-        return x, zs_proj
+        return x, zs_proj, cond_mask
 
     def forward_with_cfg(self, x, t, y, cfg_scale):
         """

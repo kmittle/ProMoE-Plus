@@ -40,6 +40,7 @@ from models.models_ProMoE_TC import DiT as ProMoE_TC
 from models.models_ProMoE_EC import DiT as ProMoE_EC
 from models.models_ProMoE_TC_repa import DiT as ProMoE_TC_REPA
 from models.models_ProMoE_TC_repa_shared import DiT as ProMoE_TC_REPA_Shared
+from models.models_ProMoE_TC_repa_cond import DiT as ProMoE_TC_REPA_Cond
 from repa.encoder import load_teacher_encoder, extract_teacher_features
 from repa.loss import compute_repa_loss
 
@@ -67,6 +68,11 @@ model_dict = {
     "ProMoE_TC_REPA_Shared_B": (ProMoE_TC_REPA_Shared, "DiT_B_config"),
     "ProMoE_TC_REPA_Shared_L": (ProMoE_TC_REPA_Shared, "DiT_L_config"),
     "ProMoE_TC_REPA_Shared_XL": (ProMoE_TC_REPA_Shared, "DiT_XL_config"),
+    # REPA-Cond variants (align conditional expert output with teacher, skip null class)
+    "ProMoE_TC_REPA_Cond_S": (ProMoE_TC_REPA_Cond, "DiT_S_config"),
+    "ProMoE_TC_REPA_Cond_B": (ProMoE_TC_REPA_Cond, "DiT_B_config"),
+    "ProMoE_TC_REPA_Cond_L": (ProMoE_TC_REPA_Cond, "DiT_L_config"),
+    "ProMoE_TC_REPA_Cond_XL": (ProMoE_TC_REPA_Cond, "DiT_XL_config"),
 }
 
 
@@ -596,9 +602,14 @@ def worker(gpu, cfg):
         loss_dict = {}
         loss_dict["loss"] = 0
 
-        # Handle model output: REPA models return (pred, zs_proj)
+        # Handle model output: REPA models return (pred, zs_proj) or (pred, zs_proj, cond_mask)
+        cond_mask = None
         if isinstance(model_output, tuple):
-            model_pred, zs_proj = model_output
+            if len(model_output) == 3 and isinstance(model_output[2], torch.Tensor) and model_output[2].dtype == torch.bool:
+                # REPA-Cond: (pred, zs_proj, cond_mask)
+                model_pred, zs_proj, cond_mask = model_output
+            else:
+                model_pred, zs_proj = model_output[0], model_output[1]
 
             # Check if this is a DiffMoE-style tuple (string identifier at index 1)
             if isinstance(zs_proj, str):
@@ -622,9 +633,13 @@ def worker(gpu, cfg):
 
             # REPA projection loss
             if use_repa and zs_proj is not None:
-                repa_loss = compute_repa_loss(teacher_z, zs_proj)
-                loss_dict["repa_loss"] = repa_loss
-                loss_dict["loss"] += repa_loss * proj_coeff
+                # If cond_mask is provided, only align conditional samples
+                teacher_z_for_repa = teacher_z[cond_mask] if cond_mask is not None else teacher_z
+                # Skip REPA loss if no conditional samples in this batch (avoid nan from empty mean)
+                if teacher_z_for_repa.shape[0] > 0:
+                    repa_loss = compute_repa_loss(teacher_z_for_repa, zs_proj)
+                    loss_dict["repa_loss"] = repa_loss
+                    loss_dict["loss"] += repa_loss * proj_coeff
 
         elif model_output.shape[1] != noised_z_in.shape[1]:
             ########## DiT loss
