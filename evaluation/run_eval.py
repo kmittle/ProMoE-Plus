@@ -3,6 +3,7 @@ import argparse
 import numpy as np
 import tensorflow.compat.v1 as tf
 from evaluator import Evaluator, FIDStatistics
+from download_ref_stats import ensure_file, FILES
 
 
 def _get_ref_cache_path(ref_npz):
@@ -109,6 +110,10 @@ def main():
         print("Error: No valid image folders provided.")
         return
 
+    # Auto-download reference NPZ if missing
+    ref_basename = os.path.basename(args.ref_npz)
+    if ref_basename in FILES:
+        ensure_file(ref_basename, FILES[ref_basename])
     if not os.path.exists(args.ref_npz):
         print(f"Error: Reference NPZ file '{args.ref_npz}' not found.")
         return

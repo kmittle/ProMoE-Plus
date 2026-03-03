@@ -425,10 +425,19 @@ def worker(gpu, cfg):
     logging.info('Initializing VAE')
     if not cfg.use_pre_latents:
         use_local_files_only = cfg.sd_vae_ft_mse_vae_path not in [None, ""]
+        if not use_local_files_only:
+            # Rank 0 downloads first to avoid multi-process download conflicts
+            if cfg.rank == 0:
+                logging.info('Downloading VAE checkpoint (rank 0 only)...')
+                AutoencoderKL.from_pretrained(
+                    "stabilityai/sd-vae-ft-mse",
+                    cache_dir=cfg.sd_vae_ft_mse_vae_path,
+                )
+            dist.barrier()
         vae = AutoencoderKL.from_pretrained(
             "stabilityai/sd-vae-ft-mse",
             cache_dir=cfg.sd_vae_ft_mse_vae_path,
-            local_files_only=use_local_files_only,
+            local_files_only=True,
         )  # [B, 16, 1, 32, 32] img 256x256
         vae = vae.eval().to(gpu)
         
