@@ -29,7 +29,7 @@ DiT_S_config:
     routing_contrastive_lam: 1
     use_top_k_for_routing_contrastive: True
     routing_contrastive_temperature: 0.07
-    cost_penalty_lam: 1.0
+    cost_penalty_lam: 10.0
 
 
 ###### For sample

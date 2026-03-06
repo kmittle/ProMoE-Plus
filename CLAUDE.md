@@ -55,6 +55,8 @@ Each file exports a `DiT` class. Naming: `models_<Variant>.py`.
 | `models_TCDiT.py` / `models_ECDiT.py` | Token-Choice / Expert-Choice baselines |
 | `models_DiffMoE.py` | DiffMoE baseline (prior work) |
 | `models_ProMoE_TC.py` | **Main published model** — prototypical routing with cosine similarity |
+| `models_ProMoE_TC_symmetric.py` | Symmetric routing variant |
+| `models_ProMoE_TC_sigmoid.py` | Sigmoid routing variant |
 | `models_ProMoE_EC.py` | Expert-Choice variant of ProMoE |
 | `models_ProMoE_TC_hierar.py` | Hierarchical sub-prototypes per expert (4 sub-prototypes) |
 | `models_ProMoE_TC_hierar_expert.py` | Variable-capacity experts (1x→3x intermediate size) + cost penalty |

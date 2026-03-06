@@ -158,8 +158,10 @@ class SparseMoeBlock(nn.Module):
 
             # Cost penalty: penalize routing to large experts
             if self.training and self.cost_penalty_lam > 0:
-                # cos_sim: [num_cond, num_routed_experts], alpha_penalty: [num_routed_experts]
-                cost_per_token = cos_sim @ self.alpha_penalty  # [num_cond]
+                # Use softmax probabilities instead of raw cos_sim to avoid
+                # gradient explosion through F.normalize when token norms are small
+                cost_probs = F.softmax(cos_sim, dim=1)  # [num_cond, num_routed_experts]
+                cost_per_token = cost_probs @ self.alpha_penalty  # [num_cond]
                 cost_penalty = cost_per_token.mean()
 
         router_weights = router_weights.view(batch_size, seq_len, self.top_k)
