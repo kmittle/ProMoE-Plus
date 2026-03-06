@@ -37,6 +37,10 @@ from models.models_TCDiT import DiT as TCDiT
 from models.models_ECDiT import DiT as ECDiT
 from models.models_DiffMoE import DiT as DiffMoE
 from models.models_ProMoE_TC import DiT as ProMoE_TC
+from models.models_ProMoE_TC_symmetric import DiT as ProMoE_TC_symmetric
+from models.models_ProMoE_TC_sigmoid import DiT as ProMoE_TC_sigmoid
+from models.models_ProMoE_TC_hierar import DiT as ProMoE_TC_hierar
+from models.models_ProMoE_TC_hierar_expert import DiT as ProMoE_TC_hierar_expert
 from models.models_ProMoE_EC import DiT as ProMoE_EC
 
 model_dict = {
@@ -49,7 +53,13 @@ model_dict = {
     "DiffMoE_L_E8": (DiffMoE, "DiffMoE_DiT_L_E8_config"),
     "DiffMoE_XL_E8": (DiffMoE, "DiffMoE_DiT_XL_E8_config"),
     "ProMoE_TC_S": (ProMoE_TC, "DiT_S_config"),
+    "ProMoE_TC_S_symmetric": (ProMoE_TC_symmetric, "DiT_S_config"),
+    "ProMoE_TC_S_sigmoid": (ProMoE_TC_sigmoid, "DiT_S_config"),
+    "ProMoE_TC_S_hierar": (ProMoE_TC_hierar, "DiT_S_config"),
+    "ProMoE_TC_S_hierar_expert": (ProMoE_TC_hierar_expert, "DiT_S_config"),
     "ProMoE_TC_B": (ProMoE_TC, "DiT_B_config"),
+    "ProMoE_TC_B_hierar": (ProMoE_TC_hierar, "DiT_B_config"),
+    "ProMoE_TC_B_hierar_expert": (ProMoE_TC_hierar_expert, "DiT_B_config"),
     "ProMoE_TC_L": (ProMoE_TC, "DiT_L_config"),
     "ProMoE_TC_XL": (ProMoE_TC, "DiT_XL_config"),
     "ProMoE_EC_L": (ProMoE_EC, "DiT_L_config"),
