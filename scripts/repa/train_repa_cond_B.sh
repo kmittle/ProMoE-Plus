@@ -7,7 +7,7 @@
 
 set -e
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 python train_with_repa.py \
     --config configs/004_ProMoE_B_repa_cond.yaml
