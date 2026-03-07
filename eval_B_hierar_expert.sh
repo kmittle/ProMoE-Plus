@@ -1,7 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-cd "$(dirname "${BASH_SOURCE[0]}")"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$REPO_ROOT"
 
 LOG="log_ProMoE_B_hierar_expert_eval.log"
 
@@ -24,7 +25,7 @@ for step in $STEPS; do
       echo "-------------------------------" | tee -a "$LOG"
       echo "Evaluating: ${IMG_DIR}" | tee -a "$LOG"
       echo "-------------------------------" | tee -a "$LOG"
-      (cd evaluation && CUDA_VISIBLE_DEVICES=0 python run_eval.py "${OLDPWD}/${IMG_DIR}" --count 50000) 2>&1 | tee -a "$LOG"
+      (cd evaluation && CUDA_VISIBLE_DEVICES=0 python run_eval.py "${REPO_ROOT}/${IMG_DIR}" --count 50000) 2>&1 | tee -a "$LOG"
     else
       echo ">>> step=${step} cfg=${scale}: image dir not found, skipping" | tee -a "$LOG"
     fi
