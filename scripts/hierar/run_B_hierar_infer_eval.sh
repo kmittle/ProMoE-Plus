@@ -11,7 +11,7 @@ CONFIG="configs/004_ProMoE_B_hierar.yaml"
 LOG="log_ProMoE_B_hierar.log"
 
 SAMPLE_BASE="outputs/ProMoE_TC_B_hierar/004_ProMoE_B_hierar/sample"
-STEPS="300000"
+STEPS="300000 500000"
 SCALES="1.0 1.5"
 SEED=0
 FID_K=50
@@ -22,7 +22,7 @@ conda activate promoe
 
 python sample.py \
   --config "$CONFIG" \
-  --step_list_for_sample 300000 \
+  --step_list_for_sample 300000,500000 \
   --guide_scale_list 1.0,1.5 \
   2>&1 | tee -a "$LOG"
 
