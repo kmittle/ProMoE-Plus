@@ -31,20 +31,18 @@ conda activate promoe_eval
 echo "" >> "$LOG"
 echo "============ Evaluation Results ============" >> "$LOG"
 
-declare -a IMG_DIRS=()
 for step in $STEPS; do
   for scale in $SCALES; do
     IMG_DIR="${REPO_ROOT}/${SAMPLE_BASE}/step${step}/img256_cfg${scale}_seed${SEED}_FID${FID_K}K_bs${BS}_ema/images"
     if [ -d "$IMG_DIR" ]; then
-      IMG_DIRS+=("$IMG_DIR")
+      echo "-------------------------------" | tee -a "$LOG"
+      echo "Evaluating: ${IMG_DIR}" | tee -a "$LOG"
+      echo "-------------------------------" | tee -a "$LOG"
+      (cd evaluation && CUDA_VISIBLE_DEVICES=0 python run_eval.py "$IMG_DIR" --count 50000) 2>&1 | tee -a "$LOG"
     else
       echo ">>> step=${step} cfg=${scale}: image dir not found, skipping" | tee -a "$LOG"
     fi
   done
 done
-
-if [ ${#IMG_DIRS[@]} -gt 0 ]; then
-  (cd evaluation && python run_eval.py "${IMG_DIRS[@]}" --count 50000) 2>&1 | tee -a "$LOG"
-fi
 
 conda activate promoe
