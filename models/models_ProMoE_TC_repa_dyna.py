@@ -401,9 +401,18 @@ class DiT(nn.Module):
             self.projectors = nn.ModuleList([
                 build_repa_projector(hidden_size, projector_dim, z_dim) for z_dim in z_dims
             ])
+            self.repa_token_weighter = nn.Sequential(
+                nn.Linear(hidden_size, 2*hidden_size),
+                nn.SiLU(),
+                nn.Linear(2*hidden_size, hidden_size),
+                nn.SiLU(),
+                nn.Linear(hidden_size, 1),
+                nn.Sigmoid(),
+            )
         else:
             self.encoder_depth = None
             self.projectors = None
+            self.repa_token_weighter = None
 
         self.initialize_weights()
 
@@ -478,7 +487,9 @@ class DiT(nn.Module):
 
         Returns:
             x: (N, out_channels, H, W) model prediction
-            zs_proj: list of (N, T, z_dim) projected features, or None if no projectors
+            zs_proj: list of (z_proj, token_weight) tuples, where
+                     z_proj is (N, T, z_dim) and token_weight is (N, T, 1),
+                     or None if no projectors
         """
         y = context
         if len(x.shape) != 4:
@@ -495,7 +506,11 @@ class DiT(nn.Module):
             x = block(x, c, labels)                      # (N, T, D)
             # Extract projected features at encoder_depth for REPA alignment (training only)
             if self.training and self.projectors is not None and (i + 1) == self.encoder_depth:
-                zs_proj = [proj(x.reshape(-1, D)).reshape(N, T, -1) for proj in self.projectors]
+                flat_x = x.reshape(-1, D)
+                token_weight = self.repa_token_weighter(flat_x).reshape(N, T, 1)
+                zs_proj = [
+                    (proj(flat_x).reshape(N, T, -1), token_weight) for proj in self.projectors
+                ]
 
         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
         x = self.unpatchify(x)                   # (N, out_channels, H, W)
