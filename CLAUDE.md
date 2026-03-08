@@ -86,7 +86,10 @@ CUDA_VISIBLE_DEVICES=0 python run_eval.py /path/to/generated/images
 - `models_ProMoE_EC.py` — Expert-Choice variant of ProMoE (recommended for DDPM training).
 - `models_ProMoE_TC_repa.py` — ProMoE-TC with REPA projectors. Adds MLP projectors (`build_repa_projector`) that align intermediate DiT features with a frozen DINOv2 teacher encoder. In training, `forward()` returns `(pred, zs_proj)` where `zs_proj` is a list of projected features for REPA loss; in eval mode returns only `pred`.
 - `models_ProMoE_TC_repa_shared.py` — REPA variant that aligns the **shared expert output** (rather than the full block output) with the DINOv2 teacher. `SparseMoeBlock.forward()` returns `(final_output, loss, shared_output)` and `DiTBlock.forward()` returns `(x, shared_output)`. The projector at `encoder_depth` operates on `shared_output` instead of `x`. Requires `encoder_depth` to point to a MoE block (asserted at init).
-- `models_ProMoE_TC_repa_dyna.py` — (WIP, untracked) Dynamic REPA variant of ProMoE-TC. Same two-step routing and REPA projector structure as `models_ProMoE_TC_repa.py`.
+- `models_ProMoE_TC_repa_cond.py` — REPA variant with conditional-only alignment.
+- `models_ProMoE_TC_repa_dyna.py` — (WIP) Dynamic REPA variant of ProMoE-TC.
+- `models_ProMoE_TC_hierar.py` / `models_ProMoE_TC_hierar_expert.py` — Hierarchical routing variants. Used by configs `004_ProMoE_*_hierar*.yaml` and scripts under `scripts/hierar/`.
+- `models_ProMoE_TC_sigmoid.py` / `models_ProMoE_TC_symmetric.py` — Routing ablation variants (sigmoid gating, symmetric routing).
 
 ### Auxiliary Loss Convention
 Model `forward()` returns either a plain tensor (DiT) or a tuple for models with auxiliary losses:
@@ -139,11 +142,15 @@ Model `forward()` returns either a plain tensor (DiT) or a tuple for models with
 - All training entry points (`train.py`, `train_with_repa.py`, `sample.py`, `preprocess/preprocess_vae.py`) use this cached loading path.
 - REPA teacher encoders (DINOv2) are cached to `pretrained_ckpt/encoder/` after first download via torch.hub.
 
+### FLOPs Computation (`compute_FLOPs/`)
+- `compute_flops.py` — Computes theoretical FLOPs for model variants.
+- `flops_counter.py` — FLOPs counting utilities.
+
 ## Coding Conventions
 - 4-space indentation, `snake_case` for functions/variables, `PascalCase` for classes.
 - Model files follow `models_*.py` naming pattern. Preserve numeric experiment prefixes in config names (e.g., `004_ProMoE_L.yaml`).
 - No formatter or linter is configured — match surrounding style in the file you edit.
-- No `tests/` directory; validate changes with targeted smoke tests (short training run, sample pass).
+- No `tests/` directory; validate changes with `python -m py_compile <file>` for syntax checks and targeted smoke tests (short training run, sample pass).
 
 ## Important Notes
 - All paper results use `qk_norm=False`. Enable `qk_norm=True` for training beyond 2M steps.
@@ -153,3 +160,5 @@ Model `forward()` returns either a plain tensor (DiT) or a tuple for models with
 - Multi-GPU sampling produces different random sequences than single-GPU (different class label ordering).
 - REPA training requires raw images (not just pre-computed latents) since the teacher encoder operates on pixel space. The dataset returns `(path, label, latent, raw_image)` when `load_raw_image=True`.
 - Offline/air-gapped training: pass `--vae-path /path/to/sd-vae-ft-mse` and `--repa-enc-path /path/to/dinov2_state_dict.pth` to skip automatic downloads. See `ProMoE-REPA.md` for details.
+- `preprocess/image_paths_cache.txt` caches the dataset file list; delete and rebuild it after switching datasets or reorganizing files.
+- When `use_pre_latents=True`, the latent directory must be a sibling of `train/` named `sd-vae-ft-mse_Latents_256img_npz` — the code derives latent paths by replacing `train` in image paths.
