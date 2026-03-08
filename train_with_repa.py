@@ -44,6 +44,7 @@ from models.models_ProMoE_TC_repa_dyna_select import DiT as ProMoE_TC_REPA_DYNA_
 from models.models_ProMoE_TC_repa_shared import DiT as ProMoE_TC_REPA_Shared
 from models.models_ProMoE_TC_repa_cond import DiT as ProMoE_TC_REPA_Cond
 from models.models_ProMoE_TC_repa_routed import DiT as ProMoE_TC_REPA_Routed
+from models.models_ProMoE_TC_repa_double_share import DiT as ProMoE_TC_REPA_Double_Share
 from repa.encoder import load_teacher_encoder, extract_teacher_features
 from repa.loss import compute_repa_loss
 
@@ -91,6 +92,11 @@ model_dict = {
     "ProMoE_TC_REPA_Routed_B": (ProMoE_TC_REPA_Routed, "DiT_B_config"),
     "ProMoE_TC_REPA_Routed_L": (ProMoE_TC_REPA_Routed, "DiT_L_config"),
     "ProMoE_TC_REPA_Routed_XL": (ProMoE_TC_REPA_Routed, "DiT_XL_config"),
+    # REPA-Double-Share variants (align dedicated REPA shared branch with teacher)
+    "ProMoE_TC_REPA_Double_Share_S": (ProMoE_TC_REPA_Double_Share, "DiT_S_config"),
+    "ProMoE_TC_REPA_Double_Share_B": (ProMoE_TC_REPA_Double_Share, "DiT_B_config"),
+    "ProMoE_TC_REPA_Double_Share_L": (ProMoE_TC_REPA_Double_Share, "DiT_L_config"),
+    "ProMoE_TC_REPA_Double_Share_XL": (ProMoE_TC_REPA_Double_Share, "DiT_XL_config"),
 }
 
 

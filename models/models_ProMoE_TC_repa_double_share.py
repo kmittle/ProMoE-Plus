@@ -61,16 +61,32 @@ class SparseMoeBlock(nn.Module):
         **kwargs,
     ):
         super().__init__()
+        if num_routed_experts < 1:
+            raise ValueError(
+                "models_ProMoE_TC_repa_double_share requires num_routed_experts >= 1."
+            )
+        # Keep parameter budget aligned with the original 1-shared setup:
+        # old total experts: (num_routed_experts + 2) with hidden dim 2*d
+        # new total experts: (new_num_routed_experts + 3) with hidden dim 4*d/3
+        # => new_num_routed_experts ~= 1.5 * num_routed_experts (12 -> 18).
+        self.num_routed_experts = int(round(1.5 * num_routed_experts))
         if use_uncond_expert:
-            self.num_experts = num_routed_experts + 1
+            self.num_experts = self.num_routed_experts + 1
         else:
-            self.num_experts = num_routed_experts
-        self.num_routed_experts = num_routed_experts
+            self.num_experts = self.num_routed_experts
         self.seq_aux = seq_aux
         self.hidden_size = hidden_size
         self.top_k = top_k
 
-        self.cluster_centers = nn.Parameter(torch.randn(num_routed_experts, hidden_size))
+        # Two shared experts are always active, so use 4*d/3 hidden dim to keep per-token
+        # MoE FFN compute in the same scale as the one-shared setup.
+        if (4 * hidden_size) % 3 == 0:
+            moe_ffn_hidden_dim = (4 * hidden_size) // 3
+        else:
+            moe_ffn_hidden_dim = int(round(4 * hidden_size / 3))
+        self.moe_ffn_hidden_dim = moe_ffn_hidden_dim
+
+        self.cluster_centers = nn.Parameter(torch.randn(self.num_routed_experts, hidden_size))
 
         self.alpha = load_balance_loss_coef
         self.use_shared_expert = use_shared_expert
@@ -82,14 +98,19 @@ class SparseMoeBlock(nn.Module):
         self.routing_contrastive_temperature = routing_contrastive_temperature
 
         self.experts = nn.ModuleList(
-            [MoeMLP(hidden_size=hidden_size, intermediate_size=moe_intermediate_size)
+            [MoeMLP(hidden_size=hidden_size, intermediate_size=self.moe_ffn_hidden_dim)
              for _ in range(self.num_experts)]
         )
 
         if use_shared_expert:
             self.shared_expert = MoeMLP(
                 hidden_size=hidden_size,
-                intermediate_size=shared_expert_intermediate_size
+                intermediate_size=self.moe_ffn_hidden_dim
+            )
+            # Dedicated shared branch whose tokens are returned for REPA alignment.
+            self.repa_shared_expert = MoeMLP(
+                hidden_size=hidden_size,
+                intermediate_size=self.moe_ffn_hidden_dim
             )
 
         self._init_weights()
@@ -204,10 +225,11 @@ class SparseMoeBlock(nn.Module):
         final_output = final_output.view(batch_size, seq_len, hidden_dim)
 
         ### process shared experts
-        shared_output = None
+        repa_shared_output = None
         if self.use_shared_expert:
             shared_output = self.shared_expert(hidden_states)
-            final_output += shared_output
+            repa_shared_output = self.repa_shared_expert(hidden_states)
+            final_output += shared_output + repa_shared_output
 
         loss = load_balance_loss  # None
         ### routing contrastive loss
@@ -242,7 +264,7 @@ class SparseMoeBlock(nn.Module):
             else:
                 loss = routing_contrastive_loss
 
-        return final_output, loss, shared_output
+        return final_output, loss, repa_shared_output
 
     def compute_routing_contrastive_loss(self, token_embeddings, cluster_assignments, use_top_k=False):
         """
@@ -333,11 +355,11 @@ class DiTBlock(nn.Module):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=1)
         x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
         if self.use_moe:
-            x_mlp, aux_loss, shared_output = self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp), label)
+            x_mlp, aux_loss, repa_shared_output = self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp), label)
             if aux_loss is not None:
                 x_mlp = AddAuxiliaryLoss.apply(x_mlp, aux_loss)
             x = x + gate_mlp.unsqueeze(1) * x_mlp
-            return x, shared_output
+            return x, repa_shared_output
         else:
             x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
             return x, None
@@ -392,7 +414,7 @@ class DiT(nn.Module):
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
         self.init_MoeMLP= MoE_config.init_MoeMLP
 
-        # REPA: projector heads for representation alignment (using shared expert output)
+        # REPA: projector heads for representation alignment (using the dedicated REPA-shared branch)
         if repa_config is not None:
             self.encoder_depth = repa_config.get('encoder_depth', 4)
             assert self.encoder_depth <= depth, \
@@ -495,10 +517,10 @@ class DiT(nn.Module):
 
         zs_proj = None
         for i, block in enumerate(self.blocks):
-            x, shared_output = block(x, c, labels)       # (N, T, D), shared_output: (N, T, D) or None
-            # Extract projected features from shared expert output at encoder_depth for REPA alignment (training only)
+            x, repa_shared_output = block(x, c, labels)       # (N, T, D), repa_shared_output: (N, T, D) or None
+            # Extract projected features from the REPA shared branch at encoder_depth (training only)
             if self.training and self.projectors is not None and (i + 1) == self.encoder_depth:
-                zs_proj = [proj(shared_output.reshape(-1, D)).reshape(N, T, -1) for proj in self.projectors]
+                zs_proj = [proj(repa_shared_output.reshape(-1, D)).reshape(N, T, -1) for proj in self.projectors]
 
         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
         x = self.unpatchify(x)                   # (N, out_channels, H, W)
