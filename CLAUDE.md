@@ -36,13 +36,20 @@ CUDA_VISIBLE_DEVICES=0 python sample.py --config configs/004_ProMoE_L.yaml \
 ### End-to-End Scripts
 ```bash
 # Train REPA variant
-bash scripts/train_repa_B.sh
+bash scripts/repa/train_repa_B.sh
 # Train REPA-Shared variant (align shared expert output with teacher)
-bash scripts/train_repa_shared_B.sh
+bash scripts/repa/train_repa_shared_B.sh
+# Train REPA-Cond variant
+bash scripts/repa/train_repa_cond_B.sh
 
 # Sample + evaluate in one go (handles conda env switching)
-bash scripts/sample_and_eval_repa_B.sh
-bash scripts/sample_and_eval_repa_shared_B.sh
+bash scripts/repa/sample_and_eval_repa_B.sh
+bash scripts/repa/sample_and_eval_repa_shared_B.sh
+bash scripts/repa/sample_and_eval_repa_cond_B.sh
+
+# Hierarchical routing experiments
+bash scripts/hierar/run_B_hierar_train.sh
+bash scripts/hierar/run_B_hierar_infer_eval.sh
 ```
 
 ### VAE Latent Preprocessing (speeds up training)
@@ -79,6 +86,7 @@ CUDA_VISIBLE_DEVICES=0 python run_eval.py /path/to/generated/images
 - `models_ProMoE_EC.py` — Expert-Choice variant of ProMoE (recommended for DDPM training).
 - `models_ProMoE_TC_repa.py` — ProMoE-TC with REPA projectors. Adds MLP projectors (`build_repa_projector`) that align intermediate DiT features with a frozen DINOv2 teacher encoder. In training, `forward()` returns `(pred, zs_proj)` where `zs_proj` is a list of projected features for REPA loss; in eval mode returns only `pred`.
 - `models_ProMoE_TC_repa_shared.py` — REPA variant that aligns the **shared expert output** (rather than the full block output) with the DINOv2 teacher. `SparseMoeBlock.forward()` returns `(final_output, loss, shared_output)` and `DiTBlock.forward()` returns `(x, shared_output)`. The projector at `encoder_depth` operates on `shared_output` instead of `x`. Requires `encoder_depth` to point to a MoE block (asserted at init).
+- `models_ProMoE_TC_repa_dyna.py` — (WIP, untracked) Dynamic REPA variant of ProMoE-TC. Same two-step routing and REPA projector structure as `models_ProMoE_TC_repa.py`.
 
 ### Auxiliary Loss Convention
 Model `forward()` returns either a plain tensor (DiT) or a tuple for models with auxiliary losses:
