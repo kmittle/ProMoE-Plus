@@ -3,8 +3,8 @@
 # Train ProMoE-TC-REPA-DYNA-B, then sample and evaluate FID.
 #
 # Step 1: Train with configs/004_ProMoE_B_repa_dyna.yaml
-# Step 2: Sample 50K images at step 300K & 500K (CFG 1.0 & 1.5)
-# Step 3: Evaluate generated images with OpenAI evaluator
+# Step 2: Sample with parameters from YAML
+# Step 3: Evaluate generated images with OpenAI evaluator (count from YAML)
 #
 # Prerequisites:
 #   - conda envs: promoe (train/sample), promoe_eval (evaluation)
@@ -17,19 +17,60 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "$REPO_ROOT"
 
 CONFIG="configs/004_ProMoE_B_repa_dyna.yaml"
-MODEL_NAME="ProMoE_TC_REPA_DYNA_B"
-CUSTOM_CFG_NAME="004_ProMoE_B_repa_dyna"
 LOG="log_ProMoE_B_repa_dyna_train_sample_eval.log"
 
-STEP_LIST_FOR_SAMPLE="300000,500000"
-STEPS="300000 500000"
-GUIDE_SCALE_LIST="1.0,1.5"
-SCALES="1.0 1.5"
-SEED=0
-FID_K=50
-BS=128
-NUM_FID_SAMPLES=50000
-GPUS="0,1,2,3"
+readarray -t YAML_INFO < <(python - "$CONFIG" <<'PY'
+import os
+import sys
+import yaml
+
+cfg_path = sys.argv[1]
+with open(cfg_path, "r") as f:
+    cfg = yaml.safe_load(f)
+
+model_name = cfg.get("model_name")
+if not model_name:
+    raise ValueError(f"model_name not found in {cfg_path}")
+
+num_fid_samples = int(cfg.get("num_fid_samples", 50000))
+sample_gpu_ids = cfg.get("sample_gpu_ids")
+gpu_ids = cfg.get("gpu_ids")
+gpu_list = sample_gpu_ids if sample_gpu_ids is not None else gpu_ids
+eval_gpu = str(gpu_list[0]) if isinstance(gpu_list, list) and len(gpu_list) > 0 else "0"
+custom_cfg_name = os.path.splitext(os.path.basename(cfg_path))[0]
+
+print(model_name)
+print(custom_cfg_name)
+print(num_fid_samples)
+print(eval_gpu)
+PY
+)
+
+MODEL_NAME="${YAML_INFO[0]}"
+CUSTOM_CFG_NAME="${YAML_INFO[1]}"
+NUM_FID_SAMPLES="${YAML_INFO[2]}"
+EVAL_GPU="${YAML_INFO[3]}"
+SAMPLE_BASE="${REPO_ROOT}/outputs/${MODEL_NAME}/${CUSTOM_CFG_NAME}/sample"
+
+# Make conda available in non-interactive shells.
+if ! command -v conda >/dev/null 2>&1; then
+  for conda_sh in \
+    "$HOME/miniconda3/etc/profile.d/conda.sh" \
+    "$HOME/anaconda3/etc/profile.d/conda.sh" \
+    "$HOME/mambaforge/etc/profile.d/conda.sh" \
+    "$HOME/miniforge3/etc/profile.d/conda.sh"; do
+    if [ -f "$conda_sh" ]; then
+      # shellcheck source=/dev/null
+      source "$conda_sh"
+      break
+    fi
+  done
+fi
+
+if ! command -v conda >/dev/null 2>&1; then
+  echo "ERROR: conda command not found. Please install conda or add it to PATH." >&2
+  exit 127
+fi
 
 eval "$(conda shell.bash hook 2>/dev/null)"
 
@@ -46,14 +87,11 @@ python train_with_repa.py \
 
 echo "" | tee -a "$LOG"
 echo "============================================================" | tee -a "$LOG"
-echo "Step 2: Sampling at steps ${STEP_LIST_FOR_SAMPLE}" | tee -a "$LOG"
+echo "Step 2: Sampling (all params from YAML)" | tee -a "$LOG"
 echo "============================================================" | tee -a "$LOG"
 
-CUDA_VISIBLE_DEVICES="${GPUS}" python sample.py \
+python sample.py \
   --config "${CONFIG}" \
-  --step_list_for_sample "${STEP_LIST_FOR_SAMPLE}" \
-  --guide_scale_list "${GUIDE_SCALE_LIST}" \
-  --num_fid_samples "${NUM_FID_SAMPLES}" \
   2>&1 | tee -a "$LOG"
 
 echo "" | tee -a "$LOG"
@@ -63,19 +101,15 @@ echo "============================================================" | tee -a "$L
 
 conda activate promoe_eval
 
-for step in $STEPS; do
-  for scale in $SCALES; do
-    IMG_DIR="${REPO_ROOT}/outputs/${MODEL_NAME}/${CUSTOM_CFG_NAME}/sample/step${step}/img256_cfg${scale}_seed${SEED}_FID${FID_K}K_bs${BS}_ema/images"
-    if [ -d "$IMG_DIR" ]; then
-      echo "-------------------------------" | tee -a "$LOG"
-      echo "Evaluating: ${IMG_DIR}" | tee -a "$LOG"
-      echo "-------------------------------" | tee -a "$LOG"
-      (cd evaluation && CUDA_VISIBLE_DEVICES=0 python run_eval.py "$IMG_DIR" --count "${NUM_FID_SAMPLES}") 2>&1 | tee -a "$LOG"
-    else
-      echo ">>> step=${step} cfg=${scale}: image dir not found, skipping" | tee -a "$LOG"
-    fi
-  done
-done
+if [ ! -d "$SAMPLE_BASE" ]; then
+  echo ">>> sample root not found: $SAMPLE_BASE" | tee -a "$LOG"
+else
+  while IFS= read -r IMG_DIR; do
+    echo "-------------------------------" | tee -a "$LOG"
+    echo "Evaluating: ${IMG_DIR}" | tee -a "$LOG"
+    echo "-------------------------------" | tee -a "$LOG"
+    (cd evaluation && CUDA_VISIBLE_DEVICES="${EVAL_GPU}" python run_eval.py "$IMG_DIR" --count "${NUM_FID_SAMPLES}") 2>&1 | tee -a "$LOG"
+  done < <(find "$SAMPLE_BASE" -mindepth 3 -maxdepth 3 -type d -name images | sort -V)
+fi
 
 conda activate promoe
-
