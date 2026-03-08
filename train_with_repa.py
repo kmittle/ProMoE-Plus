@@ -651,7 +651,11 @@ def worker(gpu, cfg):
                 if teacher_z_for_repa.shape[0] > 0:
                     repa_loss = compute_repa_loss(teacher_z_for_repa, zs_proj)
                     loss_dict["repa_loss"] = repa_loss
-                    loss_dict["loss"] += repa_loss * proj_coeff
+                    # If zs_proj contains per-token dynamic weights (from sigmoid),
+                    # the weighting is already applied inside compute_repa_loss,
+                    # so skip multiplying by proj_coeff.
+                    has_dynamic_weight = isinstance(zs_proj[0], (tuple, list))
+                    loss_dict["loss"] += repa_loss if has_dynamic_weight else repa_loss * proj_coeff
 
         elif model_output.shape[1] != noised_z_in.shape[1]:
             ########## DiT loss
