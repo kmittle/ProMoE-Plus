@@ -33,16 +33,16 @@ if not model_name:
     raise ValueError(f"model_name not found in {cfg_path}")
 
 num_fid_samples = int(cfg.get("num_fid_samples", 50000))
-sample_gpu_ids = cfg.get("sample_gpu_ids")
-gpu_ids = cfg.get("gpu_ids")
-gpu_list = sample_gpu_ids if sample_gpu_ids is not None else gpu_ids
-eval_gpu = str(gpu_list[0]) if isinstance(gpu_list, list) and len(gpu_list) > 0 else "0"
+gpu_ids = cfg.get("gpu_ids", [0])
+gpu_str = ','.join(map(str, gpu_ids)) if isinstance(gpu_ids, list) else "0"
+eval_gpu = str(gpu_ids[0]) if isinstance(gpu_ids, list) and len(gpu_ids) > 0 else "0"
 custom_cfg_name = os.path.splitext(os.path.basename(cfg_path))[0]
 
 print(model_name)
 print(custom_cfg_name)
 print(num_fid_samples)
 print(eval_gpu)
+print(gpu_str)
 PY
 )
 
@@ -50,6 +50,7 @@ MODEL_NAME="${YAML_INFO[0]}"
 CUSTOM_CFG_NAME="${YAML_INFO[1]}"
 NUM_FID_SAMPLES="${YAML_INFO[2]}"
 EVAL_GPU="${YAML_INFO[3]}"
+GPU_IDS="${YAML_INFO[4]}"
 SAMPLE_BASE="${REPO_ROOT}/outputs/${MODEL_NAME}/${CUSTOM_CFG_NAME}/sample"
 
 # Make conda available in non-interactive shells.
@@ -81,7 +82,7 @@ echo "============================================================" | tee -a "$L
 
 conda activate promoe
 
-python train_with_repa.py \
+CUDA_VISIBLE_DEVICES="${GPU_IDS}" python train_with_repa.py \
   --config "${CONFIG}" \
   2>&1 | tee -a "$LOG"
 
@@ -90,7 +91,7 @@ echo "============================================================" | tee -a "$L
 echo "Step 2: Sampling (all params from YAML)" | tee -a "$LOG"
 echo "============================================================" | tee -a "$LOG"
 
-python sample.py \
+CUDA_VISIBLE_DEVICES="${GPU_IDS}" python sample.py \
   --config "${CONFIG}" \
   2>&1 | tee -a "$LOG"
 

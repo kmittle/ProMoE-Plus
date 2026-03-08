@@ -32,7 +32,7 @@ DiT_XL_config:
 
 
 ###### For sample
-step_list_for_sample: [500000]
+step_list_for_sample: [300000, 500000]
 # sample_every_step: 50000
 num_fid_samples: 50000
 sample_batch_size: 128
