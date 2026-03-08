@@ -43,6 +43,7 @@ from models.models_ProMoE_TC_repa_dyna import DiT as ProMoE_TC_REPA_DYNA
 from models.models_ProMoE_TC_repa_dyna_select import DiT as ProMoE_TC_REPA_DYNA_SELECT
 from models.models_ProMoE_TC_repa_shared import DiT as ProMoE_TC_REPA_Shared
 from models.models_ProMoE_TC_repa_cond import DiT as ProMoE_TC_REPA_Cond
+from models.models_ProMoE_TC_repa_routed import DiT as ProMoE_TC_REPA_Routed
 from repa.encoder import load_teacher_encoder, extract_teacher_features
 from repa.loss import compute_repa_loss
 
@@ -85,6 +86,11 @@ model_dict = {
     "ProMoE_TC_REPA_Cond_B": (ProMoE_TC_REPA_Cond, "DiT_B_config"),
     "ProMoE_TC_REPA_Cond_L": (ProMoE_TC_REPA_Cond, "DiT_L_config"),
     "ProMoE_TC_REPA_Cond_XL": (ProMoE_TC_REPA_Cond, "DiT_XL_config"),
+    # REPA-Routed variants (align routed expert output with teacher, all tokens)
+    "ProMoE_TC_REPA_Routed_S": (ProMoE_TC_REPA_Routed, "DiT_S_config"),
+    "ProMoE_TC_REPA_Routed_B": (ProMoE_TC_REPA_Routed, "DiT_B_config"),
+    "ProMoE_TC_REPA_Routed_L": (ProMoE_TC_REPA_Routed, "DiT_L_config"),
+    "ProMoE_TC_REPA_Routed_XL": (ProMoE_TC_REPA_Routed, "DiT_XL_config"),
 }
 
 
