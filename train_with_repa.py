@@ -40,6 +40,7 @@ from models.models_ProMoE_TC import DiT as ProMoE_TC
 from models.models_ProMoE_EC import DiT as ProMoE_EC
 from models.models_ProMoE_TC_repa import DiT as ProMoE_TC_REPA
 from models.models_ProMoE_TC_repa_dyna import DiT as ProMoE_TC_REPA_DYNA
+from models.models_ProMoE_TC_repa_dyna_select import DiT as ProMoE_TC_REPA_DYNA_SELECT
 from models.models_ProMoE_TC_repa_shared import DiT as ProMoE_TC_REPA_Shared
 from models.models_ProMoE_TC_repa_cond import DiT as ProMoE_TC_REPA_Cond
 from repa.encoder import load_teacher_encoder, extract_teacher_features
@@ -69,6 +70,11 @@ model_dict = {
     "ProMoE_TC_REPA_DYNA_B": (ProMoE_TC_REPA_DYNA, "DiT_B_config"),
     "ProMoE_TC_REPA_DYNA_L": (ProMoE_TC_REPA_DYNA, "DiT_L_config"),
     "ProMoE_TC_REPA_DYNA_XL": (ProMoE_TC_REPA_DYNA, "DiT_XL_config"),
+    # REPA-DYNA-SELECT variants (top-k token selection + weighted REPA alignment)
+    "ProMoE_TC_REPA_DYNA_SELECT_S": (ProMoE_TC_REPA_DYNA_SELECT, "DiT_S_config"),
+    "ProMoE_TC_REPA_DYNA_SELECT_B": (ProMoE_TC_REPA_DYNA_SELECT, "DiT_B_config"),
+    "ProMoE_TC_REPA_DYNA_SELECT_L": (ProMoE_TC_REPA_DYNA_SELECT, "DiT_L_config"),
+    "ProMoE_TC_REPA_DYNA_SELECT_XL": (ProMoE_TC_REPA_DYNA_SELECT, "DiT_XL_config"),
     # REPA-Shared variants (align shared expert output with teacher)
     "ProMoE_TC_REPA_Shared_S": (ProMoE_TC_REPA_Shared, "DiT_S_config"),
     "ProMoE_TC_REPA_Shared_B": (ProMoE_TC_REPA_Shared, "DiT_B_config"),

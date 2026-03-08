@@ -398,21 +398,23 @@ class DiT(nn.Module):
                 f"repa_config.encoder_depth ({self.encoder_depth}) must be <= model depth ({depth})"
             z_dims = repa_config.get('z_dims', [768])
             projector_dim = repa_config.get('projector_dim', 2048)
+            self.repa_select_ratio = repa_config.get('repa_select_ratio', 0.5)
             self.projectors = nn.ModuleList([
                 build_repa_projector(hidden_size, projector_dim, z_dim) for z_dim in z_dims
             ])
             self.repa_token_weighter = nn.Sequential(
-                nn.Linear(hidden_size, 2*hidden_size),
+                nn.Linear(hidden_size, projector_dim),
                 nn.SiLU(),
-                nn.Linear(2*hidden_size, hidden_size),
+                nn.Linear(projector_dim, projector_dim),
                 nn.SiLU(),
-                nn.Linear(hidden_size, 1),
+                nn.Linear(projector_dim, 1),
                 nn.Sigmoid(),
             )
         else:
             self.encoder_depth = None
             self.projectors = None
             self.repa_token_weighter = None
+            self.repa_select_ratio = 0.5
 
         self.initialize_weights()
 
@@ -454,7 +456,6 @@ class DiT(nn.Module):
 
         # new init
         def init_MoeMLP(module, std=0.006):
-            nn.init.normal_(module.gate_proj.weight, std=std)
             nn.init.normal_(module.up_proj.weight, std=std)
             nn.init.normal_(module.down_proj.weight, std=std)
         if self.init_MoeMLP:
@@ -508,6 +509,14 @@ class DiT(nn.Module):
             if self.training and self.projectors is not None and (i + 1) == self.encoder_depth:
                 flat_x = x.reshape(-1, D)
                 token_weight = self.repa_token_weighter(flat_x).reshape(N, T, 1)
+
+                # Select top repa_select_ratio tokens per sample by sigmoid weight
+                k = max(1, int(T * self.repa_select_ratio))
+                _, top_indices = torch.topk(token_weight.squeeze(-1), k=k, dim=1)  # (N, k)
+                select_mask = torch.zeros(N, T, device=x.device)
+                select_mask.scatter_(1, top_indices, 1.0)
+                token_weight = token_weight * select_mask.unsqueeze(-1)  # zero out non-selected
+
                 zs_proj = [
                     (proj(flat_x).reshape(N, T, -1), token_weight) for proj in self.projectors
                 ]

@@ -402,11 +402,11 @@ class DiT(nn.Module):
                 build_repa_projector(hidden_size, projector_dim, z_dim) for z_dim in z_dims
             ])
             self.repa_token_weighter = nn.Sequential(
-                nn.Linear(hidden_size, 2*hidden_size),
+                nn.Linear(hidden_size, projector_dim),
                 nn.SiLU(),
-                nn.Linear(2*hidden_size, hidden_size),
+                nn.Linear(projector_dim, projector_dim),
                 nn.SiLU(),
-                nn.Linear(hidden_size, 1),
+                nn.Linear(projector_dim, 1),
                 nn.Sigmoid(),
             )
         else:
@@ -454,7 +454,6 @@ class DiT(nn.Module):
 
         # new init
         def init_MoeMLP(module, std=0.006):
-            nn.init.normal_(module.gate_proj.weight, std=std)
             nn.init.normal_(module.up_proj.weight, std=std)
             nn.init.normal_(module.down_proj.weight, std=std)
         if self.init_MoeMLP:
