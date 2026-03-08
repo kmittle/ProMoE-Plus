@@ -39,6 +39,7 @@ from compute_FLOPs.config_utils import (
 )
 from compute_FLOPs.expert_tracker import ExpertActivationTracker
 from compute_FLOPs.flops_counter import FLOPsAccumulator
+from compute_FLOPs.activated_params_tracker import ActivatedParamsTracker
 from compute_FLOPs.visualize import plot_expert_frequencies
 from utils import find_free_port
 
@@ -123,6 +124,15 @@ def worker(rank, world_size, args, model_name, custom_cfg_name, ckpt_step,
     flops_acc = FLOPsAccumulator(model)
     flops_acc.start()
 
+    # --- Setup activated params tracker ---
+    params_tracker = ActivatedParamsTracker(model)
+    params_tracker.start()
+    if is_main:
+        if params_tracker.moe_blocks:
+            print(f"  Tracking activated parameters across {len(params_tracker.moe_blocks)} MoE blocks.")
+        else:
+            print(f"  Dense model: all parameters activated every forward.")
+
     # --- Partition classes across GPUs ---
     all_classes = list(range(num_classes))
     classes_per_rank = np.array_split(all_classes, world_size)
@@ -165,12 +175,17 @@ def worker(rank, world_size, args, model_name, custom_cfg_name, ckpt_step,
                     noise_pred_cond = model(latent, timestep, context=y)
                     cond_total_flops += flops_acc.collect()
                     cond_forward_passes += 1
+                    params_tracker.record_forward_pass()
                     if isinstance(noise_pred_cond, tuple):
                         noise_pred_cond = noise_pred_cond[0]
 
                     if guide_scale > 1.0:
                         noise_pred_uncond = model(latent, timestep, context=y_null)
                         flops_acc.collect()  # collect but don't add to cond_total_flops
+                        # Don't record uncond forward — activated params should be
+                        # cond-only for consistency with FLOPs reporting.  Uncond
+                        # forwards route all tokens to the single uncond expert,
+                        # which would skew the mean downward.
                         if isinstance(noise_pred_uncond, tuple):
                             noise_pred_uncond = noise_pred_uncond[0]
                         noise_pred = noise_pred_uncond + guide_scale * (noise_pred_cond - noise_pred_uncond)
@@ -192,6 +207,7 @@ def worker(rank, world_size, args, model_name, custom_cfg_name, ckpt_step,
         print(f"\nRank 0 sampling complete in {elapsed_total:.1f}s")
 
     flops_acc.stop()
+    params_tracker.stop()
 
     # --- Gather results across GPUs ---
     if world_size > 1:
@@ -241,12 +257,25 @@ def worker(rank, world_size, args, model_name, custom_cfg_name, ckpt_step,
         avg_gflops = avg_flops_per_forward / 1e9
         total_samples = num_classes * args.num_samples_per_class
 
+        # Activated params stats
+        act_stats = params_tracker.get_stats()
+
         print(f"\n{'='*60}")
         print(f"FLOPs Evaluation Results (cond forward only)")
         print(f"{'='*60}")
         print(f"  Cond total FLOPs:          {cond_total_flops / 1e9:.4f} GFLOPs")
         print(f"  Cond forward passes:       {cond_forward_passes}")
         print(f"  Avg FLOPs/forward:         {avg_gflops:.4f} GFLOPs")
+        print(f"{'='*60}")
+        print(f"\nActivated Parameters (cond forward only)")
+        print(f"{'='*60}")
+        print(f"  Total model params:        {act_stats['total_params'] / 1e6:.2f}M")
+        print(f"  Non-MoE params (always):   {act_stats['non_moe_params'] / 1e6:.2f}M")
+        print(f"  Mean activated params:     {act_stats['mean_activated_params'] / 1e6:.2f}M")
+        print(f"  Min activated params:      {act_stats['min_activated_params'] / 1e6:.2f}M")
+        print(f"  Max activated params:      {act_stats['max_activated_params'] / 1e6:.2f}M")
+        print(f"  Activation ratio:          {act_stats['activation_ratio']:.4f}")
+        print(f"  Cond forward passes:       {act_stats['num_forwards']}")
         print(f"{'='*60}")
 
         # Save results
@@ -282,6 +311,14 @@ def worker(rank, world_size, args, model_name, custom_cfg_name, ckpt_step,
             f.write(f"Avg FLOPs/forward:           {avg_gflops:.4f} GFLOPs\n")
             f.write(f"  = Cond total FLOPs / {cond_forward_passes} cond forward passes\n")
             f.write(f"{'='*60}\n")
+            f.write(f"\n--- Activated Parameters (cond forward only) ---\n")
+            f.write(f"Total model params:          {act_stats['total_params'] / 1e6:.2f}M\n")
+            f.write(f"Non-MoE params (always on):  {act_stats['non_moe_params'] / 1e6:.2f}M\n")
+            f.write(f"Mean activated params:       {act_stats['mean_activated_params'] / 1e6:.2f}M\n")
+            f.write(f"Min activated params:        {act_stats['min_activated_params'] / 1e6:.2f}M\n")
+            f.write(f"Max activated params:        {act_stats['max_activated_params'] / 1e6:.2f}M\n")
+            f.write(f"Activation ratio:            {act_stats['activation_ratio']:.4f}\n")
+            f.write(f"Cond forward passes:         {act_stats['num_forwards']}\n")
 
         print(f"\nFLOPs result saved to: {txt_path}")
 

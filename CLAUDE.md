@@ -21,6 +21,10 @@ python train.py --config configs/004_ProMoE_L.yaml
 
 # REPA-enabled training (aligns with frozen DINOv2 teacher)
 python train_with_repa.py --config configs/004_ProMoE_B_repa.yaml
+
+# Offline/local pretrained weights (supported by train.py, train_with_repa.py, sample.py)
+python train_with_repa.py --config configs/004_ProMoE_B_repa.yaml \
+  --vae-path /path/to/sd-vae-ft-mse --repa-enc-path /path/to/dinov2_state_dict.pth
 ```
 
 ### Sampling
@@ -50,6 +54,8 @@ bash scripts/repa/sample_and_eval_repa_cond_B.sh
 # Hierarchical routing experiments
 bash scripts/hierar/run_B_hierar_train.sh
 bash scripts/hierar/run_B_hierar_infer_eval.sh
+bash scripts/hierar/run_B_hierar_expert_train.sh
+bash scripts/hierar/run_B_hierar_expert_infer_eval.sh
 ```
 
 ### VAE Latent Preprocessing (speeds up training)
@@ -63,7 +69,11 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python preprocess/preprocess_vae.py \
 conda create -n promoe_eval python=3.9 -y && conda activate promoe_eval
 cd evaluation && pip install -r requirements.txt
 conda install -c conda-forge cudatoolkit=11.2 cudnn=8.1.0
+
+# Run from inside evaluation/ directory
 CUDA_VISIBLE_DEVICES=0 python run_eval.py /path/to/generated/images
+# Pack PNGs to NPZ without running evaluator
+python run_eval.py /path/to/generated/images --count 50000 --no-eval
 ```
 
 ## Architecture
@@ -133,6 +143,7 @@ Model `forward()` returns either a plain tensor (DiT) or a tuple for models with
 - FlowMatchEulerDiscreteScheduler from diffusers
 - Classifier-free guidance: runs cond and uncond forward passes separately (not batched together), applies `guidance_scale * (cond - uncond) + uncond`
 - Loads EMA weights (`ema_model_state_dict`) from checkpoints for sampling
+- Checkpoint selection: if `step_list_for_sample` is set, loads only those checkpoints; otherwise scans `checkpoints/` for steps divisible by `sample_every_step`
 - Supports resumable sampling — skips batches where output images already exist
 - Extracts Inception features for FID computation alongside generated images (optional, `save_inception_features=True`)
 - Output: `outputs/{model_name}/{custom_cfg_name}/sample/step{N}/`
