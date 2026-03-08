@@ -10,6 +10,7 @@ weight_decay: 0
 use_pre_latents: True
 resume_checkpoint: True
 log_interval: 10
+num_steps: 501000
 
 DiT_XL_config:
   qk_norm: False
