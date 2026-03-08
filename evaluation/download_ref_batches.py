@@ -12,11 +12,33 @@ REF_FILES = {
 }
 
 
+def _missing_ref_files(eval_dir):
+    """Return a list of (filename, url, local_path) entries that are missing."""
+    missing = []
+    for filename, url in REF_FILES.items():
+        local_path = os.path.join(eval_dir, filename)
+        if not os.path.isfile(local_path):
+            missing.append((filename, url, local_path))
+    return missing
+
+
+def _cleanup_legacy_per_file_locks(eval_dir):
+    """Remove old per-file lock artifacts from earlier implementations."""
+    for filename in REF_FILES:
+        legacy_lock = os.path.join(eval_dir, filename + ".lock")
+        if os.path.isfile(legacy_lock):
+            try:
+                os.remove(legacy_lock)
+            except OSError:
+                # Best-effort cleanup only.
+                pass
+
+
 def ensure_ref_batches(eval_dir=None):
     """Download reference npz files if they don't already exist.
 
-    Uses a file lock to prevent multiple processes from downloading the
-    same file simultaneously, which can corrupt the output.
+    Uses a directory-level file lock to prevent multiple processes from
+    downloading the same files simultaneously, which can corrupt output.
 
     Args:
         eval_dir: Directory to store/check files. Defaults to the directory
@@ -25,28 +47,32 @@ def ensure_ref_batches(eval_dir=None):
     if eval_dir is None:
         eval_dir = os.path.dirname(os.path.abspath(__file__))
 
-    for filename, url in REF_FILES.items():
-        local_path = os.path.join(eval_dir, filename)
-        lock_path = local_path + ".lock"
+    # Fast path: if all files already exist, skip locking and cleanup legacy lock files.
+    missing = _missing_ref_files(eval_dir)
+    if not missing:
+        _cleanup_legacy_per_file_locks(eval_dir)
+        return
 
-        # Acquire an exclusive lock so only one process downloads at a time
-        with open(lock_path, "w") as lock_file:
-            fcntl.flock(lock_file, fcntl.LOCK_EX)
+    # Acquire an exclusive lock on the evaluation directory itself.
+    dir_fd = os.open(eval_dir, os.O_RDONLY)
+    try:
+        fcntl.flock(dir_fd, fcntl.LOCK_EX)
+        # Re-check under lock in case another process finished downloading.
+        missing = _missing_ref_files(eval_dir)
+        for filename, url, local_path in missing:
+            print(f"Reference file not found: {local_path}")
+            print(f"Downloading from {url} ...")
+            tmp_path = local_path + ".tmp"
             try:
-                # Re-check after acquiring lock — another process may have finished
-                if os.path.isfile(local_path):
-                    continue
-                print(f"Reference file not found: {local_path}")
-                print(f"Downloading from {url} ...")
-                tmp_path = local_path + ".tmp"
-                try:
-                    urllib.request.urlretrieve(url, tmp_path)
-                    os.rename(tmp_path, local_path)
-                    print(f"Saved to {local_path}")
-                except Exception as e:
-                    print(f"Failed to download {filename}: {e}")
-                    if os.path.isfile(tmp_path):
-                        os.remove(tmp_path)
-                    raise
-            finally:
-                fcntl.flock(lock_file, fcntl.LOCK_UN)
+                urllib.request.urlretrieve(url, tmp_path)
+                os.rename(tmp_path, local_path)
+                print(f"Saved to {local_path}")
+            except Exception as e:
+                print(f"Failed to download {filename}: {e}")
+                if os.path.isfile(tmp_path):
+                    os.remove(tmp_path)
+                raise
+        _cleanup_legacy_per_file_locks(eval_dir)
+    finally:
+        fcntl.flock(dir_fd, fcntl.LOCK_UN)
+        os.close(dir_fd)

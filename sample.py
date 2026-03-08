@@ -263,8 +263,8 @@ def worker(gpu, cfg):
             model = model.to(gpu)
             model = DistributedDataParallel(model, device_ids=[gpu])
 
-            model_size = sum([p.numel() for p in model.parameters()]) / (1000 ** 3)
-            logging.info(f'Created models with {model_size:.3f} billion parameters')
+            model_size = sum([p.numel() for p in model.parameters()]) / (1024 ** 2)
+            logging.info(f'Created models with {model_size:.3f} M parameters')
             torch.cuda.empty_cache()
             
             logging.info('Start the sample loop')

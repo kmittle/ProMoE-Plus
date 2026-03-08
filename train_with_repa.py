@@ -522,8 +522,8 @@ def worker(gpu, cfg):
     model_ema = copy.deepcopy(model).eval().requires_grad_(False)
 
     # [model] mark model size
-    model_size = sum([p.numel() for p in model.parameters()]) / (1000 ** 3)
-    logging.info(f'Created models with {model_size:.3f} billion parameters')
+    model_size = sum([p.numel() for p in model.parameters()]) / (1024 ** 2)
+    logging.info(f'Created models with {model_size:.3f} M parameters')
 
     # [optim] optimizer
     optimizer = optim.AdamW(

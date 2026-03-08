@@ -43,6 +43,10 @@ from compute_FLOPs.activated_params_tracker import ActivatedParamsTracker
 from compute_FLOPs.visualize import plot_expert_frequencies
 from utils import find_free_port
 
+KIB = 1024.0
+MIB = KIB ** 2
+GIB = KIB ** 3
+
 
 def get_sampling_sigmas(sampling_steps, shift):
     """Replicate the sigma schedule from sample.py."""
@@ -58,6 +62,57 @@ def retrieve_timesteps(scheduler, device, sigmas):
         raise ValueError(f"Scheduler {scheduler.__class__} does not support custom sigmas.")
     scheduler.set_timesteps(sigmas=sigmas, device=device)
     return scheduler.timesteps, len(scheduler.timesteps)
+
+
+def aggregate_activated_param_stats(stats_list):
+    """Merge per-rank activated-parameter stats into one global dict."""
+    if not stats_list:
+        return {
+            "total_params": 0.0,
+            "non_moe_params": 0.0,
+            "mean_activated_params": 0.0,
+            "min_activated_params": 0.0,
+            "max_activated_params": 0.0,
+            "num_forwards": 0,
+            "activation_ratio": 0.0,
+        }
+
+    total_params = float(stats_list[0]["total_params"])
+    non_moe_params = float(stats_list[0]["non_moe_params"])
+
+    total_forwards = int(sum(int(s.get("num_forwards", 0)) for s in stats_list))
+    if total_forwards > 0:
+        weighted_sum = sum(
+            float(s["mean_activated_params"]) * int(s.get("num_forwards", 0))
+            for s in stats_list
+        )
+        mean_activated = weighted_sum / total_forwards
+        min_candidates = [
+            float(s["min_activated_params"])
+            for s in stats_list
+            if int(s.get("num_forwards", 0)) > 0
+        ]
+        max_candidates = [
+            float(s["max_activated_params"])
+            for s in stats_list
+            if int(s.get("num_forwards", 0)) > 0
+        ]
+        min_activated = min(min_candidates) if min_candidates else 0.0
+        max_activated = max(max_candidates) if max_candidates else 0.0
+    else:
+        mean_activated = 0.0
+        min_activated = 0.0
+        max_activated = 0.0
+
+    return {
+        "total_params": total_params,
+        "non_moe_params": non_moe_params,
+        "mean_activated_params": mean_activated,
+        "min_activated_params": min_activated,
+        "max_activated_params": max_activated,
+        "num_forwards": total_forwards,
+        "activation_ratio": mean_activated / total_params if total_params > 0 else 0.0,
+    }
 
 
 def worker(rank, world_size, args, model_name, custom_cfg_name, ckpt_step,
@@ -107,7 +162,7 @@ def worker(rank, world_size, args, model_name, custom_cfg_name, ckpt_step,
 
     if is_main:
         param_count = sum(p.numel() for p in model.parameters())
-        print(f"  Model parameters: {param_count / 1e6:.2f}M")
+        print(f"  Model parameters: {param_count / MIB:.2f}M")
 
     # --- Setup expert activation tracker ---
     tracker = ExpertActivationTracker(model)
@@ -208,6 +263,10 @@ def worker(rank, world_size, args, model_name, custom_cfg_name, ckpt_step,
 
     flops_acc.stop()
     params_tracker.stop()
+    local_act_stats = params_tracker.get_stats()
+    if not params_tracker.moe_blocks:
+        # Dense model: all params are activated every conditional forward.
+        local_act_stats["num_forwards"] = cond_forward_passes
 
     # --- Gather results across GPUs ---
     if world_size > 1:
@@ -250,30 +309,43 @@ def worker(rank, world_size, args, model_name, custom_cfg_name, ckpt_step,
         if has_moe:
             tracker.stop()
 
+    # Gather activated-parameter stats across GPUs.
+    if world_size > 1:
+        gathered_act_stats = [None for _ in range(world_size)]
+        dist.all_gather_object(gathered_act_stats, local_act_stats)
+    else:
+        gathered_act_stats = [local_act_stats]
+
     # --- Rank 0: compute final results and save ---
     if is_main:
         param_count = sum(p.numel() for p in model.parameters())
         avg_flops_per_forward = cond_total_flops / cond_forward_passes
-        avg_gflops = avg_flops_per_forward / 1e9
+        avg_gflops = avg_flops_per_forward / GIB
         total_samples = num_classes * args.num_samples_per_class
 
-        # Activated params stats
-        act_stats = params_tracker.get_stats()
+        # Activated params stats (global across all ranks)
+        act_stats = aggregate_activated_param_stats(gathered_act_stats)
+        # Keep this aligned with FLOPs reporting denominator.
+        act_stats["num_forwards"] = cond_forward_passes
+        mean_activated_per_step = act_stats["mean_activated_params"]
+        mean_activated_per_sample = mean_activated_per_step * sample_steps
 
         print(f"\n{'='*60}")
         print(f"FLOPs Evaluation Results (cond forward only)")
         print(f"{'='*60}")
-        print(f"  Cond total FLOPs:          {cond_total_flops / 1e9:.4f} GFLOPs")
+        print(f"  Cond total FLOPs:          {cond_total_flops / GIB:.4f} GFLOPs")
         print(f"  Cond forward passes:       {cond_forward_passes}")
         print(f"  Avg FLOPs/forward:         {avg_gflops:.4f} GFLOPs")
         print(f"{'='*60}")
         print(f"\nActivated Parameters (cond forward only)")
         print(f"{'='*60}")
-        print(f"  Total model params:        {act_stats['total_params'] / 1e6:.2f}M")
-        print(f"  Non-MoE params (always):   {act_stats['non_moe_params'] / 1e6:.2f}M")
-        print(f"  Mean activated params:     {act_stats['mean_activated_params'] / 1e6:.2f}M")
-        print(f"  Min activated params:      {act_stats['min_activated_params'] / 1e6:.2f}M")
-        print(f"  Max activated params:      {act_stats['max_activated_params'] / 1e6:.2f}M")
+        print(f"  Total model params:        {act_stats['total_params'] / MIB:.2f}M")
+        print(f"  Non-MoE params (always):   {act_stats['non_moe_params'] / MIB:.2f}M")
+        print(f"  Mean activated params:     {act_stats['mean_activated_params'] / MIB:.2f}M")
+        print(f"  Min activated params:      {act_stats['min_activated_params'] / MIB:.2f}M")
+        print(f"  Max activated params:      {act_stats['max_activated_params'] / MIB:.2f}M")
+        print(f"  Mean activated/step:       {mean_activated_per_step / MIB:.2f}M")
+        print(f"  Mean activated/sample:     {mean_activated_per_sample / MIB:.2f}M")
         print(f"  Activation ratio:          {act_stats['activation_ratio']:.4f}")
         print(f"  Cond forward passes:       {act_stats['num_forwards']}")
         print(f"{'='*60}")
@@ -291,7 +363,7 @@ def worker(rank, world_size, args, model_name, custom_cfg_name, ckpt_step,
             f.write(f"Model name:                  {model_name}\n")
             f.write(f"Config:                      {custom_cfg_name}\n")
             f.write(f"Checkpoint step:             {ckpt_step}\n")
-            f.write(f"Model parameters:            {param_count / 1e6:.2f}M\n")
+            f.write(f"Model parameters:            {param_count / MIB:.2f}M\n")
             f.write(f"\n")
             f.write(f"--- Computation Settings ---\n")
             f.write(f"Number of classes:           {num_classes}\n")
@@ -306,17 +378,19 @@ def worker(rank, world_size, args, model_name, custom_cfg_name, ckpt_step,
             f.write(f"Number of GPUs:              {world_size}\n")
             f.write(f"\n")
             f.write(f"--- FLOPs Results (cond forward only) ---\n")
-            f.write(f"Cond total FLOPs:            {cond_total_flops / 1e9:.4f} GFLOPs\n")
+            f.write(f"Cond total FLOPs:            {cond_total_flops / GIB:.4f} GFLOPs\n")
             f.write(f"Cond forward passes:         {cond_forward_passes}\n")
             f.write(f"Avg FLOPs/forward:           {avg_gflops:.4f} GFLOPs\n")
             f.write(f"  = Cond total FLOPs / {cond_forward_passes} cond forward passes\n")
             f.write(f"{'='*60}\n")
             f.write(f"\n--- Activated Parameters (cond forward only) ---\n")
-            f.write(f"Total model params:          {act_stats['total_params'] / 1e6:.2f}M\n")
-            f.write(f"Non-MoE params (always on):  {act_stats['non_moe_params'] / 1e6:.2f}M\n")
-            f.write(f"Mean activated params:       {act_stats['mean_activated_params'] / 1e6:.2f}M\n")
-            f.write(f"Min activated params:        {act_stats['min_activated_params'] / 1e6:.2f}M\n")
-            f.write(f"Max activated params:        {act_stats['max_activated_params'] / 1e6:.2f}M\n")
+            f.write(f"Total model params:          {act_stats['total_params'] / MIB:.2f}M\n")
+            f.write(f"Non-MoE params (always on):  {act_stats['non_moe_params'] / MIB:.2f}M\n")
+            f.write(f"Mean activated params:       {act_stats['mean_activated_params'] / MIB:.2f}M\n")
+            f.write(f"Min activated params:        {act_stats['min_activated_params'] / MIB:.2f}M\n")
+            f.write(f"Max activated params:        {act_stats['max_activated_params'] / MIB:.2f}M\n")
+            f.write(f"Mean activated/step:         {mean_activated_per_step / MIB:.2f}M\n")
+            f.write(f"Mean activated/sample:       {mean_activated_per_sample / MIB:.2f}M\n")
             f.write(f"Activation ratio:            {act_stats['activation_ratio']:.4f}\n")
             f.write(f"Cond forward passes:         {act_stats['num_forwards']}\n")
 
