@@ -1,45 +1,102 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-The main training and inference entrypoints live at the repository root: `train.py` handles the standard ProMoE and baseline workflows, `train_with_repa.py` adds REPA projection loss and teacher-encoder loading, and `sample.py` serves both by merging the model registries from the two training scripts. Shared defaults are defined in `config.py`, and reusable helpers such as config merging, VAE loading, and CLI parsers live in `utils.py`. Model implementations stay in `models/`; keep the existing `models_*.py` naming pattern, including the REPA variants in `models/models_ProMoE_TC_repa.py` and `models/models_ProMoE_TC_repa_shared.py`. Experiment YAMLs are in `configs/`, with the config stem becoming `cfg.custom_cfg_name` and part of the output path.
+Core training and sampling entrypoints are at the repository root:
 
-Data preprocessing code is under `preprocess/`, and both preprocessing and training reuse `preprocess/image_paths_cache.txt` as a cached image list. Evaluation code is isolated in `evaluation/`; `evaluation/run_eval.py` can package generated PNGs into an `.npz` and then call the TensorFlow evaluator. Generated checkpoints, TensorBoard logs, and sampled images are written under `outputs/<model_name>/<config_stem>/`. REPA-specific helper code used by `train_with_repa.py` lives in the lowercase `repa/` package, while the uppercase `REPA/` directory is a separate upstream-style subproject with its own entrypoints and its own `AGENTS.md`. Cached teacher encoder weights are stored under `pretrained_ckpt/encoder/`, and `scripts/` contains shell wrappers for the current REPA-B workflow.
+- `train.py`: standard/baseline training path (DiT, TCDiT, ECDiT, DiffMoE, ProMoE, hierarchical variants).
+- `train_with_repa.py`: REPA-enabled training path, including REPA / REPA-Shared / REPA-Cond model variants and teacher-feature alignment loss.
+- `sample.py`: inference entrypoint; merges model registries from both `train.py` and `train_with_repa.py`, so one script can sample all supported model families.
+
+Shared defaults and helpers:
+
+- `config.py`: global defaults plus model config templates (`DiT_*_config`, `DiffMoE_*`, etc.).
+- `utils.py`: recursive config merge (`deep_update`), VAE loading/caching, free-port discovery, CLI list parsers, and Inception utilities.
+
+Model code layout:
+
+- `models/`: architecture implementations. Keep the `models_*.py` naming style.
+- REPA model variants currently include `models/models_ProMoE_TC_repa.py`, `models/models_ProMoE_TC_repa_shared.py`, and `models/models_ProMoE_TC_repa_cond.py`.
+
+Data and evaluation:
+
+- `preprocess/`: latent preprocessing and shared image path cache (`preprocess/image_paths_cache.txt`).
+- `evaluation/`: OpenAI-style metric pipeline (`run_eval.py`, `evaluator.py`, reference-batch downloader).
+
+Workflow scripts:
+
+- `scripts/repa/`: train + sample/eval wrappers for REPA-B, REPA-Shared-B, REPA-Cond-B.
+- `scripts/hierar/`: train + sample/eval wrappers for ProMoE hierarchical B variants.
+- Root wrappers: `run_all_infer_eval_500K.sh`, `eval_B_hierar_expert.sh`, `eval_B_hierar_expert_NoPenalty.sh`.
+
+Other subprojects:
+
+- `repa/` (lowercase): helper package used by `train_with_repa.py` (`encoder.py`, `loss.py`).
+- `REPA/` (uppercase): independent upstream-style subproject with its own entrypoints and its own `AGENTS.md`.
+
+Outputs are organized as:
+
+`outputs/<model_name>/<config_stem>/`
+
+with checkpoints under `checkpoints/`, logs under `training.log` / `sample.log`, TensorBoard under `tensorboard/`, and generated images under `sample/`.
 
 ## Build, Test, and Development Commands
-Create the main training environment and install dependencies:
+Create the main training environment:
+
 ```bash
 conda create -n promoe python=3.10 -y
 conda activate promoe
 pip install -r requirements.txt
 ```
 
-Run standard training with a YAML config:
+Run standard training:
+
 ```bash
 python train.py --config configs/004_ProMoE_L.yaml
 ```
 
-Run REPA-enabled training (optionally passing a local teacher checkpoint to skip `torch.hub` download):
+Run REPA-enabled training (optional local teacher checkpoint):
+
 ```bash
-python train_with_repa.py --config configs/004_ProMoE_B_repa.yaml --repa-enc-path /path/to/dinov2_state_dict.pth
+python train_with_repa.py --config configs/004_ProMoE_B_repa.yaml --repa-enc-path /path/to/state_dict.pth
 ```
 
-Precompute VAE latents before long runs:
+Optional local VAE path (skip auto-download/cache):
+
+```bash
+python train.py --config configs/004_ProMoE_B.yaml --vae-path /path/to/sd-vae-ft-mse
+python train_with_repa.py --config configs/004_ProMoE_B_repa.yaml --vae-path /path/to/sd-vae-ft-mse
+```
+
+Precompute VAE latents:
+
 ```bash
 python preprocess/preprocess_vae.py --latent_save_root /path/to/ImageNet/sd-vae-ft-mse_Latents_256img_npz
 ```
 
-Run sampling for one or more checkpoint steps:
+Run sampling:
+
 ```bash
-CUDA_VISIBLE_DEVICES=0 python sample.py --config configs/004_ProMoE_L.yaml --step_list_for_sample 500000 --guide_scale_list 1.0,1.5
+CUDA_VISIBLE_DEVICES=0,1,2,3 python sample.py \
+  --config configs/004_ProMoE_B_repa.yaml \
+  --step_list_for_sample 300000,500000 \
+  --guide_scale_list 1.0,1.5 \
+  --num_fid_samples 50000
 ```
 
-Use the canned REPA-B helpers when they match the target workflow:
+Use provided wrappers when they match your target run:
+
 ```bash
-bash scripts/train_repa_B.sh
-bash scripts/sample_and_eval_repa_B.sh
+bash scripts/repa/train_repa_B.sh
+bash scripts/repa/sample_and_eval_repa_B.sh
+
+bash scripts/hierar/run_B_hierar_train.sh
+bash scripts/hierar/run_B_hierar_infer_eval.sh
+
+bash run_all_infer_eval_500K.sh
 ```
 
-For TensorFlow-based metrics, create a separate environment:
+Create a separate TensorFlow evaluation environment:
+
 ```bash
 conda create -n promoe_eval python=3.9 -y
 conda activate promoe_eval
@@ -48,16 +105,55 @@ pip install -r requirements.txt
 python run_eval.py /path/to/generated/images --count 50000
 ```
 
+`evaluation/run_eval.py` can also skip evaluator execution and only pack PNGs into NPZ:
+
+```bash
+python run_eval.py /path/to/generated/images --count 50000 --no-eval
+```
+
 ## Coding Style & Naming Conventions
-Follow the existing Python style in the touched file: 4-space indentation, `snake_case` for functions and variables, and `PascalCase` for classes. Preserve the current import grouping and the repository's logging-heavy style instead of rewriting files into a new format. YAML configs use numeric prefixes such as `004_ProMoE_L.yaml`; keep that convention for new experiment files. When you add config fields, mirror the current pattern where YAML values are merged into the global `cfg` object via `deep_update`, so only override the keys that actually need to change.
+- Follow existing Python style in the touched file: 4-space indentation, `snake_case` for functions/variables, `PascalCase` for classes.
+- Preserve current import grouping and logging-heavy style.
+- Keep config filenames in the existing numeric-prefixed pattern (for example `004_*.yaml`).
+- Add new config fields in YAML and rely on `deep_update` to merge only the keys you intend to override.
 
 ## Testing Guidelines
-There is no dedicated `tests/` directory. Validate changes with targeted smoke checks that match the edited surface area: run `python train.py --config ...` or `python train_with_repa.py --config ...` for training-path changes, run `sample.py` against the affected config for inference changes, and run `python run_eval.py ...` from inside `evaluation/` only when the evaluation pipeline changes. For lightweight sanity checks after Python edits, use `python -m py_compile` on the modified modules. If you change dataset traversal or preprocessing behavior, refresh `preprocess/image_paths_cache.txt` before re-running the smoke test so the cache does not hide a regression.
+There is no dedicated `tests/` directory. Use targeted smoke checks based on your change surface:
+
+- Training-path changes: run `python train.py --config ...` or `python train_with_repa.py --config ...`.
+- Sampling-path changes: run `python sample.py --config ...` with explicit step/scale overrides if needed.
+- Evaluation-path changes: run `python run_eval.py ...` from inside `evaluation/`.
+- Lightweight syntax checks: `python -m py_compile <modified_python_files>`.
+
+If you modify dataset traversal, latent mapping, or preprocessing behavior, regenerate/remove `preprocess/image_paths_cache.txt` before re-running smoke checks so stale cache data does not mask regressions.
 
 ## Commit & Pull Request Guidelines
-Recent commits are short and direct, for example `init repa-shared`, `update pretraind model assigning & add ProMoE-REPA.md`, and `update naive repa`. Keep commit subjects concise, imperative, and scoped to one change. In pull requests, call out the affected model family or config, whether the path is standard or REPA training, which dataset layout and GPU count were assumed, and include evidence such as training logs, sample folders, or metric outputs when behavior changes.
+Use concise, imperative, single-scope commit subjects (matching current history style). In PR descriptions, include:
+
+- Affected model family/config(s).
+- Whether the path is `train.py` or `train_with_repa.py`.
+- Dataset layout assumptions (especially `train/` path and latent sibling path).
+- GPU setup assumptions (`gpu_ids`, world size).
+- Evidence for behavior changes (logs, sample folders, metric outputs).
 
 ## Configuration Notes
-Set `cfg.data_path` in `config.py` to the ImageNet training root before running training or preprocessing. The training scripts honor `gpu_ids` from the YAML by exporting `CUDA_VISIBLE_DEVICES` internally, so the config file is the source of truth unless you intentionally override it outside the script. Output directories are built as `outputs/<model_name>/<config_stem>/`, and `sample.py` reads checkpoints from that tree automatically.
+- Set `cfg.data_path` in `config.py` (or YAML override) to the ImageNet training root before preprocessing/training.
+- At runtime, config stem is injected as `custom_cfg_name` from `--config` filename and used in output path construction.
+- Training scripts read `gpu_ids` from YAML and set `CUDA_VISIBLE_DEVICES` internally when present.
+- Sampling uses `sample_gpu_ids` only if provided in merged config; otherwise it uses all visible GPUs.
 
-If `cfg.use_pre_latents=True`, keep the latent directory naming aligned with the code path: the training dataset derives latent files by replacing the `train` segment in each image path with `sd-vae-ft-mse_Latents_256img_npz`, so `--latent_save_root` should normally point to that sibling directory. Both preprocessing and training reuse `preprocess/image_paths_cache.txt`; delete or rebuild it after switching datasets or reorganizing files. VAE weights can be provided with `--vae-path` to avoid an automatic download from Hugging Face, and REPA teacher weights can be provided with `--repa-enc-path`; otherwise `train_with_repa.py` will cache DINOv2 weights into `pretrained_ckpt/encoder/` on first use. `evaluation/run_eval.py` auto-downloads the OpenAI reference batch into `evaluation/` if it is missing, so keep the evaluation environment separate from the main PyTorch environment to avoid dependency conflicts.
+Latent mode and cache behavior:
+
+- With `use_pre_latents=True`, training/preprocessing both use `preprocess/image_paths_cache.txt`.
+- Latent file resolution is path-based: each image path replaces the `train` segment with `sd-vae-ft-mse_Latents_256img_npz` and switches extension to `.latent.npz`.
+- Keep dataset directory naming aligned with this replacement rule, or update the code accordingly.
+
+Weight caching:
+
+- VAE auto-cache path: `pretrained_ckpt/vae/<hf_repo_id_with_slash_replaced>/` (unless `--vae-path` is provided).
+- REPA teacher cache path: `pretrained_ckpt/encoder/<hub_name>/state_dict.pth` (unless `--repa-enc-path` is provided).
+
+Evaluation notes:
+
+- `evaluation/run_eval.py` auto-downloads missing reference batches via `download_ref_batches.py`.
+- Run `run_eval.py` from inside `evaluation/` so relative `evaluator.py` lookup works.

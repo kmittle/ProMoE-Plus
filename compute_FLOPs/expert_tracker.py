@@ -35,32 +35,29 @@ class ExpertActivationTracker:
     def __init__(self, model):
         self.model = model
         self.moe_blocks = _find_moe_blocks(model)
-        self._hooks = []
         self._counts = {}  # block_idx -> defaultdict(int)
         self._total_tokens = {}  # block_idx -> int (total cond token assignments)
         self._num_routed_experts_per_block = {}
 
     def start(self):
-        """Register forward hooks on all MoE blocks."""
+        """Monkey-patch compute_router on all MoE blocks to track expert assignments."""
         self._counts.clear()
         self._total_tokens.clear()
         self._num_routed_experts_per_block.clear()
-        self._hooks.clear()
 
         for block_idx, moe_module in self.moe_blocks:
             self._counts[block_idx] = defaultdict(int)
             self._total_tokens[block_idx] = 0
             self._num_routed_experts_per_block[block_idx] = moe_module.num_routed_experts
 
-            hook = self._make_hook(block_idx, moe_module)
-            handle = moe_module.register_forward_hook(hook)
-            self._hooks.append(handle)
+            self._patch_compute_router(block_idx, moe_module)
 
-    def _make_hook(self, block_idx, moe_module):
-        """Create a forward hook that intercepts the routing decision."""
+    def _patch_compute_router(self, block_idx, moe_module):
+        """Replace compute_router with a wrapper that records routing decisions."""
         tracker = self
 
         original_compute_router = moe_module.compute_router
+        moe_module._original_compute_router = original_compute_router
 
         def hooked_compute_router(hidden_states, labels):
             router_weights, expert_indices, load_balance_loss = original_compute_router(hidden_states, labels)
@@ -83,19 +80,8 @@ class ExpertActivationTracker:
 
         moe_module.compute_router = hooked_compute_router
 
-        def hook_fn(module, input, output):
-            pass  # actual tracking is done in hooked_compute_router
-
-        # Store reference to restore later
-        moe_module._original_compute_router = original_compute_router
-
-        return hook_fn
-
     def stop(self):
-        """Remove all hooks and restore original compute_router."""
-        for h in self._hooks:
-            h.remove()
-        self._hooks.clear()
+        """Restore original compute_router on all MoE blocks."""
         for _, moe_module in self.moe_blocks:
             if hasattr(moe_module, "_original_compute_router"):
                 moe_module.compute_router = moe_module._original_compute_router
@@ -121,6 +107,35 @@ class ExpertActivationTracker:
                     freq_list.append(self._counts[block_idx][e] / total)
                 frequencies[block_idx] = freq_list
         return frequencies
+
+    def get_raw_counts(self):
+        """Return raw counts and total tokens for cross-GPU aggregation.
+
+        Returns:
+            dict: block_idx -> (counts_dict, total_tokens)
+        """
+        raw = {}
+        for block_idx in sorted(self._counts.keys()):
+            raw[block_idx] = (dict(self._counts[block_idx]), self._total_tokens[block_idx])
+        return raw
+
+    def merge_raw_counts(self, other_raw):
+        """Merge raw counts from another tracker (or gathered dict) into this one.
+
+        Args:
+            other_raw: dict from get_raw_counts(), block_idx -> (counts_dict, total_tokens)
+        """
+        for block_idx, (counts, total) in other_raw.items():
+            if block_idx not in self._counts:
+                self._counts[block_idx] = defaultdict(int)
+                self._total_tokens[block_idx] = 0
+                # try to infer num_routed_experts from existing blocks
+                if block_idx not in self._num_routed_experts_per_block and self._num_routed_experts_per_block:
+                    ref = next(iter(self._num_routed_experts_per_block.values()))
+                    self._num_routed_experts_per_block[block_idx] = ref
+            for expert_id, cnt in counts.items():
+                self._counts[block_idx][expert_id] += cnt
+            self._total_tokens[block_idx] += total
 
     @property
     def num_moe_blocks(self):

@@ -61,9 +61,15 @@ def load_config_from_yaml(config_yaml_path):
 
 def build_model_from_cfg(cfg):
     """Instantiate the model class based on cfg.model_name and return the model."""
-    # Import model dicts (same logic as sample.py)
+    # Import model dicts (same logic as sample.py).
+    # Temporarily suppress TORCH_DISTRIBUTED_DEBUG set by train.py top-level code.
+    _prev_debug = os.environ.get("TORCH_DISTRIBUTED_DEBUG")
     from train import model_dict as _base_model_dict
     from train_with_repa import model_dict as _repa_model_dict
+    if _prev_debug is None:
+        os.environ.pop("TORCH_DISTRIBUTED_DEBUG", None)
+    else:
+        os.environ["TORCH_DISTRIBUTED_DEBUG"] = _prev_debug
     model_dict = {**_base_model_dict, **_repa_model_dict}
 
     model_name = cfg.model_name
