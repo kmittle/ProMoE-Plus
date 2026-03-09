@@ -435,7 +435,7 @@ def main():
     parser = argparse.ArgumentParser(description="Compute FLOPs and expert activation frequency for a trained checkpoint.")
     parser.add_argument("ckpt", type=str, help="Relative path to the checkpoint file (.pth)")
     parser.add_argument("--num_samples_per_class", type=int, default=5,
-                        help="Number of samples to generate per class (default: 10)")
+                        help="Number of samples to generate per class (default: 5)")
     parser.add_argument("--seed", type=int, default=0, help="Random seed (default: 0)")
     parser.add_argument("--guide_scale", type=float, default=1.0,
                         help="Classifier-free guidance scale (default: 1.0)")
