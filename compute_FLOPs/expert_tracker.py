@@ -2,7 +2,24 @@
 
 import torch
 import torch.nn as nn
+import inspect
 from collections import defaultdict
+
+
+def _is_tc_compute_router(moe_module):
+    """Check if the module's compute_router follows TC (Token-Choice) signature.
+
+    TC models: compute_router(self, hidden_states, labels) -> returns tuple with
+    (router_weights, expert_indices, ...) where expert_indices has shape (B, S, top_k).
+
+    EC models: compute_router(self, cond_hidden_states) -> incompatible signature/returns.
+    """
+    if not hasattr(moe_module, "compute_router"):
+        return False
+    sig = inspect.signature(moe_module.compute_router)
+    # TC: (hidden_states, labels); EC: (cond_hidden_states)
+    params = [p for p in sig.parameters if p != "self"]
+    return len(params) == 2
 
 
 def _find_moe_blocks(model):
@@ -10,6 +27,7 @@ def _find_moe_blocks(model):
 
     block_index is the position within model.blocks (DiTBlock index).
     Only DiTBlocks with use_moe=True contain a SparseMoeBlock as their .mlp attribute.
+    Skips Expert-Choice (EC) blocks whose compute_router has an incompatible signature.
     """
     moe_blocks = []
     if not hasattr(model, "blocks"):
@@ -17,7 +35,8 @@ def _find_moe_blocks(model):
     for i, block in enumerate(model.blocks):
         if hasattr(block, "use_moe") and block.use_moe:
             moe_module = block.mlp  # SparseMoeBlock
-            moe_blocks.append((i, moe_module))
+            if _is_tc_compute_router(moe_module):
+                moe_blocks.append((i, moe_module))
     return moe_blocks
 
 
@@ -55,28 +74,40 @@ class ExpertActivationTracker:
     def _patch_compute_router(self, block_idx, moe_module):
         """Replace compute_router with a wrapper that records routing decisions."""
         tracker = self
+        use_uncond_expert = getattr(moe_module, "use_uncond_expert", True)
 
         original_compute_router = moe_module.compute_router
         moe_module._original_compute_router = original_compute_router
 
         def hooked_compute_router(hidden_states, labels):
-            router_weights, expert_indices, load_balance_loss = original_compute_router(hidden_states, labels)
+            result = original_compute_router(hidden_states, labels)
+            expert_indices = result[1]
             # expert_indices: (batch_size, seq_len, top_k)
-            # Only track conditional tokens (label != num_classes, i.e. != 1000)
-            # Uncond tokens are always routed to the dedicated uncond expert,
-            # and shared expert has no routing — neither should be counted.
             batch_size, seq_len, top_k = expert_indices.shape
-            flat_labels = labels.view(batch_size, 1).expand(-1, seq_len).reshape(-1)
-            cond_mask = (flat_labels != 1000)  # uncond class = 1000
 
-            if cond_mask.any():
+            if use_uncond_expert:
+                # Only track conditional tokens — uncond tokens (label=1000)
+                # are always routed to the dedicated uncond expert.
+                flat_labels = labels.view(batch_size, 1).expand(-1, seq_len).reshape(-1)
+                cond_mask = (flat_labels != 1000)
+            else:
+                # No uncond expert — all tokens participate in prototypical routing.
+                cond_mask = None
+
+            if cond_mask is None:
+                # Track all tokens
+                all_indices = expert_indices.view(-1, top_k).detach().cpu()
+                for idx in all_indices.view(-1).tolist():
+                    tracker._counts[block_idx][int(idx)] += 1
+                tracker._total_tokens[block_idx] += all_indices.numel()
+            elif cond_mask.any():
                 # (num_cond_tokens, top_k)
                 cond_indices = expert_indices.view(-1, top_k)[cond_mask].detach().cpu()
                 for idx in cond_indices.view(-1).tolist():
                     tracker._counts[block_idx][int(idx)] += 1
                 tracker._total_tokens[block_idx] += cond_indices.numel()
 
-            return router_weights, expert_indices, load_balance_loss
+            return result
 
         moe_module.compute_router = hooked_compute_router
 

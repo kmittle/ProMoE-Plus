@@ -14,16 +14,35 @@ us exactly which experts received real tokens, with no heuristics.
 
 import torch
 import torch.nn as nn
+import inspect
+
+
+def _is_tc_compute_router(moe_module):
+    """Check if the module's compute_router follows TC (Token-Choice) signature.
+
+    TC models: compute_router(self, hidden_states, labels) -> 2 params.
+    EC models: compute_router(self, cond_hidden_states) -> 1 param (incompatible).
+    """
+    if not hasattr(moe_module, "compute_router"):
+        return False
+    sig = inspect.signature(moe_module.compute_router)
+    params = [p for p in sig.parameters if p != "self"]
+    return len(params) == 2
 
 
 def _find_moe_blocks(model):
-    """Find all MoE SparseMoeBlock modules. Returns list of (block_idx, module)."""
+    """Find all MoE SparseMoeBlock modules. Returns list of (block_idx, module).
+
+    Skips Expert-Choice (EC) blocks whose compute_router has an incompatible signature.
+    """
     moe_blocks = []
     if not hasattr(model, "blocks"):
         return moe_blocks
     for i, block in enumerate(model.blocks):
         if hasattr(block, "use_moe") and block.use_moe:
-            moe_blocks.append((i, block.mlp))
+            moe_module = block.mlp
+            if _is_tc_compute_router(moe_module):
+                moe_blocks.append((i, moe_module))
     return moe_blocks
 
 
@@ -98,8 +117,7 @@ class ActivatedParamsTracker:
 
             def capturing_compute_router(hs, lbs):
                 result = prev_compute_router(hs, lbs)
-                router_weights, expert_indices, load_balance_loss = result
-                captured['expert_indices'] = expert_indices
+                captured['expert_indices'] = result[1]  # expert_indices
                 return result
 
             moe_module.compute_router = capturing_compute_router
