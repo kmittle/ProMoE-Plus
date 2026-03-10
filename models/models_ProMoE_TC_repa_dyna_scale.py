@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 from timm.models.vision_transformer import PatchEmbed
@@ -398,7 +399,7 @@ class DiT(nn.Module):
                 f"repa_config.encoder_depth ({self.encoder_depth}) must be <= model depth ({depth})"
             z_dims = repa_config.get('z_dims', [768])
             projector_dim = repa_config.get('projector_dim', 2048)
-            self.repa_select_ratio = repa_config.get('repa_select_ratio', 0.5)
+            self.repa_select_ratio = repa_config.get('repa_select_ratio', 1.0)
             self.projectors = nn.ModuleList([
                 build_repa_projector(hidden_size, projector_dim, z_dim) for z_dim in z_dims
             ])
@@ -410,11 +411,14 @@ class DiT(nn.Module):
                 nn.Linear(projector_dim, 1),
                 nn.Sigmoid(),
             )
+            # init so that softplus(val) ≈ 1.0, i.e. val = ln(e - 1)
+            self.repa_weight_scaler = nn.Parameter(torch.tensor([math.log(math.e - 1)]))
         else:
             self.encoder_depth = None
             self.projectors = None
             self.repa_token_weighter = None
-            self.repa_select_ratio = 0.5
+            self.repa_weight_scaler = None
+            self.repa_select_ratio = 1.0
 
         self.initialize_weights()
 
@@ -508,7 +512,7 @@ class DiT(nn.Module):
             # Extract projected features at encoder_depth for REPA alignment (training only)
             if self.training and self.projectors is not None and (i + 1) == self.encoder_depth:
                 flat_x = x.reshape(-1, D)
-                token_weight = self.repa_token_weighter(flat_x).reshape(N, T, 1)
+                token_weight = self.repa_token_weighter(flat_x).reshape(N, T, 1) * F.softplus(self.repa_weight_scaler)
 
                 # Select top repa_select_ratio tokens per sample by sigmoid weight
                 k = max(1, int(T * self.repa_select_ratio))
