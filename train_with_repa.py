@@ -42,6 +42,7 @@ from models.models_ProMoE_TC_repa import DiT as ProMoE_TC_REPA
 from models.models_ProMoE_TC_repa_dyna import DiT as ProMoE_TC_REPA_DYNA
 from models.models_ProMoE_TC_repa_dyna_select import DiT as ProMoE_TC_REPA_DYNA_SELECT
 from models.models_ProMoE_TC_repa_dyna_scale import DiT as ProMoE_TC_REPA_DYNA_SCALE
+from models.models_ProMoE_TC_repa_dyna_only import DiT as ProMoE_TC_REPA_DYNA_ONLY
 from models.models_ProMoE_TC_repa_shared import DiT as ProMoE_TC_REPA_Shared
 from models.models_ProMoE_TC_repa_cond import DiT as ProMoE_TC_REPA_Cond
 from models.models_ProMoE_TC_repa_routed import DiT as ProMoE_TC_REPA_Routed
@@ -83,6 +84,11 @@ model_dict = {
     "ProMoE_TC_REPA_DYNA_SCALE_B": (ProMoE_TC_REPA_DYNA_SCALE, "DiT_B_config"),
     "ProMoE_TC_REPA_DYNA_SCALE_L": (ProMoE_TC_REPA_DYNA_SCALE, "DiT_L_config"),
     "ProMoE_TC_REPA_DYNA_SCALE_XL": (ProMoE_TC_REPA_DYNA_SCALE, "DiT_XL_config"),
+    # REPA-DYNA-ONLY variants (sigmoid weighting capped by proj_coeff, ablation for dynamic vs larger coeff)
+    "ProMoE_TC_REPA_DYNA_ONLY_S": (ProMoE_TC_REPA_DYNA_ONLY, "DiT_S_config"),
+    "ProMoE_TC_REPA_DYNA_ONLY_B": (ProMoE_TC_REPA_DYNA_ONLY, "DiT_B_config"),
+    "ProMoE_TC_REPA_DYNA_ONLY_L": (ProMoE_TC_REPA_DYNA_ONLY, "DiT_L_config"),
+    "ProMoE_TC_REPA_DYNA_ONLY_XL": (ProMoE_TC_REPA_DYNA_ONLY, "DiT_XL_config"),
     # REPA-Shared variants (align shared expert output with teacher)
     "ProMoE_TC_REPA_Shared_S": (ProMoE_TC_REPA_Shared, "DiT_S_config"),
     "ProMoE_TC_REPA_Shared_B": (ProMoE_TC_REPA_Shared, "DiT_B_config"),

@@ -51,6 +51,11 @@ bash scripts/repa/sample_and_eval_repa_B.sh
 bash scripts/repa/sample_and_eval_repa_shared_B.sh
 bash scripts/repa/sample_and_eval_repa_cond_B.sh
 
+# Dynamic REPA experiments
+bash scripts/dynamic_repa/run_B_repa_dyna_train_sample_eval.sh
+bash scripts/dynamic_repa/run_B_repa_dyna_select_train_sample_eval.sh
+bash scripts/dynamic_repa/run_B_repa_dyna_scale_train_sample_eval.sh
+
 # Hierarchical routing experiments
 bash scripts/hierar/run_B_hierar_train.sh
 bash scripts/hierar/run_B_hierar_infer_eval.sh
@@ -97,7 +102,10 @@ python run_eval.py /path/to/generated/images --count 50000 --no-eval
 - `models_ProMoE_TC_repa.py` — ProMoE-TC with REPA projectors. Adds MLP projectors (`build_repa_projector`) that align intermediate DiT features with a frozen DINOv2 teacher encoder. In training, `forward()` returns `(pred, zs_proj)` where `zs_proj` is a list of projected features for REPA loss; in eval mode returns only `pred`.
 - `models_ProMoE_TC_repa_shared.py` — REPA variant that aligns the **shared expert output** (rather than the full block output) with the DINOv2 teacher. `SparseMoeBlock.forward()` returns `(final_output, loss, shared_output)` and `DiTBlock.forward()` returns `(x, shared_output)`. The projector at `encoder_depth` operates on `shared_output` instead of `x`. Requires `encoder_depth` to point to a MoE block (asserted at init).
 - `models_ProMoE_TC_repa_cond.py` — REPA variant with conditional-only alignment.
-- `models_ProMoE_TC_repa_dyna.py` — (WIP) Dynamic REPA variant of ProMoE-TC.
+- `models_ProMoE_TC_repa_dyna.py` — Dynamic REPA variant of ProMoE-TC with timestep-dependent REPA loss weighting.
+- `models_ProMoE_TC_repa_dyna_scale.py` — Dynamic REPA variant with learned scaling of the REPA projection.
+- `models_ProMoE_TC_repa_dyna_select.py` — Dynamic REPA variant with selective alignment (e.g., ratio-based token selection).
+- `models_ProMoE_TC_repa_dyna_only.py` — Dynamic REPA variant applying alignment only (no standard REPA fallback).
 - `models_ProMoE_TC_hierar.py` / `models_ProMoE_TC_hierar_expert.py` — Hierarchical routing variants. Used by configs `004_ProMoE_*_hierar*.yaml` and scripts under `scripts/hierar/`.
 - `models_ProMoE_TC_sigmoid.py` / `models_ProMoE_TC_symmetric.py` — Routing ablation variants (sigmoid gating, symmetric routing).
 

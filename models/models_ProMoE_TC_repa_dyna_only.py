@@ -370,6 +370,7 @@ class DiT(nn.Module):
         self.out_channels = in_channels * 2 if learn_sigma else in_channels
         self.patch_size = patch_size
         self.num_heads = num_heads
+        self.repa_config = repa_config
 
         self.MoE_config = MoE_config
         use_moe_flag = [True] * depth
@@ -506,7 +507,7 @@ class DiT(nn.Module):
             # Extract projected features at encoder_depth for REPA alignment (training only)
             if self.training and self.projectors is not None and (i + 1) == self.encoder_depth:
                 flat_x = x.reshape(-1, D)
-                token_weight = self.repa_token_weighter(flat_x).reshape(N, T, 1)
+                token_weight = self.repa_token_weighter(flat_x).reshape(N, T, 1) * self.repa_config.get("proj_coeff", 0.5)
                 zs_proj = [
                     (proj(flat_x).reshape(N, T, -1), token_weight) for proj in self.projectors
                 ]
