@@ -54,35 +54,35 @@ GPU_IDS="${YAML_INFO[4]}"
 SAMPLE_BASE="${REPO_ROOT}/outputs/${MODEL_NAME}/${CUSTOM_CFG_NAME}/sample"
 
 # Make conda available in non-interactive shells.
-if ! command -v conda >/dev/null 2>&1; then
-  for conda_sh in \
-    "$HOME/miniconda3/etc/profile.d/conda.sh" \
-    "$HOME/anaconda3/etc/profile.d/conda.sh" \
-    "$HOME/mambaforge/etc/profile.d/conda.sh" \
-    "$HOME/miniforge3/etc/profile.d/conda.sh"; do
-    if [ -f "$conda_sh" ]; then
-      # shellcheck source=/dev/null
-      source "$conda_sh"
-      break
-    fi
-  done
-fi
+# if ! command -v conda >/dev/null 2>&1; then
+#   for conda_sh in \
+#     "$HOME/miniconda3/etc/profile.d/conda.sh" \
+#     "$HOME/anaconda3/etc/profile.d/conda.sh" \
+#     "$HOME/mambaforge/etc/profile.d/conda.sh" \
+#     "$HOME/miniforge3/etc/profile.d/conda.sh"; do
+#     if [ -f "$conda_sh" ]; then
+#       # shellcheck source=/dev/null
+#       source "$conda_sh"
+#       break
+#     fi
+#   done
+# fi
 
-if ! command -v conda >/dev/null 2>&1; then
-  echo "ERROR: conda command not found. Please install conda or add it to PATH." >&2
-  exit 127
-fi
+# if ! command -v conda >/dev/null 2>&1; then
+#   echo "ERROR: conda command not found. Please install conda or add it to PATH." >&2
+#   exit 127
+# fi
 
-eval "$(conda shell.bash hook 2>/dev/null)"
+# eval "$(conda shell.bash hook 2>/dev/null)"
 
 echo "============================================================" | tee "$LOG"
 echo "Step 1: Training ${MODEL_NAME}" | tee -a "$LOG"
 echo "Config: ${CONFIG}" | tee -a "$LOG"
 echo "============================================================" | tee -a "$LOG"
 
-conda activate promoe
+# conda activate promoe
 
-CUDA_VISIBLE_DEVICES="${GPU_IDS}" python train_with_repa.py \
+CUDA_VISIBLE_DEVICES="${GPU_IDS}" /mnt/workspace/yujie/.conda/envs/promoe/bin/python train_with_repa.py \
   --config "${CONFIG}" \
   2>&1 | tee -a "$LOG"
 
@@ -91,7 +91,7 @@ echo "============================================================" | tee -a "$L
 echo "Step 2: Sampling (all params from YAML)" | tee -a "$LOG"
 echo "============================================================" | tee -a "$LOG"
 
-CUDA_VISIBLE_DEVICES="${GPU_IDS}" python sample.py \
+CUDA_VISIBLE_DEVICES="${GPU_IDS}" /mnt/workspace/yujie/.conda/envs/promoe/bin/python sample.py \
   --config "${CONFIG}" \
   2>&1 | tee -a "$LOG"
 
@@ -100,7 +100,7 @@ echo "============================================================" | tee -a "$L
 echo "Step 3: Evaluation" | tee -a "$LOG"
 echo "============================================================" | tee -a "$LOG"
 
-conda activate promoe_eval
+# conda activate promoe_eval
 
 if [ ! -d "$SAMPLE_BASE" ]; then
   echo ">>> sample root not found: $SAMPLE_BASE" | tee -a "$LOG"
@@ -109,8 +109,8 @@ else
     echo "-------------------------------" | tee -a "$LOG"
     echo "Evaluating: ${IMG_DIR}" | tee -a "$LOG"
     echo "-------------------------------" | tee -a "$LOG"
-    (cd evaluation && CUDA_VISIBLE_DEVICES="${EVAL_GPU}" python run_eval.py "$IMG_DIR" --count "${NUM_FID_SAMPLES}") 2>&1 | tee -a "$LOG"
+    (cd evaluation && CUDA_VISIBLE_DEVICES="${EVAL_GPU}" /mnt/workspace/yujie/.conda/envs/fid_eval/bin/python run_eval.py "$IMG_DIR" --count "${NUM_FID_SAMPLES}") 2>&1 | tee -a "$LOG"
   done < <(find "$SAMPLE_BASE" -mindepth 3 -maxdepth 3 -type d -name images | sort -V)
 fi
 
-conda activate promoe
+# conda activate promoe

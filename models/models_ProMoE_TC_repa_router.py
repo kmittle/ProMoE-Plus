@@ -195,10 +195,6 @@ class SparseMoeBlock(nn.Module):
         self.use_uncond_expert = use_uncond_expert
         self.router_weight_mode = router_weight_mode
 
-        self.routing_contrastive_lam = routing_contrastive_lam
-        self.use_top_k_for_routing_contrastive = use_top_k_for_routing_contrastive
-        self.routing_contrastive_temperature = routing_contrastive_temperature
-
         self.experts = nn.ModuleList(
             [MoeMLP(hidden_size=hidden_size, intermediate_size=moe_intermediate_size)
              for _ in range(self.num_experts)]
@@ -329,85 +325,7 @@ class SparseMoeBlock(nn.Module):
             shared_output = self.shared_expert(hidden_states)
             final_output += shared_output
 
-        loss = load_balance_loss  # None
-        ### routing contrastive loss
-        if self.training and self.routing_contrastive_lam > 0:
-            flat_labels = labels.view(batch_size, 1).expand(-1, seq_len).reshape(-1)
-            if self.use_uncond_expert:
-                uncond_mask = (flat_labels == 1000)
-                cond_mask = ~uncond_mask
-            else:
-                cond_mask = torch.ones(batch_size * seq_len, dtype=torch.bool, device=hidden_states.device)
-
-            cond_token_embeddings = flat_input[cond_mask]  # [num_cond_tokens, hidden_dim]
-
-            if self.use_top_k_for_routing_contrastive:
-                # top-k
-                topk_expert_indices = expert_indices.view(batch_size * seq_len, self.top_k)[cond_mask]  # [num_cond_tokens, top_k]
-                cond_cluster_assignments = topk_expert_indices
-            else:
-                # top-1
-                top1_expert_indices = expert_indices.view(batch_size * seq_len, self.top_k)[:, 0]  # [batch_size * seq_len]
-                cond_cluster_assignments = top1_expert_indices[cond_mask]  # [num_cond_tokens]
-
-            routing_contrastive_loss = self.compute_routing_contrastive_loss(
-                cond_token_embeddings,
-                cond_cluster_assignments,
-                use_top_k=self.use_top_k_for_routing_contrastive
-            )
-
-            routing_contrastive_loss = routing_contrastive_loss * self.routing_contrastive_lam
-            if loss is not None:
-                loss += routing_contrastive_loss
-            else:
-                loss = routing_contrastive_loss
-
-        return final_output, loss
-
-    def compute_routing_contrastive_loss(self, token_embeddings, cluster_assignments, use_top_k=False):
-        """
-        cluster_centers: [num_clusters, hidden_size]
-        token_embeddings: [num_tokens, hidden_size]
-        cluster_assignments:
-            - use_top_k=False: [num_tokens]
-            - use_top_k=True: [num_tokens, top_k]
-        """
-        cluster_centers = self.cluster_centers
-        num_clusters = cluster_centers.size(0)
-        device = cluster_centers.device
-
-        cluster_means = []
-        valid_clusters = []
-
-        for cluster_id in range(num_clusters):
-            if use_top_k:
-                mask = (cluster_assignments == cluster_id).any(dim=1)
-            else:
-                mask = (cluster_assignments == cluster_id)
-
-            if mask.sum() > 0:
-                cluster_mean = token_embeddings[mask].mean(dim=0, keepdim=True)
-                cluster_means.append(cluster_mean)
-                valid_clusters.append(cluster_id)
-
-        if len(valid_clusters) < 2:
-            return torch.tensor(0.0, device=device)
-
-        cluster_means = torch.cat(cluster_means, dim=0)  # [num_valid_clusters, hidden_size]
-        valid_centers = cluster_centers[valid_clusters]  # [num_valid_clusters, hidden_size]
-
-        centers_norm = F.normalize(valid_centers, p=2, dim=1)
-        means_norm = F.normalize(cluster_means, p=2, dim=1)
-
-        sim_matrix = centers_norm @ means_norm.T
-
-        temperature = self.routing_contrastive_temperature
-        labels = torch.arange(sim_matrix.size(0), device=device)
-        logits = sim_matrix / temperature
-
-        loss = F.cross_entropy(logits, labels)
-
-        return loss
+        return final_output, load_balance_loss
 
     def _init_weights(self):
         nn.init.normal_(self.cluster_centers, mean=0.0, std=0.02)

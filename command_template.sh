@@ -1,8 +1,12 @@
 #!/bin/bash
 #
-# Train ProMoE-TC-REPA-Router-Contra-B, then sample and evaluate FID.
+# Train ProMoE-TC-REPA-DYNA-ONLY-B, then sample and evaluate FID.
 #
-# Step 1: Train with configs/004_ProMoE_B_repa_router_contra.yaml
+# This is an ablation experiment: sigmoid dynamic weighting capped at proj_coeff (0.5),
+# so the max per-token weight matches naive REPA. Tests whether the improvement of
+# dynamic REPA comes from dynamics itself or from larger coefficients.
+#
+# Step 1: Train with configs/004_ProMoE_B_repa_dyna_only.yaml
 # Step 2: Sample with parameters from YAML
 # Step 3: Evaluate generated images with OpenAI evaluator (count from YAML)
 #
@@ -16,8 +20,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "$REPO_ROOT"
 
-CONFIG="configs/004_ProMoE_B_repa_router_contra.yaml"
-LOG="log_ProMoE_B_repa_router_contra_train_sample_eval.log"
+CONFIG="configs/004_ProMoE_B_repa_dyna_only.yaml"
+LOG="log_ProMoE_B_repa_dyna_only_train_sample_eval.log"
 
 readarray -t YAML_INFO < <(python - "$CONFIG" <<'PY'
 import os

@@ -59,6 +59,12 @@ bash scripts/dynamic_repa/run_B_repa_dyna_select_r75_train_sample_eval.sh
 bash scripts/dynamic_repa/run_B_repa_dyna_scale_train_sample_eval.sh
 bash scripts/dynamic_repa/run_B_repa_dyna_only_train_sample_eval.sh
 
+# Router / routed / double-share REPA experiments
+bash scripts/repa/run_B_repa_router_train_sample_eval.sh
+bash scripts/repa/run_B_repa_router_contra_train_sample_eval.sh
+bash scripts/repa/run_B_repa_routed_train_sample_eval.sh
+bash scripts/repa/run_B_repa_double_share_train_sample_eval.sh
+
 # Hierarchical routing experiments
 bash scripts/hierar/run_B_hierar_train.sh
 bash scripts/hierar/run_B_hierar_infer_eval.sh
@@ -112,6 +118,10 @@ python run_eval.py /path/to/generated/images --count 50000 --no-eval
 - `models_ProMoE_TC_repa_dyna_select.py` — Dynamic REPA variant with selective alignment (e.g., ratio-based token selection).
 - `models_ProMoE_TC_repa_dyna_only.py` — Dynamic REPA variant applying alignment only (no standard REPA fallback).
 - `models_ProMoE_TC_hierar.py` / `models_ProMoE_TC_hierar_expert.py` — Hierarchical routing variants. Used by configs `004_ProMoE_*_hierar*.yaml` and scripts under `scripts/hierar/`.
+- `models_ProMoE_TC_repa_router.py` — REPA variant with router-level alignment (K-Means + Hungarian matching for expert assignment).
+- `models_ProMoE_TC_repa_router_contra.py` — Router REPA variant with contrastive routing loss.
+- `models_ProMoE_TC_repa_routed.py` — REPA variant aligning routed (expert-processed) features.
+- `models_ProMoE_TC_repa_double_share.py` — REPA variant with double shared expert architecture.
 - `models_ProMoE_TC_sigmoid.py` / `models_ProMoE_TC_symmetric.py` — Routing ablation variants (sigmoid gating, symmetric routing).
 
 ### Auxiliary Loss Convention

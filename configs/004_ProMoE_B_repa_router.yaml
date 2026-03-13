@@ -20,6 +20,7 @@ DiT_B_config:
     encoder_depth: 4
     z_dims: [768]
     projector_dim: 2048
+    router_repa_coeff: 1
   MoE_config:
     num_routed_experts: 12
     moe_intermediate_size: 1536  # 768 // (1+1 shared) * mlp_ratio (4)
@@ -32,7 +33,7 @@ DiT_B_config:
     init_MoeMLP: False
     top_k: 1
     router_weight_mode: identity
-    routing_contrastive_lam: 1
+    routing_contrastive_lam: 0  # Routing contrastive code was removed in models_ProMoE_TC_repa_router.py; this must stay 0.
     use_top_k_for_routing_contrastive: True
     routing_contrastive_temperature: 0.07
 
