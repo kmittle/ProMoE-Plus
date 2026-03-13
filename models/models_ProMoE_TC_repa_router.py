@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from timm.models.vision_transformer import PatchEmbed
 import torch.nn.functional as F
+from scipy.optimize import linear_sum_assignment
 from .modules import get_2d_sincos_pos_embed, Attention, modulate, TimestepEmbedder, LabelEmbedder, FinalLayer, MoeMLP, Mlp
 
 
@@ -17,6 +18,119 @@ def build_repa_projector(hidden_size, projector_dim, z_dim):
         nn.SiLU(),
         nn.Linear(projector_dim, z_dim),
     )
+
+
+#################################################################################
+#                      K-Means and Hungarian Matching                          #
+#################################################################################
+def _sq_dists(a, b):
+    """Squared L2 distances between rows of a and rows of b via matmul.
+
+    Args:
+        a: (N, D), b: (K, D)
+    Returns:
+        (N, K) squared distances
+    """
+    # ||a-b||^2 = ||a||^2 + ||b||^2 - 2*a@b^T
+    a_sq = (a * a).sum(dim=1, keepdim=True)  # [N, 1]
+    b_sq = (b * b).sum(dim=1, keepdim=True)  # [K, 1]
+    return a_sq + b_sq.T - 2.0 * (a @ b.T)  # [N, K]
+
+
+@torch.no_grad()
+def kmeans_plus_plus_init(data, n_clusters):
+    """K-Means++ initialization on GPU.
+
+    Incrementally maintains min-distance-squared to avoid redundant
+    distance computations.
+
+    Args:
+        data: (N, D) tensor
+        n_clusters: number of clusters
+
+    Returns:
+        centers: (n_clusters, D) tensor
+    """
+    n_samples = data.shape[0]
+    device = data.device
+
+    # First center: random
+    idx = torch.randint(0, n_samples, (1,), device=device).item()
+    centers = [data[idx : idx + 1]]  # list of [1, D]
+
+    # min squared distance from each point to the nearest chosen center
+    min_sq_dists = torch.full((n_samples,), float('inf'), device=device)
+
+    for _ in range(1, n_clusters):
+        # Update min distances with the latest center only
+        new_center = centers[-1]  # [1, D]
+        sq_dist_to_new = _sq_dists(data, new_center).squeeze(1)  # [N]
+        min_sq_dists = torch.minimum(min_sq_dists, sq_dist_to_new)
+
+        # Sample proportional to min squared distance
+        probs = min_sq_dists / min_sq_dists.sum()
+        idx = torch.multinomial(probs, 1).item()
+        centers.append(data[idx : idx + 1])
+
+    return torch.cat(centers, dim=0)  # [n_clusters, D]
+
+
+@torch.no_grad()
+def kmeans(data, n_clusters, n_iters=10):
+    """K-Means clustering with K-Means++ initialization.
+
+    Uses vectorized scatter_add_ for center updates and matmul-based
+    squared L2 distances for assignment.
+
+    Args:
+        data: (N, D) tensor
+        n_clusters: number of clusters
+        n_iters: number of iterations
+
+    Returns:
+        centers: (n_clusters, D) tensor of cluster centers
+    """
+    N, D = data.shape
+    centers = kmeans_plus_plus_init(data, n_clusters)
+
+    for _ in range(n_iters):
+        # Assign each point to nearest center (squared L2)
+        sq_dists = _sq_dists(data, centers)  # [N, K]
+        assignments = sq_dists.argmin(dim=1)  # [N]
+
+        # Vectorized center update via scatter_add_
+        new_centers = torch.zeros_like(centers)  # [K, D]
+        counts = torch.zeros(n_clusters, 1, device=data.device, dtype=data.dtype)
+        expand_idx = assignments.unsqueeze(1).expand(-1, D)  # [N, D]
+        new_centers.scatter_add_(0, expand_idx, data)
+        counts.scatter_add_(0, assignments.unsqueeze(1),
+                            torch.ones(N, 1, device=data.device, dtype=data.dtype))
+
+        # Handle empty clusters: keep old center
+        empty_mask = (counts.squeeze(1) == 0)
+        counts = counts.clamp(min=1)
+        new_centers = new_centers / counts
+        if empty_mask.any():
+            new_centers[empty_mask] = centers[empty_mask]
+        centers = new_centers
+
+    return centers  # [K, D]
+
+
+def hungarian_match(cost_matrix):
+    """Optimal assignment minimizing total cost using the Hungarian algorithm.
+
+    Args:
+        cost_matrix: (n, n) tensor, where cost_matrix[i, j] is the cost of
+                     assigning prototype i to teacher cluster j.
+
+    Returns:
+        row_ind, col_ind: matched indices (as torch tensors on the same device)
+    """
+    cost_np = cost_matrix.detach().cpu().float().numpy()
+    row_ind, col_ind = linear_sum_assignment(cost_np)
+    device = cost_matrix.device
+    return torch.tensor(row_ind, device=device), torch.tensor(col_ind, device=device)
 
 
 #################################################################################
@@ -344,7 +458,8 @@ class DiTBlock(nn.Module):
 
 class DiT(nn.Module):
     """
-    Diffusion model with a Transformer backbone + REPA projectors.
+    Diffusion model with a Transformer backbone + REPA projectors
+    + REPA-guided router alignment.
     """
     def __init__(
         self,
@@ -391,7 +506,11 @@ class DiT(nn.Module):
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
         self.init_MoeMLP= MoE_config.init_MoeMLP
 
-        # REPA: projector heads for representation alignment
+        # Collect MoE block indices for router alignment
+        self.moe_block_indices = [i for i, flag in enumerate(use_moe_flag) if flag]
+        self.num_moe_blocks = len(self.moe_block_indices)
+
+        # REPA: projector heads for representation alignment (naive REPA)
         if repa_config is not None:
             self.encoder_depth = repa_config.get('encoder_depth', 4)
             assert self.encoder_depth <= depth, \
@@ -401,9 +520,22 @@ class DiT(nn.Module):
             self.projectors = nn.ModuleList([
                 build_repa_projector(hidden_size, projector_dim, z_dim) for z_dim in z_dims
             ])
+
+            # Router REPA: projectors that map teacher cluster centers → prototype space
+            teacher_dim = z_dims[0]  # teacher embedding dimension
+            router_projector_dim = repa_config.get('router_projector_dim', projector_dim)
+            self.router_projectors = nn.ModuleList([
+                build_repa_projector(teacher_dim, router_projector_dim, hidden_size)
+                for _ in range(self.num_moe_blocks)
+            ])
+            self.router_repa_coeff = repa_config.get('router_repa_coeff', 1)
+            self.kmeans_n_iters = repa_config.get('kmeans_n_iters', 10)
         else:
             self.encoder_depth = None
             self.projectors = None
+            self.router_projectors = None
+            self.router_repa_coeff = 0.0
+            self.kmeans_n_iters = 10
 
         self.initialize_weights()
 
@@ -454,6 +586,58 @@ class DiT(nn.Module):
                     init_MoeMLP(expert)
             print("init MoE related module with std 0.006 like DeepSeek-MoE")
 
+    def compute_router_repa_loss(self, teacher_z):
+        """Compute REPA-guided router alignment loss across all MoE blocks.
+
+        1. Flatten teacher_z and run K-Means to get n cluster centers in teacher space.
+        2. For each MoE block, project teacher centers → prototype space via router_projector.
+        3. Hungarian match projected centers with block's cluster_centers (prototypes).
+        4. Compute negative cosine similarity loss on matched pairs.
+
+        Args:
+            teacher_z: (B, T, D_teacher) frozen teacher encoder features.
+
+        Returns:
+            router_align_loss: scalar tensor (averaged across MoE blocks).
+        """
+        n_clusters = self.MoE_config.num_routed_experts
+        device = teacher_z.device
+
+        # Flatten to [B*T, D_teacher] for K-Means
+        flat_teacher = teacher_z.reshape(-1, teacher_z.shape[-1]).float()
+        teacher_centers = kmeans(flat_teacher, n_clusters, n_iters=self.kmeans_n_iters)
+        # teacher_centers: [n_clusters, D_teacher]
+
+        total_loss = torch.tensor(0.0, device=device)
+        moe_idx = 0
+        for block_idx in self.moe_block_indices:
+            block = self.blocks[block_idx]
+            prototypes = block.mlp.cluster_centers  # [n_clusters, hidden_size]
+
+            # Project teacher centers to prototype space
+            proj_centers = self.router_projectors[moe_idx](teacher_centers)  # [n_clusters, hidden_size]
+
+            # Compute cosine similarity matrix for Hungarian matching
+            proto_norm = F.normalize(prototypes, p=2, dim=1)      # [n, hidden_size]
+            proj_norm = F.normalize(proj_centers, p=2, dim=1)     # [n, hidden_size]
+            cos_sim = proto_norm @ proj_norm.T  # [n, n]
+
+            # Hungarian matching: minimize negative cosine similarity (maximize similarity)
+            cost = -cos_sim  # [n, n]
+            row_ind, col_ind = hungarian_match(cost)
+
+            # Compute negative cosine similarity loss on matched pairs
+            matched_proto = proto_norm[row_ind]    # [n, hidden_size]
+            matched_proj = proj_norm[col_ind]      # [n, hidden_size]
+            pair_loss = -(matched_proto * matched_proj).sum(dim=-1).mean()
+
+            total_loss = total_loss + pair_loss
+            moe_idx += 1
+
+        # Average across MoE blocks
+        router_align_loss = total_loss / self.num_moe_blocks
+        return router_align_loss
+
     def unpatchify(self, x):
         """
         x: (N, T, patch_size**2 * C)
@@ -471,15 +655,23 @@ class DiT(nn.Module):
 
     def forward(self, x, timestep, context, **kwargs):
         """
-        Forward pass of DiT with optional REPA projections.
-        x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
-        timestep: (N,) tensor of diffusion timesteps
-        context: (N,) tensor of class labels
+        Forward pass of DiT with naive REPA + REPA-guided router alignment.
 
-        Returns:
+        Args:
+            x: (N, C, H, W) tensor of spatial inputs
+            timestep: (N,) tensor of diffusion timesteps
+            context: (N,) tensor of class labels
+            teacher_z: (N, T, D_teacher) optional teacher encoder features for
+                       router alignment (passed via kwargs)
+
+        Returns (training):
             x: (N, out_channels, H, W) model prediction
-            zs_proj: list of (N, T, z_dim) projected features, or None if no projectors
+            zs_proj: list of (N, T, z_dim) projected features for naive REPA
+        Returns (inference):
+            x: (N, out_channels, H, W) model prediction
         """
+        teacher_z = kwargs.get('teacher_z', None)
+
         y = context
         if len(x.shape) != 4:
             x = x.squeeze(2)
@@ -493,9 +685,15 @@ class DiT(nn.Module):
         zs_proj = None
         for i, block in enumerate(self.blocks):
             x = block(x, c, labels)                      # (N, T, D)
-            # Extract projected features at encoder_depth for REPA alignment (training only)
+            # Extract projected features at encoder_depth for naive REPA alignment (training only)
             if self.training and self.projectors is not None and (i + 1) == self.encoder_depth:
                 zs_proj = [proj(x.reshape(-1, D)).reshape(N, T, -1) for proj in self.projectors]
+
+        # REPA-guided router alignment loss (training only)
+        if self.training and self.router_projectors is not None and teacher_z is not None:
+            router_align_loss = self.compute_router_repa_loss(teacher_z)
+            router_align_loss = router_align_loss * self.router_repa_coeff
+            x = AddAuxiliaryLoss.apply(x, router_align_loss)
 
         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
         x = self.unpatchify(x)                   # (N, out_channels, H, W)

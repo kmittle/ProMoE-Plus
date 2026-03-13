@@ -45,6 +45,7 @@ from models.models_ProMoE_TC_repa_dyna_scale import DiT as ProMoE_TC_REPA_DYNA_S
 from models.models_ProMoE_TC_repa_dyna_only import DiT as ProMoE_TC_REPA_DYNA_ONLY
 from models.models_ProMoE_TC_repa_shared import DiT as ProMoE_TC_REPA_Shared
 from models.models_ProMoE_TC_repa_cond import DiT as ProMoE_TC_REPA_Cond
+from models.models_ProMoE_TC_repa_router import DiT as ProMoE_TC_REPA_Router
 from models.models_ProMoE_TC_repa_routed import DiT as ProMoE_TC_REPA_Routed
 from models.models_ProMoE_TC_repa_double_share import DiT as ProMoE_TC_REPA_Double_Share
 from repa.encoder import load_teacher_encoder, extract_teacher_features
@@ -99,6 +100,11 @@ model_dict = {
     "ProMoE_TC_REPA_Cond_B": (ProMoE_TC_REPA_Cond, "DiT_B_config"),
     "ProMoE_TC_REPA_Cond_L": (ProMoE_TC_REPA_Cond, "DiT_L_config"),
     "ProMoE_TC_REPA_Cond_XL": (ProMoE_TC_REPA_Cond, "DiT_XL_config"),
+    # REPA-Router variants (naive REPA + router alignment via teacher clusters)
+    "ProMoE_TC_REPA_Router_S": (ProMoE_TC_REPA_Router, "DiT_S_config"),
+    "ProMoE_TC_REPA_Router_B": (ProMoE_TC_REPA_Router, "DiT_B_config"),
+    "ProMoE_TC_REPA_Router_L": (ProMoE_TC_REPA_Router, "DiT_L_config"),
+    "ProMoE_TC_REPA_Router_XL": (ProMoE_TC_REPA_Router, "DiT_XL_config"),
     # REPA-Routed variants (align routed expert output with teacher, all tokens)
     "ProMoE_TC_REPA_Routed_S": (ProMoE_TC_REPA_Routed, "DiT_S_config"),
     "ProMoE_TC_REPA_Routed_B": (ProMoE_TC_REPA_Routed, "DiT_B_config"),
@@ -628,6 +634,8 @@ def worker(gpu, cfg):
         t, sigmas, z = rank_img_t, rank_img_sigma, rank_img_z
 
         arg_c = {'context': context, 'use_gradient_checkpointing': cfg.use_gradient_checkpointing}
+        if use_repa:
+            arg_c['teacher_z'] = teacher_z
 
         noise = torch.randn_like(z)
         noised_z_in = (1.0 - sigmas.squeeze()).view(z.shape[0], 1, 1, 1, 1) * z + sigmas.squeeze().view(z.shape[0], 1, 1, 1, 1) * noise
@@ -700,13 +708,18 @@ def worker(gpu, cfg):
         loss = loss_dict["loss"].mean()
 
         if step % cfg.log_interval == 0:
-            log_msg = f"epoch {epoch}-step {step} loss: {loss}"
+            log_msg = f"epoch {epoch}-step {step} mse_loss: {loss_dict['mse_loss'].item():.4f}"
+            if "cp_loss" in loss_dict:
+                log_msg += f" cp_loss: {loss_dict['cp_loss'].item():.4f}"
             if use_repa and "repa_loss" in loss_dict:
                 log_msg += f" repa_loss: {loss_dict['repa_loss'].item():.4f}"
+            log_msg += f" total_loss: {loss.item():.4f}"
             logging.info(log_msg)
         if cfg.rank == 0:
             writer.add_scalar('Loss/train', loss.item(), step)
             writer.add_scalar('Loss/mse', loss_dict["mse_loss"].item(), step)
+            if "cp_loss" in loss_dict:
+                writer.add_scalar('Loss/cp', loss_dict["cp_loss"].item(), step)
             if use_repa and "repa_loss" in loss_dict:
                 writer.add_scalar('Loss/repa', loss_dict["repa_loss"].item(), step)
 

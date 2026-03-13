@@ -568,9 +568,16 @@ def worker(gpu, cfg):
         loss = loss_dict["loss"].mean()
 
         if step % cfg.log_interval == 0:
-            logging.info(f"epoch {epoch}-step {step} loss: {loss}")
+            log_msg = f"epoch {epoch}-step {step} mse_loss: {loss_dict['mse_loss'].item():.4f}"
+            if "cp_loss" in loss_dict:
+                log_msg += f" cp_loss: {loss_dict['cp_loss'].item():.4f}"
+            log_msg += f" total_loss: {loss.item():.4f}"
+            logging.info(log_msg)
         if cfg.rank == 0:
             writer.add_scalar('Loss/train', loss.item(), step)
+            writer.add_scalar('Loss/mse', loss_dict["mse_loss"].item(), step)
+            if "cp_loss" in loss_dict:
+                writer.add_scalar('Loss/cp', loss_dict["cp_loss"].item(), step)
 
         # backward
         scaler.scale(loss / cfg.grad_mix).backward()
