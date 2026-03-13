@@ -34,7 +34,7 @@ def _sq_dists(a, b):
     # ||a-b||^2 = ||a||^2 + ||b||^2 - 2*a@b^T
     a_sq = (a * a).sum(dim=1, keepdim=True)  # [N, 1]
     b_sq = (b * b).sum(dim=1, keepdim=True)  # [K, 1]
-    return a_sq + b_sq.T - 2.0 * (a @ b.T)  # [N, K]
+    return (a_sq + b_sq.T - 2.0 * (a @ b.T)).clamp_min_(0)  # [N, K]
 
 
 @torch.no_grad()
@@ -68,8 +68,12 @@ def kmeans_plus_plus_init(data, n_clusters):
         min_sq_dists = torch.minimum(min_sq_dists, sq_dist_to_new)
 
         # Sample proportional to min squared distance
-        probs = min_sq_dists / min_sq_dists.sum()
-        idx = torch.multinomial(probs, 1).item()
+        total_min_sq_dist = min_sq_dists.sum()
+        if not torch.isfinite(total_min_sq_dist) or total_min_sq_dist <= 0:
+            idx = torch.randint(0, n_samples, (1,), device=device).item()
+        else:
+            probs = min_sq_dists / total_min_sq_dist
+            idx = torch.multinomial(probs, 1).item()
         centers.append(data[idx : idx + 1])
 
     return torch.cat(centers, dim=0)  # [n_clusters, D]

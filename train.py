@@ -208,6 +208,26 @@ def setup_logging(output_dir, rank):
         logger.addHandler(file_handler)
 
 
+def format_loss_log(epoch, step, loss_dict):
+    parts = [f"epoch {epoch}-step {step}"]
+    for name, value in loss_dict.items():
+        if name in {"loss", "total_loss"} or not torch.is_tensor(value):
+            continue
+        parts.append(f"{name}: {value.item():.4f}")
+    if "total_loss" in loss_dict and torch.is_tensor(loss_dict["total_loss"]):
+        parts.append(f"total_loss: {loss_dict['total_loss'].item():.4f}")
+    return " ".join(parts)
+
+
+def write_loss_dict_to_tensorboard(writer, loss_dict, step):
+    if "total_loss" in loss_dict and torch.is_tensor(loss_dict["total_loss"]):
+        writer.add_scalar('Loss/train', loss_dict["total_loss"].item(), step)
+    for name, value in loss_dict.items():
+        if name == "loss" or not torch.is_tensor(value):
+            continue
+        writer.add_scalar(f'Loss/{name}', value.item(), step)
+
+
 def load_latest_checkpoint(model, ema_model, optimizer, checkpoint_dir='checkpoints', resume_checkpoint_step=None):
     if resume_checkpoint_step is not None:
         checkpoint_path = os.path.join(checkpoint_dir, f'ckpt_step_{resume_checkpoint_step}.pth')
@@ -566,18 +586,12 @@ def worker(gpu, cfg):
         loss_dict["loss"] += mse_loss
 
         loss = loss_dict["loss"].mean()
+        loss_dict["total_loss"] = loss
 
         if step % cfg.log_interval == 0:
-            log_msg = f"epoch {epoch}-step {step} mse_loss: {loss_dict['mse_loss'].item():.4f}"
-            if "cp_loss" in loss_dict:
-                log_msg += f" cp_loss: {loss_dict['cp_loss'].item():.4f}"
-            log_msg += f" total_loss: {loss.item():.4f}"
-            logging.info(log_msg)
+            logging.info(format_loss_log(epoch, step, loss_dict))
         if cfg.rank == 0:
-            writer.add_scalar('Loss/train', loss.item(), step)
-            writer.add_scalar('Loss/mse', loss_dict["mse_loss"].item(), step)
-            if "cp_loss" in loss_dict:
-                writer.add_scalar('Loss/cp', loss_dict["cp_loss"].item(), step)
+            write_loss_dict_to_tensorboard(writer, loss_dict, step)
 
         # backward
         scaler.scale(loss / cfg.grad_mix).backward()

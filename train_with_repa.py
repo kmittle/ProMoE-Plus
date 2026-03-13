@@ -46,6 +46,7 @@ from models.models_ProMoE_TC_repa_dyna_only import DiT as ProMoE_TC_REPA_DYNA_ON
 from models.models_ProMoE_TC_repa_shared import DiT as ProMoE_TC_REPA_Shared
 from models.models_ProMoE_TC_repa_cond import DiT as ProMoE_TC_REPA_Cond
 from models.models_ProMoE_TC_repa_router import DiT as ProMoE_TC_REPA_Router
+from models.models_ProMoE_TC_repa_router_contra import DiT as ProMoE_TC_REPA_Router_Contra
 from models.models_ProMoE_TC_repa_routed import DiT as ProMoE_TC_REPA_Routed
 from models.models_ProMoE_TC_repa_double_share import DiT as ProMoE_TC_REPA_Double_Share
 from repa.encoder import load_teacher_encoder, extract_teacher_features
@@ -105,6 +106,11 @@ model_dict = {
     "ProMoE_TC_REPA_Router_B": (ProMoE_TC_REPA_Router, "DiT_B_config"),
     "ProMoE_TC_REPA_Router_L": (ProMoE_TC_REPA_Router, "DiT_L_config"),
     "ProMoE_TC_REPA_Router_XL": (ProMoE_TC_REPA_Router, "DiT_XL_config"),
+    # REPA-Router-Contra variants (router REPA + routing contrastive with linear coefficient handoff)
+    "ProMoE_TC_REPA_Router_Contra_S": (ProMoE_TC_REPA_Router_Contra, "DiT_S_config"),
+    "ProMoE_TC_REPA_Router_Contra_B": (ProMoE_TC_REPA_Router_Contra, "DiT_B_config"),
+    "ProMoE_TC_REPA_Router_Contra_L": (ProMoE_TC_REPA_Router_Contra, "DiT_L_config"),
+    "ProMoE_TC_REPA_Router_Contra_XL": (ProMoE_TC_REPA_Router_Contra, "DiT_XL_config"),
     # REPA-Routed variants (align routed expert output with teacher, all tokens)
     "ProMoE_TC_REPA_Routed_S": (ProMoE_TC_REPA_Routed, "DiT_S_config"),
     "ProMoE_TC_REPA_Routed_B": (ProMoE_TC_REPA_Routed, "DiT_B_config"),
@@ -275,6 +281,26 @@ def setup_logging(output_dir, rank):
         plain_formatter = logging.Formatter('[%(asctime)s-%(levelname)s]: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
         file_handler.setFormatter(plain_formatter)
         logger.addHandler(file_handler)
+
+
+def format_loss_log(epoch, step, loss_dict):
+    parts = [f"epoch {epoch}-step {step}"]
+    for name, value in loss_dict.items():
+        if name in {"loss", "total_loss"} or not torch.is_tensor(value):
+            continue
+        parts.append(f"{name}: {value.item():.4f}")
+    if "total_loss" in loss_dict and torch.is_tensor(loss_dict["total_loss"]):
+        parts.append(f"total_loss: {loss_dict['total_loss'].item():.4f}")
+    return " ".join(parts)
+
+
+def write_loss_dict_to_tensorboard(writer, loss_dict, step):
+    if "total_loss" in loss_dict and torch.is_tensor(loss_dict["total_loss"]):
+        writer.add_scalar('Loss/train', loss_dict["total_loss"].item(), step)
+    for name, value in loss_dict.items():
+        if name == "loss" or not torch.is_tensor(value):
+            continue
+        writer.add_scalar(f'Loss/{name}', value.item(), step)
 
 
 def load_latest_checkpoint(model, ema_model, optimizer, checkpoint_dir='checkpoints', resume_checkpoint_step=None):
@@ -687,7 +713,9 @@ def worker(gpu, cfg):
                     # the weighting is already applied inside compute_repa_loss,
                     # so skip multiplying by proj_coeff.
                     has_dynamic_weight = isinstance(zs_proj[0], (tuple, list))
-                    loss_dict["loss"] += repa_loss if has_dynamic_weight else repa_loss * proj_coeff
+                    repa_loss_weighted = repa_loss if has_dynamic_weight else repa_loss * proj_coeff
+                    loss_dict["repa_loss_weighted"] = repa_loss_weighted
+                    loss_dict["loss"] += repa_loss_weighted
 
         elif model_output.shape[1] != noised_z_in.shape[1]:
             ########## DiT loss
@@ -706,22 +734,12 @@ def worker(gpu, cfg):
         loss_dict["loss"] += mse_loss
 
         loss = loss_dict["loss"].mean()
+        loss_dict["total_loss"] = loss
 
         if step % cfg.log_interval == 0:
-            log_msg = f"epoch {epoch}-step {step} mse_loss: {loss_dict['mse_loss'].item():.4f}"
-            if "cp_loss" in loss_dict:
-                log_msg += f" cp_loss: {loss_dict['cp_loss'].item():.4f}"
-            if use_repa and "repa_loss" in loss_dict:
-                log_msg += f" repa_loss: {loss_dict['repa_loss'].item():.4f}"
-            log_msg += f" total_loss: {loss.item():.4f}"
-            logging.info(log_msg)
+            logging.info(format_loss_log(epoch, step, loss_dict))
         if cfg.rank == 0:
-            writer.add_scalar('Loss/train', loss.item(), step)
-            writer.add_scalar('Loss/mse', loss_dict["mse_loss"].item(), step)
-            if "cp_loss" in loss_dict:
-                writer.add_scalar('Loss/cp', loss_dict["cp_loss"].item(), step)
-            if use_repa and "repa_loss" in loss_dict:
-                writer.add_scalar('Loss/repa', loss_dict["repa_loss"].item(), step)
+            write_loss_dict_to_tensorboard(writer, loss_dict, step)
 
         # backward
         scaler.scale(loss / cfg.grad_mix).backward()

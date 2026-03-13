@@ -34,7 +34,7 @@ def _sq_dists(a, b):
     # ||a-b||^2 = ||a||^2 + ||b||^2 - 2*a@b^T
     a_sq = (a * a).sum(dim=1, keepdim=True)  # [N, 1]
     b_sq = (b * b).sum(dim=1, keepdim=True)  # [K, 1]
-    return a_sq + b_sq.T - 2.0 * (a @ b.T)  # [N, K]
+    return (a_sq + b_sq.T - 2.0 * (a @ b.T)).clamp_min_(0)  # [N, K]
 
 
 @torch.no_grad()
@@ -68,8 +68,12 @@ def kmeans_plus_plus_init(data, n_clusters):
         min_sq_dists = torch.minimum(min_sq_dists, sq_dist_to_new)
 
         # Sample proportional to min squared distance
-        probs = min_sq_dists / min_sq_dists.sum()
-        idx = torch.multinomial(probs, 1).item()
+        total_min_sq_dist = min_sq_dists.sum()
+        if not torch.isfinite(total_min_sq_dist) or total_min_sq_dist <= 0:
+            idx = torch.randint(0, n_samples, (1,), device=device).item()
+        else:
+            probs = min_sq_dists / total_min_sq_dist
+            idx = torch.multinomial(probs, 1).item()
         centers.append(data[idx : idx + 1])
 
     return torch.cat(centers, dim=0)  # [n_clusters, D]
@@ -322,8 +326,8 @@ class SparseMoeBlock(nn.Module):
             shared_output = self.shared_expert(hidden_states)
             final_output += shared_output
 
-        loss = load_balance_loss  # None
         ### routing contrastive loss
+        routing_contrastive_loss = None
         if self.training and self.routing_contrastive_lam > 0:
             flat_labels = labels.view(batch_size, 1).expand(-1, seq_len).reshape(-1)
             if self.use_uncond_expert:
@@ -349,13 +353,7 @@ class SparseMoeBlock(nn.Module):
                 use_top_k=self.use_top_k_for_routing_contrastive
             )
 
-            routing_contrastive_loss = routing_contrastive_loss * self.routing_contrastive_lam
-            if loss is not None:
-                loss += routing_contrastive_loss
-            else:
-                loss = routing_contrastive_loss
-
-        return final_output, loss
+        return final_output, load_balance_loss, routing_contrastive_loss
 
     def compute_routing_contrastive_loss(self, token_embeddings, cluster_assignments, use_top_k=False):
         """
@@ -446,14 +444,12 @@ class DiTBlock(nn.Module):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=1)
         x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
         if self.use_moe:
-            x_mlp, aux_loss = self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp), label)
-            if aux_loss is not None:
-                x_mlp = AddAuxiliaryLoss.apply(x_mlp, aux_loss)
+            x_mlp, load_balance_loss, routing_contrastive_loss = self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp), label)
             x = x + gate_mlp.unsqueeze(1) * x_mlp
-            return x
+            return x, load_balance_loss, routing_contrastive_loss
         else:
             x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
-            return x
+            return x, None, None
 
 
 class DiT(nn.Module):
@@ -509,6 +505,9 @@ class DiT(nn.Module):
         # Collect MoE block indices for router alignment
         self.moe_block_indices = [i for i, flag in enumerate(use_moe_flag) if flag]
         self.num_moe_blocks = len(self.moe_block_indices)
+        self.register_buffer('router_loss_step', torch.zeros(1, dtype=torch.long), persistent=True)
+        self.router_loss_decay_steps = 500000
+        self.router_aux_total_lam = float(getattr(MoE_config, 'routing_contrastive_lam', 1.0))
 
         # REPA: projector heads for representation alignment (naive REPA)
         if repa_config is not None:
@@ -528,13 +527,12 @@ class DiT(nn.Module):
                 build_repa_projector(teacher_dim, router_projector_dim, hidden_size)
                 for _ in range(self.num_moe_blocks)
             ])
-            self.router_repa_coeff = repa_config.get('router_repa_coeff', 1)
             self.kmeans_n_iters = repa_config.get('kmeans_n_iters', 10)
+            self.router_loss_decay_steps = int(repa_config.get('router_loss_decay_steps', 500000))
         else:
             self.encoder_depth = None
             self.projectors = None
             self.router_projectors = None
-            self.router_repa_coeff = 0.0
             self.kmeans_n_iters = 10
 
         self.initialize_weights()
@@ -638,6 +636,21 @@ class DiT(nn.Module):
         router_align_loss = total_loss / self.num_moe_blocks
         return router_align_loss
 
+    def get_router_loss_coeffs(self, current_step=None, decay_steps=None):
+        """Linearly shift the fixed total router-loss weight from REPA alignment to contrastive loss."""
+        if current_step is None:
+            current_step = int(self.router_loss_step.item())
+        if decay_steps is None:
+            decay_steps = self.router_loss_decay_steps
+
+        decay_steps = max(int(decay_steps), 1)
+        current_step = min(max(int(current_step), 0), decay_steps)
+        progress = float(current_step) / float(decay_steps)
+
+        router_repa_coef = (1.0 - progress) * self.router_aux_total_lam
+        router_contra_coef = progress * self.router_aux_total_lam
+        return router_repa_coef, router_contra_coef
+
     def unpatchify(self, x):
         """
         x: (N, T, patch_size**2 * C)
@@ -683,17 +696,52 @@ class DiT(nn.Module):
         c = t + y                                # (N, D)
 
         zs_proj = None
+        load_balance_losses = []
+        routing_contrastive_losses = []
         for i, block in enumerate(self.blocks):
-            x = block(x, c, labels)                      # (N, T, D)
+            x, load_balance_loss, routing_contrastive_loss = block(x, c, labels)  # (N, T, D)
+            if load_balance_loss is not None:
+                load_balance_losses.append(load_balance_loss)
+            if routing_contrastive_loss is not None:
+                routing_contrastive_losses.append(routing_contrastive_loss)
             # Extract projected features at encoder_depth for naive REPA alignment (training only)
             if self.training and self.projectors is not None and (i + 1) == self.encoder_depth:
                 zs_proj = [proj(x.reshape(-1, D)).reshape(N, T, -1) for proj in self.projectors]
 
-        # REPA-guided router alignment loss (training only)
-        if self.training and self.router_projectors is not None and teacher_z is not None:
-            router_align_loss = self.compute_router_repa_loss(teacher_z)
-            router_align_loss = router_align_loss * self.router_repa_coeff
-            x = AddAuxiliaryLoss.apply(x, router_align_loss)
+        total_aux_loss = None
+        if load_balance_losses:
+            total_aux_loss = torch.stack(load_balance_losses).sum()
+
+        if self.training:
+            router_align_loss = None
+            if self.router_projectors is not None and teacher_z is not None:
+                router_align_loss = self.compute_router_repa_loss(teacher_z)
+
+            routing_contrastive_loss = None
+            if routing_contrastive_losses:
+                routing_contrastive_loss = torch.stack(routing_contrastive_losses).mean()
+
+            router_aux_loss = None
+            if router_align_loss is not None or routing_contrastive_loss is not None:
+                router_repa_coef, router_contra_coef = self.get_router_loss_coeffs(
+                    current_step=kwargs.get('router_loss_step', kwargs.get('global_step', None)),
+                    decay_steps=kwargs.get('router_loss_decay_steps', None)
+                )
+                zero_loss = x.new_zeros(())
+                router_align_loss = router_align_loss if router_align_loss is not None else zero_loss
+                routing_contrastive_loss = routing_contrastive_loss if routing_contrastive_loss is not None else zero_loss
+                router_aux_loss = router_repa_coef * router_align_loss + router_contra_coef * routing_contrastive_loss
+
+            if router_aux_loss is not None:
+                if total_aux_loss is not None:
+                    total_aux_loss = total_aux_loss + router_aux_loss
+                else:
+                    total_aux_loss = router_aux_loss
+
+            self.router_loss_step.add_(1)
+
+        if self.training and total_aux_loss is not None:
+            x = AddAuxiliaryLoss.apply(x, total_aux_loss)
 
         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
         x = self.unpatchify(x)                   # (N, out_channels, H, W)
