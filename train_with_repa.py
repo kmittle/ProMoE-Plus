@@ -303,6 +303,25 @@ def write_loss_dict_to_tensorboard(writer, loss_dict, step):
         writer.add_scalar(f'Loss/{name}', value.item(), step)
 
 
+def accumulate_loss_dict(running_loss_dict, loss_dict):
+    if running_loss_dict is None:
+        running_loss_dict = {}
+    for name, value in loss_dict.items():
+        detached_value = value.detach() if torch.is_tensor(value) else value
+        if name in running_loss_dict:
+            running_loss_dict[name] = running_loss_dict[name] + detached_value
+        else:
+            running_loss_dict[name] = detached_value
+    return running_loss_dict
+
+
+def average_loss_dict(loss_dict, divisor):
+    averaged = {}
+    for name, value in loss_dict.items():
+        averaged[name] = value / divisor
+    return averaged
+
+
 def load_latest_checkpoint(model, ema_model, optimizer, checkpoint_dir='checkpoints', resume_checkpoint_step=None):
     if resume_checkpoint_step is not None:
         checkpoint_path = os.path.join(checkpoint_dir, f'ckpt_step_{resume_checkpoint_step}.pth')
@@ -478,6 +497,7 @@ def worker(gpu, cfg):
         writer = SummaryWriter(log_dir=osp.join(cfg.output_dir, "tensorboard"))
 
     cfg.train_img_num = getattr(cfg, 'train_img_num', None)
+    cfg.grad_mix = max(int(getattr(cfg, 'grad_mix', 1)), 1)
 
     # REPA config
     repa_config = getattr(cfg, 'repa_config', None)
@@ -593,10 +613,13 @@ def worker(gpu, cfg):
 
     model.train()
     model_ema.eval()
+    optimizer.zero_grad(set_to_none=True)
 
     logging.info('Start the training loop')
 
     epoch = 0
+    accum_steps = 0
+    accum_loss_dict = None
     while step < cfg.num_steps:
         # read batch
         try:
@@ -735,24 +758,31 @@ def worker(gpu, cfg):
 
         loss = loss_dict["loss"].mean()
         loss_dict["total_loss"] = loss
+        accum_loss_dict = accumulate_loss_dict(accum_loss_dict, loss_dict)
+        accum_steps += 1
 
-        if step % cfg.log_interval == 0:
-            logging.info(format_loss_log(epoch, step, loss_dict))
-        if cfg.rank == 0:
-            write_loss_dict_to_tensorboard(writer, loss_dict, step)
-
-        # backward
         scaler.scale(loss / cfg.grad_mix).backward()
+        if accum_steps < cfg.grad_mix:
+            continue
+
+        logged_loss_dict = average_loss_dict(accum_loss_dict, accum_steps)
+        if step % cfg.log_interval == 0:
+            logging.info(format_loss_log(epoch, step, logged_loss_dict))
+        if cfg.rank == 0:
+            write_loss_dict_to_tensorboard(writer, logged_loss_dict, step)
+
         scaler.unscale_(optimizer)
         grad_norm = clip_grad_norm_(model.parameters(), cfg.max_grad_norm)
         scaler.step(optimizer)
         scaler.update()
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         update_ema(model_ema, model.module)
 
         if cfg.rank == 0 and step != 0 and step % cfg.save_ckpt_interval == 0:
             save_checkpoint(model, model_ema, optimizer, step, cfg.checkpoint_dir)
 
+        accum_steps = 0
+        accum_loss_dict = None
         step += 1
 
     if cfg.rank == 0:

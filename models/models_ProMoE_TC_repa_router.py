@@ -217,6 +217,9 @@ class SparseMoeBlock(nn.Module):
         device = hidden_states.device
         flat_input = hidden_states.view(-1, self.hidden_size)
         flat_labels = labels.view(batch_size, 1).expand(-1, seq_len).reshape(-1)
+        cond_batch_size = 0
+        cond_weights = None
+        topk_idx = None
 
         if self.use_uncond_expert and flat_labels is not None:
             uncond_mask = (flat_labels == 1000)
@@ -240,6 +243,7 @@ class SparseMoeBlock(nn.Module):
         if cond_mask.any():
             cond_positions = torch.where(cond_mask)[0]
             cond_input = flat_input[cond_positions]
+            cond_batch_size = cond_positions.numel() // seq_len
 
             input_norm = F.normalize(cond_input, p=2, dim=1)
             cluster_norm = F.normalize(self.cluster_centers, p=2, dim=1)
@@ -265,8 +269,7 @@ class SparseMoeBlock(nn.Module):
         expert_indices = expert_indices.view(batch_size, seq_len, self.top_k)
 
         ### load balancing loss (not used in ProMoE)
-        if self.training and self.alpha > 0.0:
-            cond_batch_size = (labels != 1000).sum()
+        if self.training and self.alpha > 0.0 and cond_weights is not None and topk_idx is not None and cond_batch_size > 0:
             if self.router_weight_mode != "softmax":
                 scores_for_aux = F.softmax(cond_weights, dim=1)
             else:
@@ -581,11 +584,14 @@ class DiT(nn.Module):
 
         # new init
         def init_MoeMLP(module, std=0.006):
-            nn.init.normal_(module.gate_proj.weight, std=std)
-            nn.init.normal_(module.up_proj.weight, std=std)
-            nn.init.normal_(module.down_proj.weight, std=std)
+            for proj_name in ("gate_proj", "up_proj", "down_proj"):
+                proj = getattr(module, proj_name, None)
+                if proj is not None and hasattr(proj, "weight"):
+                    nn.init.normal_(proj.weight, std=std)
         if self.init_MoeMLP:
             for block in self.blocks:
+                if not getattr(block, "use_moe", False):
+                    continue
                 for expert in block.mlp.experts:
                     init_MoeMLP(expert)
             print("init MoE related module with std 0.006 like DeepSeek-MoE")
