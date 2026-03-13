@@ -54,13 +54,18 @@ bash scripts/repa/sample_and_eval_repa_cond_B.sh
 # Dynamic REPA experiments
 bash scripts/dynamic_repa/run_B_repa_dyna_train_sample_eval.sh
 bash scripts/dynamic_repa/run_B_repa_dyna_select_train_sample_eval.sh
+bash scripts/dynamic_repa/run_B_repa_dyna_select_r25_train_sample_eval.sh
+bash scripts/dynamic_repa/run_B_repa_dyna_select_r75_train_sample_eval.sh
 bash scripts/dynamic_repa/run_B_repa_dyna_scale_train_sample_eval.sh
+bash scripts/dynamic_repa/run_B_repa_dyna_only_train_sample_eval.sh
 
 # Hierarchical routing experiments
 bash scripts/hierar/run_B_hierar_train.sh
 bash scripts/hierar/run_B_hierar_infer_eval.sh
 bash scripts/hierar/run_B_hierar_expert_train.sh
 bash scripts/hierar/run_B_hierar_expert_infer_eval.sh
+bash scripts/hierar/run_B_hierar_expert_NoPenalty_train.sh
+bash scripts/hierar/run_B_hierar_expert_NoPenalty_infer_eval.sh
 ```
 
 ### VAE Latent Preprocessing (speeds up training)
