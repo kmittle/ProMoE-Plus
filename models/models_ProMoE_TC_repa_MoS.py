@@ -20,6 +20,50 @@ def build_repa_projector(hidden_size, projector_dim, z_dim):
 
 
 #################################################################################
+#                          AdaLN Router for MoS REPA                           #
+#################################################################################
+class AdaLNRouter(nn.Module):
+    """
+    AdaLN-Zero conditioned router for MoS REPA.
+    Mimics DiT block's FFN path: LayerNorm -> modulate(shift, scale) -> MLP -> gate.
+    Conditioning c = t_embed + y_embed carries both timestep and class information.
+    """
+    def __init__(self, hidden_size, num_teacher_blocks, mlp_ratio=2.0):
+        super().__init__()
+        self.num_teacher_blocks = num_teacher_blocks
+        self.norm = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        mlp_hidden_dim = int(hidden_size * mlp_ratio)
+        approx_gelu = lambda: nn.GELU(approximate="tanh")
+        self.mlp = nn.Sequential(
+            nn.Linear(hidden_size, mlp_hidden_dim),
+            approx_gelu(),
+            nn.Linear(mlp_hidden_dim, num_teacher_blocks),
+        )
+        # adaLN modulation: shift(D), scale(D) for input modulation, gate(K) for output gating
+        self.adaLN_modulation = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size, bias=True),
+            nn.SiLU(),
+            nn.Linear(hidden_size, 2 * hidden_size + num_teacher_blocks, bias=True)
+        )
+
+    def forward(self, x, c):
+        """
+        Args:
+            x: (N, T, D) block output features
+            c: (N, D) conditioning vector (t + y)
+        Returns:
+            logits: (N, T, num_teacher_blocks)
+        """
+        modulation = self.adaLN_modulation(c)  # (N, 2*D + K)
+        shift = modulation[:, :x.shape[-1]]                                          # (N, D)
+        scale = modulation[:, x.shape[-1]:2 * x.shape[-1]]                           # (N, D)
+        gate = modulation[:, 2 * x.shape[-1]:]                                       # (N, K)
+        x_mod = modulate(self.norm(x), shift, scale)  # (N, T, D)
+        logits = gate.unsqueeze(1) * self.mlp(x_mod)  # (N, 1, K) * (N, T, K) = (N, T, K)
+        return logits
+
+
+#################################################################################
 #                                ProMoE Layer                                  #
 #################################################################################
 class AddAuxiliaryLoss(torch.autograd.Function):
@@ -401,7 +445,7 @@ class DiT(nn.Module):
 
             self.num_teacher_blocks = num_teacher_blocks
             self.mos_routers = nn.ModuleList([
-                nn.Linear(hidden_size, num_teacher_blocks) for _ in range(depth)
+                AdaLNRouter(hidden_size, num_teacher_blocks) for _ in range(depth)
             ])
             self.mos_projectors = nn.ModuleList([
                 build_repa_projector(hidden_size, projector_dim, z_dim) for _ in range(depth)
@@ -443,6 +487,12 @@ class DiT(nn.Module):
             nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
             nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
 
+        # Zero-out adaLN modulation layers in MoS routers:
+        if self.mos_routers is not None:
+            for router in self.mos_routers:
+                nn.init.constant_(router.adaLN_modulation[-1].weight, 0)
+                nn.init.constant_(router.adaLN_modulation[-1].bias, 0)
+
         # Zero-out output layers:
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
@@ -456,8 +506,9 @@ class DiT(nn.Module):
             nn.init.normal_(module.down_proj.weight, std=std)
         if self.init_MoeMLP:
             for block in self.blocks:
-                for expert in block.mlp.experts:
-                    init_MoeMLP(expert)
+                if block.use_moe:
+                    for expert in block.mlp.experts:
+                        init_MoeMLP(expert)
             print("init MoE related module with std 0.006 like DeepSeek-MoE")
 
     def unpatchify(self, x):
@@ -475,12 +526,13 @@ class DiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def compute_mos_repa_loss(self, x, block_idx, teacher_all_z, N, T, D):
+    def compute_mos_repa_loss(self, x, c, block_idx, teacher_all_z, N, T, D):
         """
         Compute MoS REPA loss for a single DiT block.
 
         Args:
             x: (N, T, D) block output features
+            c: (N, D) conditioning vector (t + y)
             block_idx: index of the current DiT block
             teacher_all_z: (K, N, T, D_teacher) features from all teacher blocks
             N, T, D: batch size, num tokens, hidden dim
@@ -490,8 +542,8 @@ class DiT(nn.Module):
         """
         # Project student features
         z_proj = self.mos_projectors[block_idx](x.reshape(-1, D)).reshape(N, T, -1)  # (N, T, D_teacher)
-        # Router logits over teacher blocks
-        router_logits = self.mos_routers[block_idx](x.reshape(-1, D)).reshape(N, T, self.num_teacher_blocks)  # (N, T, K)
+        # Router logits over teacher blocks (AdaLN-conditioned)
+        router_logits = self.mos_routers[block_idx](x, c)  # (N, T, K)
         router_weights = F.softmax(router_logits, dim=-1)  # (N, T, K)
 
         # Normalize projected student features
@@ -538,7 +590,7 @@ class DiT(nn.Module):
             x = block(x, c, labels)                      # (N, T, D)
             # Compute MoS REPA loss for every block during training
             if self.training and self.mos_projectors is not None and teacher_all_z is not None:
-                block_loss = self.compute_mos_repa_loss(x, i, teacher_all_z, N, T, D)
+                block_loss = self.compute_mos_repa_loss(x, c, i, teacher_all_z, N, T, D)
                 mos_repa_loss = mos_repa_loss + block_loss
 
         # Average over all blocks

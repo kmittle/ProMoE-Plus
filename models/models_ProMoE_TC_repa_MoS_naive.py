@@ -594,8 +594,9 @@ class DiT(nn.Module):
             nn.init.normal_(module.down_proj.weight, std=std)
         if self.init_MoeMLP:
             for block in self.blocks:
-                for expert in block.mlp.experts:
-                    init_MoeMLP(expert)
+                if block.use_moe:
+                    for expert in block.mlp.experts:
+                        init_MoeMLP(expert)
             print("init MoE related module with std 0.006 like DeepSeek-MoE")
 
     def unpatchify(self, x):
