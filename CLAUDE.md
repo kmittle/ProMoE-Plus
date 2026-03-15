@@ -22,6 +22,9 @@ python train.py --config configs/004_ProMoE_L.yaml
 # REPA-enabled training (aligns with frozen DINOv2 teacher)
 python train_with_repa.py --config configs/004_ProMoE_B_repa.yaml
 
+# MoS REPA training (Mixture-of-Softmaxes routing with REPA)
+python train_with_MoS_repa.py --config configs/004_ProMoE_B_repa_MoS.yaml
+
 # Offline/local pretrained weights (supported by train.py, train_with_repa.py, sample.py)
 python train_with_repa.py --config configs/004_ProMoE_B_repa.yaml \
   --vae-path /path/to/sd-vae-ft-mse --repa-enc-path /path/to/dinov2_state_dict.pth
@@ -65,6 +68,9 @@ bash scripts/repa/run_B_repa_router_contra_train_sample_eval.sh
 bash scripts/repa/run_B_repa_routed_train_sample_eval.sh
 bash scripts/repa/run_B_repa_double_share_train_sample_eval.sh
 
+# MoS (Mixture-of-Softmaxes) REPA experiments
+bash scripts/MoS_repa/run_B_repa_mos_train_sample_eval.sh
+
 # Hierarchical routing experiments
 bash scripts/hierar/run_B_hierar_train.sh
 bash scripts/hierar/run_B_hierar_infer_eval.sh
@@ -101,7 +107,7 @@ python run_eval.py /path/to/generated/images --count 50000 --no-eval
 - The YAML filename (minus extension) becomes `custom_cfg_name`, which determines the output subdirectory: `outputs/{model_name}/{custom_cfg_name}/`.
 
 ### Model Registry
-`train.py` and `train_with_repa.py` each define a `model_dict` mapping `model_name` strings to `(ModelClass, config_key)` pairs. `sample.py` merges both dicts so it can sample from any model variant. Adding a new model requires an entry in the appropriate training script's `model_dict`.
+`train.py`, `train_with_repa.py`, and `train_with_MoS_repa.py` each define a `model_dict` mapping `model_name` strings to `(ModelClass, config_key)` pairs. `sample.py` merges all dicts so it can sample from any model variant. Adding a new model requires an entry in the appropriate training script's `model_dict`.
 
 ### Model Hierarchy (in `models/`)
 - `modules.py` — Shared building blocks: `Attention`, `PatchEmbed`, `TimestepEmbedder`, `LabelEmbedder`, `FinalLayer`, `MLP`/`Mlp`, `SwiGLU`, `MoeMLP`, and sinusoidal position embedding utilities.
@@ -122,6 +128,8 @@ python run_eval.py /path/to/generated/images --count 50000 --no-eval
 - `models_ProMoE_TC_repa_router_contra.py` — Extends router REPA with contrastive routing loss using linear coefficient handoff: REPA alignment starts at full weight and decays to 0, while contrastive loss grows from 0 to full, over `router_loss_decay_steps`. Total lambda = `routing_contrastive_lam`.
 - `models_ProMoE_TC_repa_routed.py` — REPA variant aligning routed (expert-processed) features.
 - `models_ProMoE_TC_repa_double_share.py` — REPA variant with double shared expert architecture.
+- `models_ProMoE_TC_repa_MoS.py` — REPA variant with Mixture-of-Softmaxes routing. Uses `num_teacher_blocks` teacher feature blocks (instead of `encoder_depth`-based single alignment point). Trained via `train_with_MoS_repa.py`.
+- `models_ProMoE_TC_repa_MoS_naive.py` — Simplified/naive MoS REPA variant (in development on `repa` branch).
 - `models_ProMoE_TC_sigmoid.py` / `models_ProMoE_TC_symmetric.py` — Routing ablation variants (sigmoid gating, symmetric routing).
 
 ### Auxiliary Loss Convention
@@ -185,7 +193,7 @@ Training-level parameters (top-level `repa_config`):
 
 ### Pretrained Weights
 - VAE loading uses `load_vae()` from `utils.py`: checks `pretrained_ckpt/vae/{repo_id}/` for a local copy first; if absent, downloads from HuggingFace and saves locally for future use.
-- All training entry points (`train.py`, `train_with_repa.py`, `sample.py`, `preprocess/preprocess_vae.py`) use this cached loading path.
+- All training entry points (`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, `sample.py`, `preprocess/preprocess_vae.py`) use this cached loading path.
 - REPA teacher encoders (DINOv2) are cached to `pretrained_ckpt/encoder/` after first download via torch.hub.
 
 ### FLOPs Computation (`compute_FLOPs/`)
