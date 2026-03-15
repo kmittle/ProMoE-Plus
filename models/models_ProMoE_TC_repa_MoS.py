@@ -45,6 +45,7 @@ class AdaLNRouter(nn.Module):
             nn.SiLU(),
             nn.Linear(hidden_size, 2 * hidden_size + num_teacher_blocks, bias=True)
         )
+        self.out_proj = nn.Linear(num_teacher_blocks, num_teacher_blocks, bias=False)
 
     def forward(self, x, c):
         """
@@ -60,6 +61,7 @@ class AdaLNRouter(nn.Module):
         gate = modulation[:, 2 * x.shape[-1]:]                                       # (N, K)
         x_mod = modulate(self.norm(x), shift, scale)  # (N, T, D)
         logits = gate.unsqueeze(1) * self.mlp(x_mod)  # (N, 1, K) * (N, T, K) = (N, T, K)
+        logits = self.out_proj(logits)  # (N, T, K)
         return logits
 
 
@@ -444,6 +446,8 @@ class DiT(nn.Module):
             projector_dim = repa_config.get('projector_dim', 2048)
 
             self.num_teacher_blocks = num_teacher_blocks
+            self.mos_top_k = repa_config.get('mos_top_k', 2)
+            self.mos_random_prob = repa_config.get('mos_random_prob', 0.05)
             self.mos_routers = nn.ModuleList([
                 AdaLNRouter(hidden_size, num_teacher_blocks) for _ in range(depth)
             ])
@@ -452,6 +456,8 @@ class DiT(nn.Module):
             ])
         else:
             self.num_teacher_blocks = None
+            self.mos_top_k = 2
+            self.mos_random_prob = 0.05
             self.mos_routers = None
             self.mos_projectors = None
 
@@ -487,11 +493,12 @@ class DiT(nn.Module):
             nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
             nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
 
-        # Zero-out adaLN modulation layers in MoS routers:
+        # Zero-out adaLN modulation layers and identity-init out_proj in MoS routers:
         if self.mos_routers is not None:
             for router in self.mos_routers:
                 nn.init.constant_(router.adaLN_modulation[-1].weight, 0)
                 nn.init.constant_(router.adaLN_modulation[-1].bias, 0)
+                nn.init.eye_(router.out_proj.weight)
 
         # Zero-out output layers:
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
@@ -546,18 +553,29 @@ class DiT(nn.Module):
         router_logits = self.mos_routers[block_idx](x, c)  # (N, T, K)
         router_weights = F.softmax(router_logits, dim=-1)  # (N, T, K)
 
-        # Normalize projected student features
+        # Normalize and compute cosine similarity with all teacher blocks
         z_proj_norm = F.normalize(z_proj, dim=-1)  # (N, T, D_teacher)
-        # Normalize all teacher block features
         teacher_norm = F.normalize(teacher_all_z, dim=-1)  # (K, N, T, D_teacher)
-
-        # Compute cosine similarity between student projection and each teacher block
-        # z_proj_norm: (N, T, D) -> (1, N, T, D)
         cos_sim = (z_proj_norm.unsqueeze(0) * teacher_norm).sum(dim=-1)  # (K, N, T)
         cos_sim = cos_sim.permute(1, 2, 0)  # (N, T, K)
 
-        # Weighted negative cosine similarity
-        block_loss = -(cos_sim * router_weights).sum(dim=-1).mean()  # scalar
+        # Select top-k teacher blocks (with random exploration)
+        K = teacher_all_z.shape[0]
+        top_k = min(self.mos_top_k, K)
+
+        if self.training and torch.rand(1).item() < self.mos_random_prob:
+            # Random exploration: uniformly sample teacher blocks (same for all tokens)
+            rand_indices = torch.randperm(K, device=x.device)[:top_k]
+            select_idx = rand_indices.view(1, 1, top_k).expand(N, T, top_k)
+        else:
+            # Top-k selection per token based on router weights
+            _, select_idx = torch.topk(router_weights, k=top_k, dim=-1)  # (N, T, top_k)
+
+        selected_cos_sim = torch.gather(cos_sim, dim=-1, index=select_idx)        # (N, T, top_k)
+        selected_weights = torch.gather(router_weights, dim=-1, index=select_idx)  # (N, T, top_k)
+
+        # Weighted negative cosine similarity over selected teacher blocks
+        block_loss = -(selected_cos_sim * selected_weights).sum(dim=-1).mean()  # scalar
         return block_loss
 
     def forward(self, x, timestep, context, teacher_all_z=None, **kwargs):

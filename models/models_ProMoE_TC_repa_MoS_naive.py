@@ -527,6 +527,8 @@ class DiT(nn.Module):
             router_num_heads = repa_config.get('router_num_heads', num_heads)
 
             self.num_teacher_blocks = num_teacher_blocks
+            self.mos_top_k = repa_config.get('mos_top_k', 2)
+            self.mos_random_prob = repa_config.get('mos_random_prob', 0.05)
 
             # Global transformer-based block router
             self.block_router = BlockRouter(
@@ -546,6 +548,8 @@ class DiT(nn.Module):
             ])
         else:
             self.num_teacher_blocks = None
+            self.mos_top_k = 2
+            self.mos_random_prob = 0.05
             self.block_router = None
             self.mos_projectors = None
 
@@ -634,17 +638,29 @@ class DiT(nn.Module):
         # Get routing weights for this DiT block: (N, T, m)
         block_weights = routing_weights[:, :, :, block_idx]  # (N, T, m)
 
-        # Normalize projected student features and teacher features
+        # Normalize and compute cosine similarity with all teacher blocks
         z_proj_norm = F.normalize(z_proj, dim=-1)            # (N, T, D_teacher)
         teacher_norm = F.normalize(teacher_all_z, dim=-1)    # (m, N, T, D_teacher)
-
-        # Cosine similarity between student projection and each teacher block
-        # z_proj_norm: (N, T, D) -> (1, N, T, D)
         cos_sim = (z_proj_norm.unsqueeze(0) * teacher_norm).sum(dim=-1)  # (m, N, T)
         cos_sim = cos_sim.permute(1, 2, 0)  # (N, T, m)
 
-        # Weighted negative cosine similarity
-        block_loss = -(cos_sim * block_weights).sum(dim=-1).mean()  # scalar
+        # Select top-k teacher blocks (with random exploration)
+        m = teacher_all_z.shape[0]
+        top_k = min(self.mos_top_k, m)
+
+        if self.training and torch.rand(1).item() < self.mos_random_prob:
+            # Random exploration: uniformly sample teacher blocks (same for all tokens)
+            rand_indices = torch.randperm(m, device=x.device)[:top_k]
+            select_idx = rand_indices.view(1, 1, top_k).expand(N, T, top_k)
+        else:
+            # Top-k selection per token based on router weights
+            _, select_idx = torch.topk(block_weights, k=top_k, dim=-1)  # (N, T, top_k)
+
+        selected_cos_sim = torch.gather(cos_sim, dim=-1, index=select_idx)          # (N, T, top_k)
+        selected_weights = torch.gather(block_weights, dim=-1, index=select_idx)    # (N, T, top_k)
+
+        # Weighted negative cosine similarity over selected teacher blocks
+        block_loss = -(selected_cos_sim * selected_weights).sum(dim=-1).mean()  # scalar
         return block_loss
 
     def forward(self, x, timestep, context, teacher_all_z=None, **kwargs):
