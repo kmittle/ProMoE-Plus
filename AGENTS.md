@@ -5,7 +5,8 @@ Core entrypoints are at repository root:
 
 - `train.py`: baseline and non-REPA training (DiT, TCDiT, ECDiT, DiffMoE, ProMoE, hierarchical and expert variants).
 - `train_with_repa.py`: REPA-enabled training (REPA / REPA-Shared / REPA-Cond / REPA-DYNA / REPA-DYNA-SELECT), including teacher-feature alignment loss.
-- `sample.py`: sampling/inference entrypoint. It merges model registries from both `train.py` and `train_with_repa.py`, so one script can sample all registered families.
+- `train_with_MoS_repa.py`: MoS-REPA training with per-block teacher-block routers and per-block REPA projectors.
+- `sample.py`: sampling/inference entrypoint. It merges model registries from `train.py`, `train_with_repa.py`, and `train_with_MoS_repa.py`, so one script can sample all registered families.
 
 Shared defaults and helpers:
 
@@ -15,19 +16,20 @@ Shared defaults and helpers:
 Main code layout:
 
 - `models/`: architecture implementations; keep the `models_*.py` naming convention.
-- `repa/`: REPA helper package used by `train_with_repa.py` (`encoder.py`, `loss.py`).
+- `repa/`: REPA helper package used by `train_with_repa.py` and `train_with_MoS_repa.py` (`encoder.py`, `loss.py`).
 - `preprocess/`: VAE latent preprocessing and shared cache file `preprocess/image_paths_cache.txt`.
 - `evaluation/`: OpenAI-style evaluation pipeline (`run_eval.py`, `evaluator.py`, `download_ref_batches.py`).
 - `scripts/repa/`: REPA-B / REPA-Shared-B / REPA-Cond-B train + infer/eval wrappers.
+- `scripts/MoS_repa/`: MoS-REPA train + sample + eval wrappers following `scripts/template.sh`.
 - `scripts/hierar/`: B-scale hierarchical/expert train + infer/eval wrappers.
 - `scripts/dynamic_repa/`: REPA-DYNA-B and REPA-DYNA-SELECT-B train + sample + eval pipelines (including select-ratio variants r25/r75).
 - `compute_FLOPs/`: FLOPs/statistics utilities.
 - `REPA/` (uppercase): separate upstream-style subproject with its own docs and `AGENTS.md`.
 
-Root wrappers:
+Top-level wrappers:
 
-- `run_all_infer_eval_500K.sh`: batch sample+eval for multiple configs at 500K.
-- `eval_B_hierar_expert.sh`, `eval_B_hierar_expert_NoPenalty.sh`: eval-only wrappers.
+- `scripts/run_all_infer_eval_500K.sh`: batch sample+eval for multiple configs at 500K.
+- `scripts/eval_B_hierar_expert.sh`, `scripts/eval_B_hierar_expert_NoPenalty.sh`: eval-only wrappers.
 
 Outputs follow:
 
@@ -63,11 +65,20 @@ python train_with_repa.py \
   --repa-enc-path /path/to/state_dict.pth
 ```
 
+Run MoS-REPA training (optional local teacher checkpoint):
+
+```bash
+python train_with_MoS_repa.py \
+  --config configs/004_ProMoE_B_repa_MoS.yaml \
+  --repa-enc-path /path/to/state_dict.pth
+```
+
 Optional local VAE path (skips auto-download/cache in train/sample):
 
 ```bash
 python train.py --config configs/004_ProMoE_B.yaml --vae-path /path/to/sd-vae-ft-mse
 python train_with_repa.py --config configs/004_ProMoE_B_repa.yaml --vae-path /path/to/sd-vae-ft-mse
+python train_with_MoS_repa.py --config configs/004_ProMoE_B_repa_MoS.yaml --vae-path /path/to/sd-vae-ft-mse
 python sample.py --config configs/004_ProMoE_B_repa.yaml --vae-path /path/to/sd-vae-ft-mse
 ```
 
@@ -99,6 +110,8 @@ bash scripts/repa/sample_and_eval_repa_B.sh
 bash scripts/repa/sample_and_eval_repa_shared_B.sh
 bash scripts/repa/sample_and_eval_repa_cond_B.sh
 
+bash scripts/MoS_repa/run_B_repa_mos_train_sample_eval.sh
+
 bash scripts/dynamic_repa/run_B_repa_dyna_train_sample_eval.sh
 bash scripts/dynamic_repa/run_B_repa_dyna_select_train_sample_eval.sh
 bash scripts/dynamic_repa/run_B_repa_dyna_select_r25_train_sample_eval.sh
@@ -111,7 +124,7 @@ bash scripts/hierar/run_B_hierar_expert_infer_eval.sh
 bash scripts/hierar/run_B_hierar_expert_NoPenalty_train.sh
 bash scripts/hierar/run_B_hierar_expert_NoPenalty_infer_eval.sh
 
-bash run_all_infer_eval_500K.sh
+bash scripts/run_all_infer_eval_500K.sh
 ```
 
 Create evaluation env (TensorFlow-based):
@@ -139,11 +152,12 @@ python run_eval.py /path/to/generated/images --count 50000 --no-eval
 ## Testing Guidelines
 No dedicated `tests/` directory. Use smoke checks aligned to your change surface:
 
-- Training changes: `python train.py --config ...` or `python train_with_repa.py --config ...`.
+- Training changes: `python train.py --config ...`, `python train_with_repa.py --config ...`, or `python train_with_MoS_repa.py --config ...`.
 - Sampling changes: `python sample.py --config ...` (with `--step_list_for_sample` / `--guide_scale_list` as needed).
 - Evaluation changes: run from inside `evaluation/`: `python run_eval.py ...`.
 - Syntax checks: `python -m py_compile <modified_python_files>`.
 - End-to-end REPA-DYNA smoke check: run one wrapper in `scripts/dynamic_repa/` and verify train/sample/eval logs are produced.
+- End-to-end MoS-REPA smoke check: run `bash scripts/MoS_repa/run_B_repa_mos_train_sample_eval.sh` and verify train/sample/eval logs are produced.
 
 If you touch dataset traversal, latent mapping, or preprocessing logic, clear/regenerate `preprocess/image_paths_cache.txt` before re-running checks.
 
@@ -151,7 +165,7 @@ If you touch dataset traversal, latent mapping, or preprocessing logic, clear/re
 Use concise, imperative, single-scope commit subjects. In PR descriptions, include:
 
 - Affected model family/config(s).
-- Whether the path is `train.py` or `train_with_repa.py`.
+- Whether the path is `train.py`, `train_with_repa.py`, or `train_with_MoS_repa.py`.
 - Dataset layout assumptions (especially `train/` path and latent sibling path).
 - GPU assumptions (`gpu_ids`, world size, sampling GPUs).
 - Evidence of behavior change (logs, sample folders, metric outputs).
@@ -161,7 +175,8 @@ Use concise, imperative, single-scope commit subjects. In PR descriptions, inclu
 - `custom_cfg_name` is auto-injected from `--config` filename stem and used in output path construction.
 - Training uses `gpu_ids` from YAML to set `CUDA_VISIBLE_DEVICES` when provided.
 - Sampling uses `sample_gpu_ids` only if provided; otherwise it uses all visible GPUs.
-- `train_with_repa.py` reads REPA behavior from top-level `repa_config`; model-level REPA knobs live under `DiT_*_config.repa_config` in YAML.
+- `train_with_repa.py` and `train_with_MoS_repa.py` read REPA behavior from top-level `repa_config`; model-level REPA knobs live under `DiT_*_config.repa_config` in YAML.
+- MoS-REPA configs (for example `004_ProMoE_B_repa_MoS.yaml`) additionally set `DiT_*_config.repa_config.num_teacher_blocks`; keep it aligned with the chosen teacher encoder depth.
 - Dynamic-select configs (`004_ProMoE_B_repa_dyna_select*.yaml`) control token selection via `DiT_B_config.repa_config.repa_select_ratio`.
 - Most provided YAMLs set `resume_checkpoint: True`; when no checkpoint exists the loader logs an error and training starts from step 0.
 - `sample.py` behavior:
@@ -175,6 +190,7 @@ Latent mode and cache behavior:
 - Latent path rule in training is string-based: image path replaces `train` with `sd-vae-ft-mse_Latents_256img_npz`, extension becomes `.latent.npz`.
 - Keep dataset naming aligned with this replacement rule, or update the code.
 - In REPA training with `use_pre_latents=True`, the dataset additionally loads raw images for teacher feature extraction.
+- In MoS-REPA training, teacher features are extracted from all teacher blocks and aligned block-wise against every DiT block.
 
 Weight caching:
 

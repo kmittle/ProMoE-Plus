@@ -344,7 +344,9 @@ class DiTBlock(nn.Module):
 
 class DiT(nn.Module):
     """
-    Diffusion model with a Transformer backbone + REPA projectors.
+    Diffusion model with a Transformer backbone + MoS (Mixture of Supervisors) REPA.
+    Each DiT block has its own linear router over teacher encoder blocks and
+    its own REPA projector for representation alignment.
     """
     def __init__(
         self,
@@ -391,19 +393,23 @@ class DiT(nn.Module):
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
         self.init_MoeMLP= MoE_config.init_MoeMLP
 
-        # REPA: projector heads for representation alignment
+        # MoS REPA: per-block routers and projectors for all DiT blocks
         if repa_config is not None:
-            self.encoder_depth = repa_config.get('encoder_depth', 4)
-            assert self.encoder_depth <= depth, \
-                f"repa_config.encoder_depth ({self.encoder_depth}) must be <= model depth ({depth})"
-            z_dims = repa_config.get('z_dims', [768])
+            num_teacher_blocks = repa_config.get('num_teacher_blocks', 12)
+            z_dim = repa_config.get('z_dims', [768])[0]
             projector_dim = repa_config.get('projector_dim', 2048)
-            self.projectors = nn.ModuleList([
-                build_repa_projector(hidden_size, projector_dim, z_dim) for z_dim in z_dims
+
+            self.num_teacher_blocks = num_teacher_blocks
+            self.mos_routers = nn.ModuleList([
+                nn.Linear(hidden_size, num_teacher_blocks) for _ in range(depth)
+            ])
+            self.mos_projectors = nn.ModuleList([
+                build_repa_projector(hidden_size, projector_dim, z_dim) for _ in range(depth)
             ])
         else:
-            self.encoder_depth = None
-            self.projectors = None
+            self.num_teacher_blocks = None
+            self.mos_routers = None
+            self.mos_projectors = None
 
         self.initialize_weights()
 
@@ -469,16 +475,53 @@ class DiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def forward(self, x, timestep, context, **kwargs):
+    def compute_mos_repa_loss(self, x, block_idx, teacher_all_z, N, T, D):
         """
-        Forward pass of DiT with optional REPA projections.
-        x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
-        timestep: (N,) tensor of diffusion timesteps
-        context: (N,) tensor of class labels
+        Compute MoS REPA loss for a single DiT block.
+
+        Args:
+            x: (N, T, D) block output features
+            block_idx: index of the current DiT block
+            teacher_all_z: (K, N, T, D_teacher) features from all teacher blocks
+            N, T, D: batch size, num tokens, hidden dim
 
         Returns:
-            x: (N, out_channels, H, W) model prediction
-            zs_proj: list of (N, T, z_dim) projected features, or None if no projectors
+            block_loss: scalar MoS REPA loss for this block
+        """
+        # Project student features
+        z_proj = self.mos_projectors[block_idx](x.reshape(-1, D)).reshape(N, T, -1)  # (N, T, D_teacher)
+        # Router logits over teacher blocks
+        router_logits = self.mos_routers[block_idx](x.reshape(-1, D)).reshape(N, T, self.num_teacher_blocks)  # (N, T, K)
+        router_weights = F.softmax(router_logits, dim=-1)  # (N, T, K)
+
+        # Normalize projected student features
+        z_proj_norm = F.normalize(z_proj, dim=-1)  # (N, T, D_teacher)
+        # Normalize all teacher block features
+        teacher_norm = F.normalize(teacher_all_z, dim=-1)  # (K, N, T, D_teacher)
+
+        # Compute cosine similarity between student projection and each teacher block
+        # z_proj_norm: (N, T, D) -> (1, N, T, D)
+        cos_sim = (z_proj_norm.unsqueeze(0) * teacher_norm).sum(dim=-1)  # (K, N, T)
+        cos_sim = cos_sim.permute(1, 2, 0)  # (N, T, K)
+
+        # Weighted negative cosine similarity
+        block_loss = -(cos_sim * router_weights).sum(dim=-1).mean()  # scalar
+        return block_loss
+
+    def forward(self, x, timestep, context, teacher_all_z=None, **kwargs):
+        """
+        Forward pass of DiT with MoS (Mixture of Supervisors) REPA.
+
+        Args:
+            x: (N, C, H, W) tensor of spatial inputs
+            timestep: (N,) tensor of diffusion timesteps
+            context: (N,) tensor of class labels
+            teacher_all_z: (K, N, T, D_teacher) features from all teacher encoder blocks
+                           (only needed during training)
+
+        Returns:
+            - inference: x (N, out_channels, H, W)
+            - training: (x, mos_repa_loss) where mos_repa_loss is a scalar
         """
         y = context
         if len(x.shape) != 4:
@@ -490,19 +533,24 @@ class DiT(nn.Module):
         y, labels = self.y_embedder(y, self.training)    # (N, D)
         c = t + y                                # (N, D)
 
-        zs_proj = None
+        mos_repa_loss = torch.tensor(0.0, device=x.device)
         for i, block in enumerate(self.blocks):
             x = block(x, c, labels)                      # (N, T, D)
-            # Extract projected features at encoder_depth for REPA alignment (training only)
-            if self.training and self.projectors is not None and (i + 1) == self.encoder_depth:
-                zs_proj = [proj(x.reshape(-1, D)).reshape(N, T, -1) for proj in self.projectors]
+            # Compute MoS REPA loss for every block during training
+            if self.training and self.mos_projectors is not None and teacher_all_z is not None:
+                block_loss = self.compute_mos_repa_loss(x, i, teacher_all_z, N, T, D)
+                mos_repa_loss = mos_repa_loss + block_loss
+
+        # Average over all blocks
+        if self.training and self.mos_projectors is not None and teacher_all_z is not None:
+            mos_repa_loss = mos_repa_loss / len(self.blocks)
 
         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
         x = self.unpatchify(x)                   # (N, out_channels, H, W)
 
         if not self.training:
             return x
-        return x, zs_proj
+        return x, mos_repa_loss
 
     def forward_with_cfg(self, x, t, y, cfg_scale):
         """

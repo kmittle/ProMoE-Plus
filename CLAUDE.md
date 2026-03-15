@@ -118,8 +118,8 @@ python run_eval.py /path/to/generated/images --count 50000 --no-eval
 - `models_ProMoE_TC_repa_dyna_select.py` — Dynamic REPA variant with selective alignment (e.g., ratio-based token selection).
 - `models_ProMoE_TC_repa_dyna_only.py` — Dynamic REPA variant applying alignment only (no standard REPA fallback).
 - `models_ProMoE_TC_hierar.py` / `models_ProMoE_TC_hierar_expert.py` — Hierarchical routing variants. Used by configs `004_ProMoE_*_hierar*.yaml` and scripts under `scripts/hierar/`.
-- `models_ProMoE_TC_repa_router.py` — REPA variant with router-level alignment (K-Means + Hungarian matching for expert assignment).
-- `models_ProMoE_TC_repa_router_contra.py` — Router REPA variant with contrastive routing loss.
+- `models_ProMoE_TC_repa_router.py` — REPA variant with router-level alignment: K-Means clusters teacher features, projects cluster centers to prototype space via `router_projectors`, then uses Hungarian matching + negative cosine similarity to align prototypes with teacher clusters. No contrastive loss (`routing_contrastive_lam` must be 0). Router REPA loss injected via `AddAuxiliaryLoss`.
+- `models_ProMoE_TC_repa_router_contra.py` — Extends router REPA with contrastive routing loss using linear coefficient handoff: REPA alignment starts at full weight and decays to 0, while contrastive loss grows from 0 to full, over `router_loss_decay_steps`. Total lambda = `routing_contrastive_lam`.
 - `models_ProMoE_TC_repa_routed.py` — REPA variant aligning routed (expert-processed) features.
 - `models_ProMoE_TC_repa_double_share.py` — REPA variant with double shared expert architecture.
 - `models_ProMoE_TC_sigmoid.py` / `models_ProMoE_TC_symmetric.py` — Routing ablation variants (sigmoid gating, symmetric routing).
@@ -137,17 +137,29 @@ Model `forward()` returns either a plain tensor (DiT) or a tuple for models with
 - `repa/loss.py` — `compute_repa_loss(z_teacher, z_student_list)`: negative cosine similarity between teacher patch features and projected student features, averaged across alignment points.
 - `train_with_repa.py` — Extended training loop that loads raw images alongside VAE latents, extracts teacher features with `extract_teacher_features()`, and adds REPA projection loss to the total loss.
 
-### REPA Parameters (in YAML `repa_config`)
+### REPA Parameters (two-level `repa_config` in YAML)
+YAML files have **two** `repa_config` blocks with different scopes:
+- **`DiT_B_config.repa_config`** (nested under the model config key) — read by the model at init time. Controls projectors, encoder depth, and router REPA settings.
+- **Top-level `repa_config`** — read by `train_with_repa.py` training loop. Controls `enc_type` (teacher encoder to load) and `proj_coeff` (REPA loss weight).
+
+Model-level parameters (in `DiT_B_config.repa_config`):
 - `enc_type`: Teacher encoder model (e.g., `"dinov2-vit-b"`)
 - `encoder_depth`: Which transformer layer to extract student features from (e.g., 4)
 - `z_dims`: List of projection dimensions for alignment (e.g., `[768]`)
 - `projector_dim`: Hidden size of the 3-layer MLP projector (e.g., 2048)
-- `proj_coeff`: Weight of REPA loss in total loss (e.g., 0.5)
+- `router_repa_coeff`: Weight of router REPA alignment loss (default 1, router models only)
+- `router_projector_dim`: Hidden size of router projector (defaults to `projector_dim`)
+- `kmeans_n_iters`: K-Means iterations for teacher feature clustering (default 10)
+
+Training-level parameters (top-level `repa_config`):
+- `enc_type`: Teacher encoder model (must match model-level)
+- `proj_coeff`: Weight of naive REPA loss in total loss (e.g., 0.5)
 
 ### Key MoE Parameters (in YAML `MoE_config`)
 - `num_routed_experts`: Number of routable experts (typically 12)
 - `top_k`: Experts per token (default 1)
-- `routing_contrastive_lam`: Weight of contrastive loss (default 1.0)
+- `routing_contrastive_lam`: Weight of contrastive loss (default 1.0). Must be 0 for `repa_router` model (no contrastive). For `repa_router_contra`, this is `router_aux_total_lam` (shared between REPA alignment and contrastive via linear handoff).
+- `router_loss_decay_steps`: Steps over which router REPA decays and contrastive grows (router_contra model only)
 - `routing_contrastive_temperature`: Contrastive loss temperature (default 0.07)
 - `use_shared_expert` / `use_uncond_expert`: Toggle shared global expert and dedicated unconditional expert
 - `interleave`: Whether to alternate MoE and dense FFN layers
@@ -185,6 +197,10 @@ Model `forward()` returns either a plain tensor (DiT) or a tuple for models with
 - Model files follow `models_*.py` naming pattern. Preserve numeric experiment prefixes in config names (e.g., `004_ProMoE_L.yaml`).
 - No formatter or linter is configured — match surrounding style in the file you edit.
 - No `tests/` directory; validate changes with `python -m py_compile <file>` for syntax checks and targeted smoke tests (short training run, sample pass).
+
+### Shell Script Convention
+- End-to-end scripts under `scripts/` use **absolute python paths** (e.g., `/mnt/workspace/yujie/.conda/envs/promoe/bin/python`) instead of `conda activate` for company server compatibility. See `command.sh` for the reference format.
+- Training/sampling uses the `promoe` env; evaluation uses the `fid_eval` env.
 
 ## Important Notes
 - All paper results use `qk_norm=False`. Enable `qk_norm=True` for training beyond 2M steps.

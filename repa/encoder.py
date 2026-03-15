@@ -117,3 +117,60 @@ def extract_teacher_features(encoder, raw_images, enc_type):
         z = z['x_norm_patchtokens']
 
     return z
+
+
+@torch.no_grad()
+def extract_all_teacher_block_features(encoder, raw_images, enc_type):
+    """
+    Extract patch-level features from ALL transformer blocks of the teacher encoder.
+
+    Args:
+        encoder: frozen teacher model
+        raw_images: (B, C, H, W) in [0, 1] range
+        enc_type: encoder type string, e.g. "dinov2-vit-b"
+
+    Returns:
+        all_z: (num_blocks, B, num_patches, embed_dim) features from each block
+    """
+    from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
+    from torchvision.transforms import Normalize
+
+    encoder_type = enc_type.split('-')[0]
+    resolution = raw_images.shape[-1]
+
+    x = raw_images.clone()
+    if 'dinov2' in encoder_type:
+        x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
+        x = torch.nn.functional.interpolate(x, 224 * (resolution // 256), mode='bicubic')
+
+    if 'dinov2' in encoder_type:
+        # Manually iterate through DINOv2 blocks to collect intermediate features
+        x = encoder.prepare_tokens_with_masks(x, masks=None)
+        # Determine number of prefix tokens to skip (CLS + register tokens for dinov2reg)
+        num_register_tokens = getattr(encoder, 'num_register_tokens', 0)
+        num_prefix_tokens = 1 + num_register_tokens  # 1 for CLS
+        all_features = []
+        for blk in encoder.blocks:
+            x = blk(x)
+            # Extract patch tokens (skip CLS and any register tokens)
+            patch_tokens = x[:, num_prefix_tokens:]
+            all_features.append(patch_tokens)
+        all_z = torch.stack(all_features, dim=0)  # (num_blocks, B, T, D)
+    else:
+        raise NotImplementedError(f"All-block extraction not supported for '{encoder_type}'")
+
+    return all_z
+
+
+def get_num_teacher_blocks(enc_type):
+    """Return the number of transformer blocks for a given encoder type."""
+    size_to_blocks = {
+        'b': 12,
+        'l': 24,
+        'g': 40,
+    }
+    parts = enc_type.split('-')
+    model_config = parts[2]
+    if model_config in size_to_blocks:
+        return size_to_blocks[model_config]
+    raise ValueError(f"Unknown model config '{model_config}' for enc_type '{enc_type}'")

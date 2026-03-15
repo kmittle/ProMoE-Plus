@@ -33,11 +33,13 @@ os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
 
 from config import cfg
 from models.models_DiT import DiT as DiT
-from repa.encoder import load_teacher_encoder, extract_teacher_features
+from models.models_ProMoE_TC_repa_MoS import DiT as ProMoE_TC_REPA_MoS_DiT
+from repa.encoder import load_teacher_encoder, extract_all_teacher_block_features, get_num_teacher_blocks
 from repa.loss import compute_repa_loss
 
 model_dict = {
-    
+    "ProMoE_TC_REPA_MoS_B": (ProMoE_TC_REPA_MoS_DiT, "DiT_B_config"),
+    "ProMoE_TC_REPA_MoS_L": (ProMoE_TC_REPA_MoS_DiT, "DiT_L_config"),
 }
 
 
@@ -491,12 +493,28 @@ def worker(gpu, cfg):
     model_class, config_name = model_dict[cfg.model_name]
     model_cfg = getattr(cfg, config_name)
 
-    # Validate z_dims match teacher embed_dim
+    # Validate z_dims and num_teacher_blocks match teacher encoder
     if use_repa:
         model_repa_cfg = model_cfg.get('repa_config', {})
         for z_dim in model_repa_cfg.get('z_dims', []):
             assert z_dim == teacher_embed_dim, \
                 f"repa_config.z_dims entry ({z_dim}) must match teacher embed_dim ({teacher_embed_dim})"
+        # Validate enc_type consistency between top-level and model-level repa_config
+        model_enc_type = model_repa_cfg.get('enc_type', None)
+        if model_enc_type is not None:
+            assert model_enc_type == enc_type, \
+                f"Model repa_config.enc_type ({model_enc_type}) must match " \
+                f"top-level repa_config.enc_type ({enc_type})"
+        # Auto-inject num_teacher_blocks from actual encoder if not specified
+        actual_num_blocks = get_num_teacher_blocks(enc_type)
+        cfg_num_blocks = model_repa_cfg.get('num_teacher_blocks', None)
+        if cfg_num_blocks is None:
+            model_repa_cfg['num_teacher_blocks'] = actual_num_blocks
+            logging.info(f"Auto-set repa_config.num_teacher_blocks = {actual_num_blocks} from {enc_type}")
+        else:
+            assert cfg_num_blocks == actual_num_blocks, \
+                f"repa_config.num_teacher_blocks ({cfg_num_blocks}) must match " \
+                f"actual teacher encoder blocks ({actual_num_blocks}) for {enc_type}"
     logging.info(f'model_cfg: {model_cfg}')
     model = model_class(**model_cfg)
     model = model.to(gpu)
@@ -564,13 +582,13 @@ def worker(gpu, cfg):
                 rank_raw_images = (rank_images + 1.0) / 2.0  # [B, C, H, W] in [0, 1]
             rank_images = rearrange(rank_images, "B C H W -> B C 1 H W")
 
-        # Extract teacher features for REPA
+        # Extract ALL teacher block features for MoS REPA
         if use_repa:
             with torch.no_grad():
                 with amp.autocast(dtype=cfg.param_dtype, enabled=use_amp):
-                    teacher_z = extract_teacher_features(
+                    teacher_all_z = extract_all_teacher_block_features(
                         teacher_encoder, rank_raw_images, repa_config['enc_type']
-                    )  # (B, num_patches, teacher_embed_dim)
+                    )  # (num_teacher_blocks, B, num_patches, teacher_embed_dim)
 
         rank_img_u = compute_density_for_timestep_sampling(
             weighting_scheme=cfg.weighting_scheme,
@@ -601,7 +619,7 @@ def worker(gpu, cfg):
 
         arg_c = {'context': context, 'use_gradient_checkpointing': cfg.use_gradient_checkpointing}
         if use_repa:
-            arg_c['teacher_z'] = teacher_z
+            arg_c['teacher_all_z'] = teacher_all_z
 
         noise = torch.randn_like(z)
         noised_z_in = (1.0 - sigmas.squeeze()).view(z.shape[0], 1, 1, 1, 1) * z + sigmas.squeeze().view(z.shape[0], 1, 1, 1, 1) * noise
@@ -612,50 +630,20 @@ def worker(gpu, cfg):
         loss_dict = {}
         loss_dict["loss"] = 0
 
-        # Handle model output: REPA models return (pred, zs_proj) or (pred, zs_proj, cond_mask)
-        cond_mask = None
+        # Handle model output: MoS REPA returns (pred, mos_repa_loss)
         if isinstance(model_output, tuple):
-            if len(model_output) == 3 and isinstance(model_output[2], torch.Tensor) and model_output[2].dtype == torch.bool:
-                # REPA-Cond: (pred, zs_proj, cond_mask)
-                model_pred, zs_proj, cond_mask = model_output
-            else:
-                model_pred, zs_proj = model_output[0], model_output[1]
-
-            # Check if this is a DiffMoE-style tuple (string identifier at index 1)
-            if isinstance(zs_proj, str):
-                # DiffMoE loss path
-                loss_dict["cp_loss"] = 0
-                loss_stratgy_name = zs_proj
-                if loss_stratgy_name == "Capacity_Pred":
-                    layer_idx_list, ones_list, pred_c_list, CapacityPred_loss_weight = model_output[2:]
-                    for layer_idx, ones, pred_c in zip(layer_idx_list, ones_list, pred_c_list):
-                        loss_dict[f"Capacity_Pred_loss_{layer_idx}"] = nn.BCEWithLogitsLoss()(pred_c, ones)
-                        loss_dict["loss"] += loss_dict[f"Capacity_Pred_loss_{layer_idx}"]  * CapacityPred_loss_weight
-                        loss_dict["cp_loss"] += loss_dict[f"Capacity_Pred_loss_{layer_idx}"]  * CapacityPred_loss_weight
-                else:
-                    raise Exception("not defined training loss")
-                model_pred = model_output[0]
-                zs_proj = None
+            model_pred, mos_repa_loss = model_output[0], model_output[1]
 
             if model_pred.shape[1] != noised_z_in.shape[1]:
                 model_pred, _ = model_pred.chunk(2, dim=1)
             model_pred = model_pred.unsqueeze(2)
 
-            # REPA projection loss
-            if use_repa and zs_proj is not None:
-                # If cond_mask is provided, only align conditional samples
-                teacher_z_for_repa = teacher_z[cond_mask] if cond_mask is not None else teacher_z
-                # Skip REPA loss if no conditional samples in this batch (avoid nan from empty mean)
-                if teacher_z_for_repa.shape[0] > 0:
-                    repa_loss = compute_repa_loss(teacher_z_for_repa, zs_proj)
-                    loss_dict["repa_loss"] = repa_loss
-                    # If zs_proj contains per-token dynamic weights (from sigmoid),
-                    # the weighting is already applied inside compute_repa_loss,
-                    # so skip multiplying by proj_coeff.
-                    has_dynamic_weight = isinstance(zs_proj[0], (tuple, list))
-                    repa_loss_weighted = repa_loss if has_dynamic_weight else repa_loss * proj_coeff
-                    loss_dict["repa_loss_weighted"] = repa_loss_weighted
-                    loss_dict["loss"] += repa_loss_weighted
+            # MoS REPA loss (scalar returned by model, weighted by proj_coeff)
+            if use_repa and torch.is_tensor(mos_repa_loss):
+                loss_dict["mos_repa_loss"] = mos_repa_loss
+                mos_repa_loss_weighted = mos_repa_loss * proj_coeff
+                loss_dict["mos_repa_loss_weighted"] = mos_repa_loss_weighted
+                loss_dict["loss"] += mos_repa_loss_weighted
 
         elif model_output.shape[1] != noised_z_in.shape[1]:
             ########## DiT loss
