@@ -136,7 +136,7 @@ bash scripts/hierar/run_B_hierar_expert_NoPenalty_infer_eval.sh
 bash scripts/run_all_infer_eval_500K.sh
 ```
 
-When adding any new train + sample + eval all-in-one `.sh` wrapper, follow the structure and execution pattern of `scripts/template.sh` rather than inventing a new style; this is required for compatibility with another experiment server.
+When adding any new train + sample + eval all-in-one `.sh` wrapper, follow the structure and execution pattern of `scripts/template.sh` rather than inventing a new style; this is required for compatibility with another experiment server. All such experimental `.sh` wrappers must launch Python exactly in the template style: use `/mnt/workspace/yujie/.conda/envs/promoe/bin/python` for training/sampling and `/mnt/workspace/yujie/.conda/envs/fid_eval/bin/python` for evaluation, and do not rely on `conda activate` at runtime.
 
 Create evaluation env (TensorFlow-based):
 
@@ -169,8 +169,8 @@ No dedicated `tests/` directory. Use smoke checks aligned to your change surface
 - Syntax checks: `python -m py_compile <modified_python_files>`.
 - End-to-end REPA-DYNA smoke check: run one wrapper in `scripts/dynamic_repa/` and verify train/sample/eval logs are produced.
 - End-to-end MoS-REPA smoke check: run `bash scripts/MoS_repa/run_B_repa_mos_train_sample_eval.sh` and verify train/sample/eval logs are produced.
-- Before using one-click wrappers under `scripts/repa/` or `scripts/MoS_repa/`, check whether they hard-code local Python interpreter paths and adjust them if needed; the direct Python entrypoints are the portability baseline.
-- When writing a new training + sampling + evaluation three-in-one shell script, start from `scripts/template.sh` and preserve its pattern; otherwise the script may fail on the other experiment server.
+- One-click experimental wrappers should keep the hard-coded interpreter launch style from `scripts/template.sh`: `/mnt/workspace/yujie/.conda/envs/promoe/bin/python` for training/sampling and `/mnt/workspace/yujie/.conda/envs/fid_eval/bin/python` for evaluation.
+- When writing a new training + sampling + evaluation three-in-one shell script, start from `scripts/template.sh`, preserve its interpreter-launch pattern, and do not replace it with `conda activate`; otherwise the script may fail on the experiment server.
 
 If you touch dataset traversal, latent mapping, or preprocessing logic, clear/regenerate `preprocess/image_paths_cache.txt` before re-running checks.
 

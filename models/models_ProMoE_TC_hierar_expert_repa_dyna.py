@@ -6,6 +6,20 @@ from .modules import get_2d_sincos_pos_embed, Attention, modulate, TimestepEmbed
 
 
 #################################################################################
+#                             Projector for REPA                               #
+#################################################################################
+def build_repa_projector(hidden_size, projector_dim, z_dim):
+    """3-layer MLP projector following REPA (SiT) design."""
+    return nn.Sequential(
+        nn.Linear(hidden_size, projector_dim),
+        nn.SiLU(),
+        nn.Linear(projector_dim, projector_dim),
+        nn.SiLU(),
+        nn.Linear(projector_dim, z_dim),
+    )
+
+
+#################################################################################
 #                                ProMoE Layer                                  #
 #################################################################################
 class AddAuxiliaryLoss(torch.autograd.Function):
@@ -373,7 +387,7 @@ class DiTBlock(nn.Module):
 
 class DiT(nn.Module):
     """
-    Diffusion model with a Transformer backbone.
+    Diffusion model with a Transformer backbone + dynamic REPA projectors.
     """
     def __init__(
         self,
@@ -391,6 +405,7 @@ class DiT(nn.Module):
         use_swiglu=False,
         MoE_config=None,
         head_dim=None,
+        repa_config=None,
     ):
         super().__init__()
         self.learn_sigma = learn_sigma
@@ -398,6 +413,7 @@ class DiT(nn.Module):
         self.out_channels = in_channels * 2 if learn_sigma else in_channels
         self.patch_size = patch_size
         self.num_heads = num_heads
+        self.repa_config = repa_config
 
         self.MoE_config = MoE_config
         use_moe_flag = [True] * depth
@@ -418,6 +434,30 @@ class DiT(nn.Module):
         ])
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
         self.init_MoeMLP= MoE_config.init_MoeMLP
+
+        # REPA: projector heads for representation alignment with dynamic token weights.
+        if repa_config is not None:
+            self.encoder_depth = repa_config.get('encoder_depth', 4)
+            assert self.encoder_depth <= depth, \
+                f"repa_config.encoder_depth ({self.encoder_depth}) must be <= model depth ({depth})"
+            z_dims = repa_config.get('z_dims', [768])
+            projector_dim = repa_config.get('projector_dim', 2048)
+            self.projectors = nn.ModuleList([
+                build_repa_projector(hidden_size, projector_dim, z_dim) for z_dim in z_dims
+            ])
+            self.repa_token_weighter = nn.Sequential(
+                nn.Linear(hidden_size, projector_dim),
+                nn.SiLU(),
+                nn.Linear(projector_dim, projector_dim),
+                nn.SiLU(),
+                nn.Linear(projector_dim, 1),
+                nn.Sigmoid(),
+            )
+        else:
+            self.encoder_depth = None
+            self.projectors = None
+            self.repa_token_weighter = None
+
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -484,25 +524,43 @@ class DiT(nn.Module):
 
     def forward(self, x, timestep, context, **kwargs):
         """
-        Forward pass of DiT.
+        Forward pass of DiT with optional dynamic REPA projections.
         x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
         timestep: (N,) tensor of diffusion timesteps
         context: (N,) tensor of class labels
+
+        Returns:
+            x: (N, out_channels, H, W) model prediction
+            zs_proj: list of (z_proj, token_weight) tuples, where
+                     z_proj is (N, T, z_dim) and token_weight is (N, T, 1),
+                     or None if REPA projectors are disabled
         """
         y = context
         if len(x.shape) != 4:
             x = x.squeeze(2)
 
         x = self.x_embedder(x) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
+        N, T, D = x.shape
         t = self.t_embedder(timestep)                   # (N, D)
         y, labels = self.y_embedder(y, self.training)    # (N, D)
         c = t + y                                # (N, D)
-        for block in self.blocks:
+
+        zs_proj = None
+        for i, block in enumerate(self.blocks):
             x = block(x, c, labels)                      # (N, T, D)
+            if self.training and self.projectors is not None and (i + 1) == self.encoder_depth:
+                flat_x = x.reshape(-1, D)
+                token_weight = self.repa_token_weighter(flat_x).reshape(N, T, 1) * self.repa_config.get("proj_coeff", 0.5)
+                zs_proj = [
+                    (proj(flat_x).reshape(N, T, -1), token_weight) for proj in self.projectors
+                ]
+
         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
         x = self.unpatchify(x)                   # (N, out_channels, H, W)
 
-        return x 
+        if not self.training:
+            return x
+        return x, zs_proj
 
     def forward_with_cfg(self, x, t, y, cfg_scale):
         """
