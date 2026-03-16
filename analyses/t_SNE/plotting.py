@@ -290,3 +290,89 @@ def save_samplewise_tsne_svg(
     )
     fig.savefig(output_path, format="svg", bbox_inches="tight", pad_inches=0.03)
     plt.close(fig)
+
+
+def save_imagewise_tsne_svg(
+    output_path,
+    merged_record: dict,
+    selected_class_ids: list[int],
+    class_names: list[str],
+    seed: int,
+    images_per_class: int,
+    encoder_name: str,
+    perplexity: float | None = None,
+):
+    plt, Line2D, _ = _require_plot_dependencies()
+
+    fig, ax = plt.subplots(1, 1, figsize=(8.8, 7.4))
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    sorted_class_ids = list(selected_class_ids)
+    palette = build_categorical_palette(len(sorted_class_ids))
+    class_to_color = {
+        class_id: palette[index]
+        for index, class_id in enumerate(sorted_class_ids)
+    }
+    class_to_name = {
+        class_id: format_class_display_name(class_names[class_id], class_id)
+        for class_id in sorted_class_ids
+    }
+
+    embedding = run_tsne(
+        merged_record["vectors"],
+        seed=seed,
+        perplexity=perplexity,
+    )
+    labels = merged_record["class_ids"].astype(int, copy=False)
+    colors = [class_to_color[class_id] for class_id in labels]
+
+    ax.scatter(
+        embedding[:, 0],
+        embedding[:, 1],
+        s=18,
+        c=colors,
+        alpha=0.9,
+        linewidths=0.0,
+    )
+    ax.margins(0.03)
+
+    fig.suptitle(
+        f"Image-wise t-SNE | encoder={encoder_name} | {len(sorted_class_ids)} classes x {images_per_class} images",
+        fontsize=15,
+        y=0.985,
+    )
+
+    legend_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="",
+            color=class_to_color[class_id],
+            label=class_to_name[class_id],
+            markersize=5,
+        )
+        for class_id in sorted_class_ids
+    ]
+    fig.legend(
+        handles=legend_handles,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.945),
+        ncol=min(3, len(legend_handles)),
+        frameon=False,
+        columnspacing=1.0,
+        handletextpad=0.4,
+        fontsize=9,
+    )
+
+    fig.subplots_adjust(
+        left=0.03,
+        right=0.995,
+        top=0.88,
+        bottom=0.03,
+    )
+    fig.savefig(output_path, format="svg", bbox_inches="tight", pad_inches=0.03)
+    plt.close(fig)

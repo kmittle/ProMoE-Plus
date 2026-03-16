@@ -11,6 +11,7 @@ from utils import deep_update
 
 
 _CKPT_STEP_PATTERN = re.compile(r"ckpt_step_(\d+)\.pth$")
+_STEP_DIR_PATTERN = re.compile(r"step(\d+)$")
 
 
 def resolve_repo_root() -> Path:
@@ -21,6 +22,13 @@ def parse_checkpoint_step(ckpt_path: Path) -> int:
     match = _CKPT_STEP_PATTERN.search(ckpt_path.name)
     if match is None:
         raise ValueError(f"Cannot parse checkpoint step from path: {ckpt_path}")
+    return int(match.group(1))
+
+
+def parse_step_dir_name(step_dir_name: str) -> int:
+    match = _STEP_DIR_PATTERN.search(step_dir_name)
+    if match is None:
+        raise ValueError(f"Cannot parse sampling step from directory name: {step_dir_name}")
     return int(match.group(1))
 
 
@@ -57,6 +65,48 @@ def load_runtime_cfg(config_path: Path):
 def resolve_analysis_output_dir(ckpt_path: Path, analysis_name: str = "token-wise") -> Path:
     step = parse_checkpoint_step(ckpt_path)
     run_root = ckpt_path.parent.parent
+    return run_root / "sample" / f"step{step}" / "t-sne" / analysis_name
+
+
+def resolve_run_root_from_image_dir(image_dir: Path) -> Path:
+    image_dir = image_dir.resolve()
+    for parent in image_dir.parents:
+        if parent.name == "sample":
+            return parent.parent
+    raise ValueError(
+        f"Cannot resolve run root from image directory: {image_dir}. "
+        "Expected it to live under outputs/<model>/<config>/sample/..."
+    )
+
+
+def resolve_step_from_image_dir(image_dir: Path) -> int:
+    image_dir = image_dir.resolve()
+    for parent in image_dir.parents:
+        if _STEP_DIR_PATTERN.search(parent.name):
+            return parse_step_dir_name(parent.name)
+    raise ValueError(
+        f"Cannot resolve sampling step from image directory: {image_dir}. "
+        "Expected a parent directory like step500000."
+    )
+
+
+def resolve_checkpoint_from_image_dir(image_dir: Path) -> Path:
+    run_root = resolve_run_root_from_image_dir(image_dir)
+    step = resolve_step_from_image_dir(image_dir)
+    return run_root / "checkpoints" / f"ckpt_step_{step}.pth"
+
+
+def resolve_config_from_image_dir(image_dir: Path, repo_root: Path | None = None) -> Path:
+    ckpt_path = resolve_checkpoint_from_image_dir(image_dir)
+    return resolve_config_from_checkpoint(ckpt_path, repo_root=repo_root)
+
+
+def resolve_analysis_output_dir_from_image_dir(
+    image_dir: Path,
+    analysis_name: str = "image-wise",
+) -> Path:
+    run_root = resolve_run_root_from_image_dir(image_dir)
+    step = resolve_step_from_image_dir(image_dir)
     return run_root / "sample" / f"step{step}" / "t-sne" / analysis_name
 
 
