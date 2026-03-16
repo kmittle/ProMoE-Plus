@@ -207,7 +207,8 @@ Training-level parameters (top-level `repa_config`):
 - No `tests/` directory; validate changes with `python -m py_compile <file>` for syntax checks and targeted smoke tests (short training run, sample pass).
 
 ### Shell Script Convention
-- End-to-end scripts under `scripts/` use **absolute python paths** (e.g., `/mnt/workspace/yujie/.conda/envs/promoe/bin/python`) instead of `conda activate` for company server compatibility. See `command.sh` for the reference format.
+- **新建训练+采样+评估三合一脚本时，必须以 `scripts/template.sh` 为模板**，否则另一台实验服务器无法运行。模板的关键模式包括：`set -euo pipefail`、通过 `SCRIPT_DIR`/`REPO_ROOT` 定位仓库根目录、用内联 Python 从 YAML 解析 `model_name`/`gpu_ids`/`num_fid_samples` 等参数、使用绝对 python 路径调用训练/采样/评估、以及 `find ... -name images | sort -V` 遍历评估目录。
+- End-to-end scripts under `scripts/` use **absolute python paths** (e.g., `/mnt/workspace/yujie/.conda/envs/promoe/bin/python`) instead of `conda activate` for company server compatibility.
 - Training/sampling uses the `promoe` env; evaluation uses the `fid_eval` env.
 
 ## Important Notes
