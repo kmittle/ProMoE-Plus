@@ -32,6 +32,11 @@ def slugify_class_name(class_name: str) -> str:
     return slug or "unnamed_class"
 
 
+def format_class_display_name(class_name: str, class_id: int) -> str:
+    name = class_name.strip() if class_name else "unnamed_class"
+    return f"{name}-{class_id}"
+
+
 def build_class_id_signature(class_ids: list[int], max_ids: int = 10) -> str:
     class_ids = list(class_ids)
     if len(class_ids) <= max_ids:

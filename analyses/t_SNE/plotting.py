@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from analyses.t_SNE.imagenet_utils import format_class_display_name
+
 
 def _require_plot_dependencies():
     try:
@@ -136,7 +138,7 @@ def save_tokenwise_tsne_svg(
             if col == 0:
                 ax.set_ylabel(f"Block {block_idx}", fontsize=11)
 
-    title = class_name if class_name else f"class {class_id}"
+    title = format_class_display_name(class_name, class_id)
     fig.suptitle(title, fontsize=16, y=0.995)
 
     if present_experts:
@@ -205,7 +207,7 @@ def save_samplewise_tsne_svg(
         for index, class_id in enumerate(sorted_class_ids)
     }
     class_to_name = {
-        class_id: class_names[class_id]
+        class_id: format_class_display_name(class_names[class_id], class_id)
         for class_id in sorted_class_ids
     }
 
@@ -262,7 +264,7 @@ def save_samplewise_tsne_svg(
             marker="o",
             linestyle="",
             color=class_to_color[class_id],
-            label=f"{class_id}: {class_to_name[class_id]}",
+            label=class_to_name[class_id],
             markersize=5,
         )
         for class_id in sorted_class_ids
