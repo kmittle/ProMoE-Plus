@@ -1,43 +1,97 @@
 # Analyses Usage
 
-`analyses/` 目录只放任务入口脚本；具体分析逻辑和可复用工具模块放在对应子目录中，例如 `analyses/t_SNE/`。
+`analyses/` contains runnable entry scripts only. Shared logic and reusable helpers are placed in subdirectories such as `analyses/t_SNE/`.
 
 ## Current Entry Scripts
 
+### `run_samplewise_pooled_tsne.py`
+
+Purpose:
+
+- Runs sample-wise t-SNE analysis for a specified checkpoint.
+- Infers the YAML config automatically from the checkpoint path.
+- Uses a default random seed of `42`.
+- Randomly selects 5 ImageNet classes by default, or uses `--class-ids` when provided.
+- Generates 50 samples per class by default with `CFG=1.0`; sampling hyperparameters are read from the YAML.
+- Captures block output tokens every fixed number of denoising steps, pools them into sample vectors, and uses the ImageNet class as the label for t-SNE visualization.
+
+Default output location:
+
+- `outputs/<model_name>/<config_stem>/sample/step<step>/t-sne/sample-wise/`
+
+Basic usage:
+
+```bash
+python analyses/run_samplewise_pooled_tsne.py \
+  --ckpt outputs/ProMoE_TC_REPA_B/004_ProMoE_B_repa/checkpoints/ckpt_step_500000.pth
+```
+
+Common arguments:
+
+- `--ckpt`: Required checkpoint path.
+- `--seed`: Random seed, default `42`.
+- `--num-classes`: Number of randomly selected classes, default `5`.
+- `--class-ids`: Manually specified class IDs, such as `7,12,56,207,999`.
+- `--samples-per-class`: Number of generated samples per class, default `50`.
+- `--analysis-every`: Denoising interval for analysis, default `50`.
+- `--sample-batch-size`: Number of samples processed together by each worker, default `8`.
+- `--pool-type`: Token pooling method, default `mean`; `max` is also supported.
+- `--perplexity`: Optional manual t-SNE perplexity override.
+- `--overwrite`: Re-generate the SVG if it already exists.
+
+Examples:
+
+```bash
+python analyses/run_samplewise_pooled_tsne.py \
+  --ckpt outputs/ProMoE_TC_REPA_B/004_ProMoE_B_repa/checkpoints/ckpt_step_500000.pth \
+  --num-classes 5 \
+  --samples-per-class 50 \
+  --analysis-every 50
+```
+
+```bash
+python analyses/run_samplewise_pooled_tsne.py \
+  --ckpt outputs/ProMoE_TC_REPA_B/004_ProMoE_B_repa/checkpoints/ckpt_step_500000.pth \
+  --class-ids 7,12,56,207,999 \
+  --samples-per-class 30 \
+  --pool-type max \
+  --overwrite
+```
+
 ### `run_tokenwise_tsne.py`
 
-用途：
+Purpose:
 
-- 对指定 checkpoint 做 token-wise 的路由 t-SNE 分析。
-- 自动从 checkpoint 路径反推对应 YAML 配置文件。
-- 默认随机种子为 `42`。
-- 默认从 1000 个 ImageNet 类中随机抽取 20 个类。
-- 采样时固定 `CFG=1.0`，采样步数等超参数从 YAML 读取。
-- 每隔一定去噪步数抓取各个 MoE block 的 token 表征，并以 token 选择的 top-1 conditional expert 作为标签绘制 t-SNE。
+- Runs token-wise routing t-SNE analysis for a specified checkpoint.
+- Infers the YAML config automatically from the checkpoint path.
+- Uses a default random seed of `42`.
+- Randomly selects 20 ImageNet classes by default.
+- Uses `CFG=1.0`, with sampling hyperparameters read from the YAML.
+- Captures token representations from routed MoE blocks every fixed number of denoising steps and uses the top-1 conditional expert index as the t-SNE label.
 
-默认输出位置：
+Default output location:
 
 - `outputs/<model_name>/<config_stem>/sample/step<step>/t-sne/token-wise/`
 
-基础用法：
+Basic usage:
 
 ```bash
 python analyses/run_tokenwise_tsne.py \
   --ckpt outputs/ProMoE_TC_S/004_ProMoE_S/checkpoints/ckpt_step_500000.pth
 ```
 
-常用参数：
+Common arguments:
 
-- `--ckpt`: 必填，checkpoint 路径。
-- `--seed`: 随机种子，默认 `42`。
-- `--num-classes`: 随机抽取多少个 ImageNet 类，默认 `20`。
-- `--class-ids`: 手动指定类 id，格式如 `1,5,23`；提供后将覆盖随机抽样。
-- `--analysis-every`: 每隔多少个去噪 step 做一次分析，默认 `50`。
-- `--analysis-batch-size`: 每个 worker 一次并行分析多少个类，默认 `4`。
-- `--perplexity`: 手动指定 t-SNE perplexity；默认自适应。
-- `--overwrite`: 如果目标 SVG 已存在则重新生成。
+- `--ckpt`: Required checkpoint path.
+- `--seed`: Random seed, default `42`.
+- `--num-classes`: Number of randomly selected ImageNet classes, default `20`.
+- `--class-ids`: Manually specified class IDs, such as `1,5,23`; this overrides random class selection.
+- `--analysis-every`: Denoising interval for analysis, default `50`.
+- `--analysis-batch-size`: Number of classes processed together by each worker, default `4`.
+- `--perplexity`: Optional manual t-SNE perplexity override.
+- `--overwrite`: Re-generate the SVG if it already exists.
 
-示例：
+Examples:
 
 ```bash
 python analyses/run_tokenwise_tsne.py \
@@ -55,21 +109,24 @@ python analyses/run_tokenwise_tsne.py \
   --overwrite
 ```
 
-运行前提：
+Requirements:
 
-- 需要可用 CUDA GPU。
-- 使用哪些 GPU 会优先从 YAML 中的 `sample_gpu_ids` 或 `gpu_ids` 读取。
-- 需要安装仓库依赖，以及绘图依赖 `matplotlib` 和 `scikit-learn`。
+- CUDA GPUs are required.
+- Visible GPUs are read from `sample_gpu_ids` or `gpu_ids` in the YAML when available.
+- `matplotlib` and `scikit-learn` are required in addition to the standard project dependencies.
 
 ## Subdirectories
 
 ### `t_SNE/`
 
-这里存放 `run_tokenwise_tsne.py` 用到的工具模块，不直接作为任务入口执行。当前包含：
+`t_SNE/` stores the shared modules used by `run_tokenwise_tsne.py` and `run_samplewise_pooled_tsne.py`. These files are not intended to be used as direct task entry points.
 
-- `checkpoint_utils.py`: checkpoint、YAML、输出目录、GPU 配置解析。
-- `imagenet_utils.py`: ImageNet 类名与类别抽样工具。
-- `model_registry.py`: 统一模型注册表。
-- `routing_capture.py`: MoE block 路由与 block 输出采集。
-- `sampling.py`: 采样与分析 step 调度。
-- `plotting.py`: token-wise t-SNE 绘图与 SVG 保存。
+- `block_capture.py`: Generic block-output capture helpers.
+- `checkpoint_utils.py`: Checkpoint, YAML, output directory, and GPU resolution utilities.
+- `imagenet_utils.py`: ImageNet class-name lookup and class-sampling helpers.
+- `model_registry.py`: Unified model registry used by analysis scripts.
+- `pooling.py`: Token-to-sample pooling utilities.
+- `routing_capture.py`: Routing and routed-block capture for token-wise analysis.
+- `samplewise.py`: Sample specification, partial-result storage, and merge helpers for sample-wise analysis.
+- `sampling.py`: Sampling utilities and denoising-step scheduling.
+- `plotting.py`: SVG plotting utilities for token-wise and sample-wise t-SNE.

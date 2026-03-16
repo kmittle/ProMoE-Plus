@@ -30,3 +30,11 @@ def sample_class_ids(num_classes: int, seed: int, total_classes: int = 1000) -> 
 def slugify_class_name(class_name: str) -> str:
     slug = re.sub(r"[^a-zA-Z0-9]+", "_", class_name.strip().lower()).strip("_")
     return slug or "unnamed_class"
+
+
+def build_class_id_signature(class_ids: list[int], max_ids: int = 10) -> str:
+    class_ids = list(class_ids)
+    if len(class_ids) <= max_ids:
+        return "-".join(f"{class_id:03d}" for class_id in class_ids)
+    head = "-".join(f"{class_id:03d}" for class_id in class_ids[:max_ids])
+    return f"{head}-plus{len(class_ids) - max_ids}"

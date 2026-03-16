@@ -54,10 +54,10 @@ def load_runtime_cfg(config_path: Path):
     return runtime_cfg
 
 
-def resolve_analysis_output_dir(ckpt_path: Path) -> Path:
+def resolve_analysis_output_dir(ckpt_path: Path, analysis_name: str = "token-wise") -> Path:
     step = parse_checkpoint_step(ckpt_path)
     run_root = ckpt_path.parent.parent
-    return run_root / "sample" / f"step{step}" / "t-sne" / "token-wise"
+    return run_root / "sample" / f"step{step}" / "t-sne" / analysis_name
 
 
 def resolve_visible_gpu_ids(runtime_cfg) -> list[int]:
