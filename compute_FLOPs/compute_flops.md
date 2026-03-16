@@ -1,48 +1,48 @@
 # `compute_flops.py`
 
-## 作用
+## Purpose
 
-`compute_flops.py` 是 `compute_FLOPs/` 目录下用于直接启动的入口脚本。
-它会根据 checkpoint 路径解析对应的 YAML 配置，使用 YAML 中的采样步数设置进行采样，并统计 FLOPs、激活参数量以及专家激活频率。
+`compute_flops.py` is the runnable entry script under `compute_FLOPs/`.
+It resolves the corresponding YAML configuration from a checkpoint path, uses the sampling-step settings defined in that YAML, and reports FLOPs, activated-parameter statistics, and expert activation frequencies.
 
-## 统计内容
+## What It Reports
 
-- 采样过程中的 conditional forward FLOPs
-- 模型激活参数量统计
-- 每个 MoE block 的整体专家激活频率
-- 所有已追踪 block 的平均专家激活频率
-- 每隔 `N` 个去噪 step 保存一次的分 step 专家激活频率
+- Conditional-forward FLOPs during sampling
+- Activated-parameter statistics for the model
+- Overall expert activation frequency for each tracked MoE block
+- Average expert activation frequency across all tracked blocks
+- Per-step expert activation frequency snapshots saved every `N` denoising steps
 
-## 输出目录
+## Output Directory
 
-结果默认保存在：
+Results are written to:
 
 ```text
 outputs/<model_name>/<config_name>/sample/step<ckpt_step>/flops_eval/
 ```
 
-典型输出包括：
+Typical outputs include:
 
 - `flops_result.txt`
 - `expert_freq_block_<block_idx>.png`
 - `expert_freq_average.png`
-- `step-050/`、`step-100/` 等分 step 子目录
+- per-step subdirectories such as `step-050/` and `step-100/`
 
-每个 `step-xxx/` 子目录中会包含：
+Each `step-xxx/` subdirectory contains:
 
-- 当前 step 下各个 block 的专家激活频率柱状图
+- expert-frequency bar charts for each block at that step
 - `expert_freq_average.png`
 - `expert_frequencies.txt`
 
-## 主要参数
+## Main Arguments
 
-- `ckpt`：必需，checkpoint 路径
-- `--num_samples_per_class`：每个 ImageNet 类生成多少个样本，默认 `5`
-- `--seed`：随机种子，默认 `0`
-- `--guide_scale`：CFG scale，默认 `1.0`
-- `--save_every_steps`：每隔多少个去噪 step 保存一次分 step 专家频率，默认 `50`
+- `ckpt`: Required checkpoint path
+- `--num_samples_per_class`: Number of samples generated for each ImageNet class. Default: `5`
+- `--seed`: Random seed. Default: `0`
+- `--guide_scale`: CFG scale. Default: `1.0`
+- `--save_every_steps`: Save per-step expert-frequency reports every `N` denoising steps. Default: `50`
 
-## 使用示例
+## Example
 
 ```bash
 python compute_FLOPs/compute_flops.py \
@@ -52,15 +52,15 @@ python compute_FLOPs/compute_flops.py \
   --save_every_steps 50
 ```
 
-## 当前目录组织
+## Directory Layout
 
-`compute_FLOPs/` 根目录下只保留直接运行的入口脚本：
+The directly runnable entry script remains at the root of `compute_FLOPs/`:
 
 - `compute_flops.py`
 
-其余可复用模块按功能拆分为子目录：
+Reusable helper modules are grouped by function:
 
-- `config/`：checkpoint、YAML、模型构建相关工具
-- `tracking/`：专家激活与激活参数量追踪
-- `profiling/`：FLOPs 统计
-- `visualization/`：专家频率可视化
+- `config/`: checkpoint resolution, YAML loading, and model construction helpers
+- `tracking/`: expert-activation and activated-parameter trackers
+- `profiling/`: FLOPs counting utilities
+- `visualization/`: expert-frequency visualization helpers
