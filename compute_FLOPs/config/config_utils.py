@@ -66,11 +66,12 @@ def build_model_from_cfg(cfg):
     _prev_debug = os.environ.get("TORCH_DISTRIBUTED_DEBUG")
     from train import model_dict as _base_model_dict
     from train_with_repa import model_dict as _repa_model_dict
+    from train_with_MoS_repa import model_dict as _mos_repa_model_dict
     if _prev_debug is None:
         os.environ.pop("TORCH_DISTRIBUTED_DEBUG", None)
     else:
         os.environ["TORCH_DISTRIBUTED_DEBUG"] = _prev_debug
-    model_dict = {**_base_model_dict, **_repa_model_dict}
+    model_dict = {**_base_model_dict, **_repa_model_dict, **_mos_repa_model_dict}
 
     model_name = cfg.model_name
     if model_name not in model_dict:

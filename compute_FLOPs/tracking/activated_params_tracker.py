@@ -14,36 +14,8 @@ us exactly which experts received real tokens, with no heuristics.
 
 import torch
 import torch.nn as nn
-import inspect
 
-
-def _is_tc_compute_router(moe_module):
-    """Check if the module's compute_router follows TC (Token-Choice) signature.
-
-    TC models: compute_router(self, hidden_states, labels) -> 2 params.
-    EC models: compute_router(self, cond_hidden_states) -> 1 param (incompatible).
-    """
-    if not hasattr(moe_module, "compute_router"):
-        return False
-    sig = inspect.signature(moe_module.compute_router)
-    params = [p for p in sig.parameters if p != "self"]
-    return len(params) == 2
-
-
-def _find_moe_blocks(model):
-    """Find all MoE SparseMoeBlock modules. Returns list of (block_idx, module).
-
-    Skips Expert-Choice (EC) blocks whose compute_router has an incompatible signature.
-    """
-    moe_blocks = []
-    if not hasattr(model, "blocks"):
-        return moe_blocks
-    for i, block in enumerate(model.blocks):
-        if hasattr(block, "use_moe") and block.use_moe:
-            moe_module = block.mlp
-            if _is_tc_compute_router(moe_module):
-                moe_blocks.append((i, moe_module))
-    return moe_blocks
+from compute_FLOPs.tracking.utils import find_moe_blocks
 
 
 class ActivatedParamsTracker:
@@ -61,7 +33,7 @@ class ActivatedParamsTracker:
 
     def __init__(self, model):
         self.model = model
-        self.moe_blocks = _find_moe_blocks(model)
+        self.moe_blocks = find_moe_blocks(model)
         # Per-MoE-block: param count of each expert (indexed by expert id)
         self._expert_params = {}  # block_idx -> list[int]
         # Non-MoE parameter count (always activated, includes shared experts)

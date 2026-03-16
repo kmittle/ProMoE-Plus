@@ -2,42 +2,9 @@
 
 import torch
 import torch.nn as nn
-import inspect
 from collections import defaultdict
 
-
-def _is_tc_compute_router(moe_module):
-    """Check if the module's compute_router follows TC (Token-Choice) signature.
-
-    TC models: compute_router(self, hidden_states, labels) -> returns tuple with
-    (router_weights, expert_indices, ...) where expert_indices has shape (B, S, top_k).
-
-    EC models: compute_router(self, cond_hidden_states) -> incompatible signature/returns.
-    """
-    if not hasattr(moe_module, "compute_router"):
-        return False
-    sig = inspect.signature(moe_module.compute_router)
-    # TC: (hidden_states, labels); EC: (cond_hidden_states)
-    params = [p for p in sig.parameters if p != "self"]
-    return len(params) == 2
-
-
-def _find_moe_blocks(model):
-    """Find all MoE SparseMoeBlock modules and return (block_index, module) pairs.
-
-    block_index is the position within model.blocks (DiTBlock index).
-    Only DiTBlocks with use_moe=True contain a SparseMoeBlock as their .mlp attribute.
-    Skips Expert-Choice (EC) blocks whose compute_router has an incompatible signature.
-    """
-    moe_blocks = []
-    if not hasattr(model, "blocks"):
-        return moe_blocks
-    for i, block in enumerate(model.blocks):
-        if hasattr(block, "use_moe") and block.use_moe:
-            moe_module = block.mlp  # SparseMoeBlock
-            if _is_tc_compute_router(moe_module):
-                moe_blocks.append((i, moe_module))
-    return moe_blocks
+from compute_FLOPs.tracking.utils import find_moe_blocks
 
 
 def raw_counts_to_frequencies(raw_counts, num_routed_experts_per_block):
@@ -77,7 +44,7 @@ class ExpertActivationTracker:
 
     def __init__(self, model):
         self.model = model
-        self.moe_blocks = _find_moe_blocks(model)
+        self.moe_blocks = find_moe_blocks(model)
         self._counts = {}  # block_idx -> defaultdict(int)
         self._total_tokens = {}  # block_idx -> int (total cond token assignments)
         self._num_routed_experts_per_block = {}
