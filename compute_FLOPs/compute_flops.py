@@ -5,7 +5,7 @@ Supports multi-GPU execution: GPU IDs are read from the YAML config's `gpu_ids` 
 GPU IDs are automatically read from the YAML config resolved from the checkpoint path.
 
 Usage:
-    python compute_FLOPs/compute_flops.py <ckpt_path> [--num_samples_per_class N] [--seed S] [--guide_scale G]
+    python compute_FLOPs/compute_flops.py <ckpt_path> [--num_samples_per_class N] [--seed S] [--guide_scale G] [--save_every_steps K]
 
 Example:
     python compute_FLOPs/compute_flops.py outputs/ProMoE_TC_B/004_ProMoE_B/checkpoints/ckpt_step_500000.pth
@@ -37,7 +37,7 @@ from compute_FLOPs.config_utils import (
     build_model_from_cfg,
     load_ema_weights,
 )
-from compute_FLOPs.expert_tracker import ExpertActivationTracker
+from compute_FLOPs.expert_tracker import ExpertActivationTracker, raw_counts_to_frequencies
 from compute_FLOPs.flops_counter import FLOPsAccumulator
 from compute_FLOPs.activated_params_tracker import ActivatedParamsTracker
 from compute_FLOPs.visualize import plot_expert_frequencies
@@ -112,6 +112,111 @@ def aggregate_activated_param_stats(stats_list):
         "num_forwards": total_forwards,
         "activation_ratio": mean_activated / total_params if total_params > 0 else 0.0,
     }
+
+
+def compute_saved_step_indices(sample_steps, save_every_steps):
+    """Return 1-based denoising step indices to snapshot."""
+    if save_every_steps <= 0:
+        raise ValueError("--save_every_steps must be positive.")
+
+    saved_step_indices = list(range(save_every_steps, sample_steps + 1, save_every_steps))
+    if not saved_step_indices or saved_step_indices[-1] != sample_steps:
+        saved_step_indices.append(sample_steps)
+    return saved_step_indices
+
+
+def merge_expert_raw_counts(target_raw_counts, source_raw_counts):
+    """Merge source raw expert counts into target in place."""
+    for block_idx, (counts_dict, total_tokens) in source_raw_counts.items():
+        if block_idx not in target_raw_counts:
+            target_raw_counts[block_idx] = ({}, 0)
+        merged_counts, merged_total = target_raw_counts[block_idx]
+        for expert_idx, count in counts_dict.items():
+            merged_counts[expert_idx] = merged_counts.get(expert_idx, 0) + count
+        target_raw_counts[block_idx] = (merged_counts, merged_total + total_tokens)
+    return target_raw_counts
+
+
+def merge_stepwise_raw_counts(stepwise_raw_counts_list):
+    """Merge per-rank stepwise raw counts."""
+    merged = {}
+    for stepwise_raw_counts in stepwise_raw_counts_list:
+        if not stepwise_raw_counts:
+            continue
+        for step_idx, raw_counts in stepwise_raw_counts.items():
+            if step_idx not in merged:
+                merged[step_idx] = {}
+            merge_expert_raw_counts(merged[step_idx], raw_counts)
+    return merged
+
+
+def compute_average_frequency(frequencies):
+    """Average expert frequencies across all tracked blocks."""
+    block_indices = sorted(frequencies.keys())
+    if not block_indices:
+        return []
+
+    num_experts = len(frequencies[block_indices[0]])
+    avg_freq = [0.0] * num_experts
+    for block_idx in block_indices:
+        for expert_idx in range(num_experts):
+            avg_freq[expert_idx] += frequencies[block_idx][expert_idx]
+    return [value / len(block_indices) for value in avg_freq]
+
+
+def serialize_timestep_value(timestep):
+    """Convert a scalar timestep tensor/value into a Python int or float."""
+    value = float(timestep.item() if hasattr(timestep, "item") else timestep)
+    if value.is_integer():
+        return int(value)
+    return value
+
+
+def save_stepwise_expert_frequency_reports(
+    stepwise_raw_counts,
+    num_routed_experts_per_block,
+    save_dir,
+    saved_step_indices,
+    saved_step_timestep_values,
+    model_name="",
+):
+    """Save per-step expert frequency summaries into step-xxx subdirectories."""
+    if not saved_step_indices:
+        return []
+
+    pad_width = max(3, len(str(max(saved_step_indices))))
+    saved_dirs = []
+    for step_idx in saved_step_indices:
+        step_dir = os.path.join(save_dir, f"step-{step_idx:0{pad_width}d}")
+        os.makedirs(step_dir, exist_ok=True)
+
+        frequencies = raw_counts_to_frequencies(
+            stepwise_raw_counts.get(step_idx, {}),
+            num_routed_experts_per_block,
+        )
+        plot_expert_frequencies(
+            frequencies,
+            save_dir=step_dir,
+            model_name=model_name,
+        )
+
+        txt_path = os.path.join(step_dir, "expert_frequencies.txt")
+        with open(txt_path, "w") as f:
+            f.write(f"Sampling step index: {step_idx}\n")
+            if step_idx in saved_step_timestep_values:
+                f.write(f"Scheduler timestep:  {saved_step_timestep_values[step_idx]}\n")
+            f.write("\n--- Expert Activation Frequencies ---\n")
+            block_indices = sorted(frequencies.keys())
+            for block_idx in block_indices:
+                freq = frequencies[block_idx]
+                f.write(f"Block {block_idx}: {[f'{v:.4f}' for v in freq]}\n")
+            avg_freq = compute_average_frequency(frequencies)
+            if avg_freq:
+                f.write(f"Average:  {[f'{v:.4f}' for v in avg_freq]}\n")
+
+        saved_dirs.append(step_dir)
+
+    return saved_dirs
 
 
 def worker(rank, world_size, args, model_name, custom_cfg_name, ckpt_step,
@@ -200,14 +305,33 @@ def worker(rank, world_size, args, model_name, custom_cfg_name, ckpt_step,
     np.random.seed(args.seed + rank)
 
     sampling_sigmas = get_sampling_sigmas(sample_steps, sample_shift)
+    saved_step_indices = compute_saved_step_indices(sample_steps, args.save_every_steps)
+    saved_step_index_set = set(saved_step_indices)
+
+    reference_scheduler = FlowMatchEulerDiscreteScheduler(
+        num_train_timesteps=num_train_timesteps, shift=shift
+    )
+    reference_timesteps, _ = retrieve_timesteps(
+        reference_scheduler,
+        device=device,
+        sigmas=sampling_sigmas,
+    )
+    saved_step_timestep_values = {
+        step_idx: serialize_timestep_value(reference_timesteps[step_idx - 1])
+        for step_idx in saved_step_indices
+    }
 
     cond_forward_passes = 0
     cond_total_flops = 0
+    local_stepwise_raw_counts = (
+        {step_idx: {} for step_idx in saved_step_indices} if has_moe else {}
+    )
 
     if is_main:
         total_samples_global = num_classes * args.num_samples_per_class
         print(f"\nRunning sampling loop: {total_samples_global} samples x {sample_steps} steps x {forwards_per_step} forwards/step ...")
         print(f"  This rank handles {len(my_classes)} classes ({total_samples_this_rank} samples)")
+        print(f"  Saving per-step expert frequencies every {args.save_every_steps} steps: {saved_step_indices}")
 
     start_time = time.time()
     sample_count = 0
@@ -223,19 +347,32 @@ def worker(rank, world_size, args, model_name, custom_cfg_name, ckpt_step,
                 y = torch.tensor([class_idx], device=device)
                 y_null = torch.tensor([num_classes], device=device)
 
-                for t in timesteps:
+                for step_idx, t in enumerate(timesteps, start=1):
                     timestep = t.unsqueeze(0)
 
+                    if has_moe:
+                        tracker.begin_forward()
                     noise_pred_cond = model(latent, timestep, context=y)
                     cond_total_flops += flops_acc.collect()
                     cond_forward_passes += 1
                     params_tracker.record_forward_pass()
+                    if has_moe:
+                        current_forward_raw_counts = tracker.consume_current_forward_raw_counts()
+                        if step_idx in saved_step_index_set:
+                            merge_expert_raw_counts(
+                                local_stepwise_raw_counts[step_idx],
+                                current_forward_raw_counts,
+                            )
                     if isinstance(noise_pred_cond, tuple):
                         noise_pred_cond = noise_pred_cond[0]
 
                     if guide_scale > 1.0:
+                        if has_moe:
+                            tracker.begin_forward()
                         noise_pred_uncond = model(latent, timestep, context=y_null)
                         flops_acc.collect()  # collect but don't add to cond_total_flops
+                        if has_moe:
+                            tracker.consume_current_forward_raw_counts()
                         # Don't record uncond forward — activated params should be
                         # cond-only for consistency with FLOPs reporting.  Uncond
                         # forwards route all tokens to the single uncond expert,
@@ -304,9 +441,17 @@ def worker(rank, world_size, args, model_name, custom_cfg_name, ckpt_step,
                     other_bytes = all_padded[r][:sz].cpu().numpy().tobytes()
                     other_raw = pickle.loads(other_bytes)
                     tracker.merge_raw_counts(other_raw)
+
+            gathered_stepwise_raw_counts = [None for _ in range(world_size)]
+            dist.all_gather_object(gathered_stepwise_raw_counts, local_stepwise_raw_counts)
+        else:
+            gathered_stepwise_raw_counts = []
     else:
         if has_moe:
             tracker.stop()
+            gathered_stepwise_raw_counts = [local_stepwise_raw_counts]
+        else:
+            gathered_stepwise_raw_counts = []
 
     # Gather activated-parameter stats across GPUs.
     if world_size > 1:
@@ -398,6 +543,8 @@ def worker(rank, world_size, args, model_name, custom_cfg_name, ckpt_step,
         # Plot expert activation frequencies
         if has_moe:
             frequencies = tracker.get_frequencies()
+            num_routed_experts_per_block = tracker.get_num_routed_experts_per_block()
+            merged_stepwise_raw_counts = merge_stepwise_raw_counts(gathered_stepwise_raw_counts)
 
             plot_paths = plot_expert_frequencies(
                 frequencies,
@@ -414,14 +561,22 @@ def worker(rank, world_size, args, model_name, custom_cfg_name, ckpt_step,
                 for block_idx in block_indices:
                     freq = frequencies[block_idx]
                     f.write(f"Block {block_idx}: {[f'{v:.4f}' for v in freq]}\n")
-                if block_indices:
-                    num_experts = len(frequencies[block_indices[0]])
-                    avg_freq = [0.0] * num_experts
-                    for block_idx in block_indices:
-                        for e in range(num_experts):
-                            avg_freq[e] += frequencies[block_idx][e]
-                    avg_freq = [v / len(block_indices) for v in avg_freq]
+                avg_freq = compute_average_frequency(frequencies)
+                if avg_freq:
                     f.write(f"Average:  {[f'{v:.4f}' for v in avg_freq]}\n")
+
+            stepwise_dirs = save_stepwise_expert_frequency_reports(
+                stepwise_raw_counts=merged_stepwise_raw_counts,
+                num_routed_experts_per_block=num_routed_experts_per_block,
+                save_dir=save_dir,
+                saved_step_indices=saved_step_indices,
+                saved_step_timestep_values=saved_step_timestep_values,
+                model_name=model_name,
+            )
+            if stepwise_dirs:
+                print("\nPer-step expert frequency reports saved under:")
+                for step_dir in stepwise_dirs:
+                    print(f"  {step_dir}")
 
         print(f"\nAll results saved to: {save_dir}")
 
@@ -439,6 +594,8 @@ def main():
     parser.add_argument("--seed", type=int, default=0, help="Random seed (default: 0)")
     parser.add_argument("--guide_scale", type=float, default=1.0,
                         help="Classifier-free guidance scale (default: 1.0)")
+    parser.add_argument("--save_every_steps", type=int, default=50,
+                        help="Save per-step expert activation frequencies every N denoising steps (default: 50)")
     args = parser.parse_args()
 
     # Resolve ckpt path to config YAML
