@@ -11,3 +11,5 @@ torchvision==0.21.0
 tqdm==4.67.1
 tensorboard
 accelerate==1.5.1
+matplotlib==3.10.1
+scikit-learn==1.6.1
