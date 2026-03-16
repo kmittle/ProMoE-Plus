@@ -31,16 +31,19 @@ import torch.distributed as dist
 import numpy as np
 from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
 
-from compute_FLOPs.config_utils import (
+from compute_FLOPs.config.config_utils import (
     resolve_ckpt_info,
     load_config_from_yaml,
     build_model_from_cfg,
     load_ema_weights,
 )
-from compute_FLOPs.expert_tracker import ExpertActivationTracker, raw_counts_to_frequencies
-from compute_FLOPs.flops_counter import FLOPsAccumulator
-from compute_FLOPs.activated_params_tracker import ActivatedParamsTracker
-from compute_FLOPs.visualize import plot_expert_frequencies
+from compute_FLOPs.tracking.expert_tracker import (
+    ExpertActivationTracker,
+    raw_counts_to_frequencies,
+)
+from compute_FLOPs.profiling.flops_counter import FLOPsAccumulator
+from compute_FLOPs.tracking.activated_params_tracker import ActivatedParamsTracker
+from compute_FLOPs.visualization.visualize import plot_expert_frequencies
 from utils import find_free_port
 
 M = 1024 ** 2  # Mebi (for parameter counts)

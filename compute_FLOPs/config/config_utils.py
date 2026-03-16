@@ -7,7 +7,7 @@ import yaml
 import sys
 
 # Add project root to path
-PROJECT_ROOT = osp.dirname(osp.dirname(osp.abspath(__file__)))
+PROJECT_ROOT = osp.dirname(osp.dirname(osp.dirname(osp.abspath(__file__))))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
