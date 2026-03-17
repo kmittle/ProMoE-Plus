@@ -1,10 +1,10 @@
-"""Utilities for resolving checkpoint paths to configs and model classes."""
+"""Utilities for resolving checkpoint paths, configs, and model builders."""
 
 import os
 import os.path as osp
 import re
-import yaml
 import sys
+import yaml
 
 # Add project root to path
 PROJECT_ROOT = osp.dirname(osp.dirname(osp.dirname(osp.abspath(__file__))))
@@ -87,13 +87,17 @@ def build_model_from_cfg(cfg):
 def load_ema_weights(model, ckpt_path):
     """Load EMA weights from checkpoint into model."""
     import torch
+
     checkpoint = torch.load(ckpt_path, map_location="cpu")
     if "ema_model_state_dict" in checkpoint:
         state_dict = checkpoint["ema_model_state_dict"]
     elif "model_state_dict" in checkpoint:
         state_dict = checkpoint["model_state_dict"]
     else:
-        raise KeyError(f"Checkpoint has no 'ema_model_state_dict' or 'model_state_dict'. Keys: {list(checkpoint.keys())}")
+        raise KeyError(
+            "Checkpoint has no 'ema_model_state_dict' or 'model_state_dict'. "
+            f"Keys: {list(checkpoint.keys())}"
+        )
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
     if missing:
         print(f"[Warning] Missing keys when loading checkpoint: {missing}")

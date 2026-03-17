@@ -196,9 +196,9 @@ Training-level parameters (top-level `repa_config`):
 - All training entry points (`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, `sample.py`, `preprocess/preprocess_vae.py`) use this cached loading path.
 - REPA teacher encoders (DINOv2) are cached to `pretrained_ckpt/encoder/` after first download via torch.hub.
 
-### FLOPs Computation (`compute_FLOPs/`)
-- `compute_flops.py` — Computes theoretical FLOPs for model variants.
-- `flops_counter.py` — FLOPs counting utilities.
+### FLOPs Computation (`analyses/`)
+- `run_compute_flops.py` — Computes theoretical FLOPs, activated parameters, and expert frequencies for checkpoints.
+- `analyses/flops/flops_counter.py` — FLOPs counting utilities.
 
 ## Coding Conventions
 - 4-space indentation, `snake_case` for functions/variables, `PascalCase` for classes.

@@ -1,49 +1,45 @@
-"""Entry point for computing FLOPs and expert activation frequency of trained checkpoints.
+"""Compute FLOPs and expert-activation statistics for a trained checkpoint.
 
-Supports multi-GPU execution: GPU IDs are read from the YAML config's `gpu_ids` field.
+This analysis entrypoint follows the same layout as the other scripts under
+`analyses/`: the runnable script lives at the directory root, while reusable
+helpers are grouped under `analyses/flops/`.
 
-GPU IDs are automatically read from the YAML config resolved from the checkpoint path.
-
-Usage:
-    python compute_FLOPs/compute_flops.py <ckpt_path> [--num_samples_per_class N] [--seed S] [--guide_scale G] [--save_every_steps K]
-
-Example:
-    python compute_FLOPs/compute_flops.py outputs/ProMoE_TC_B/004_ProMoE_B/checkpoints/ckpt_step_500000.pth
-    python compute_FLOPs/compute_flops.py outputs/ProMoE_TC_REPA_B/004_ProMoE_B_repa/checkpoints/ckpt_step_500000.pth --num_samples_per_class 5
+GPU IDs are resolved from the YAML config inferred from the checkpoint path.
 """
 
-import os
-import sys
 import argparse
-import time
-import inspect
 import datetime
+import inspect
+import os
 import pickle
+import sys
+import time
 
 # Add project root to path
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-import torch
-import torch.multiprocessing as mp
-import torch.distributed as dist
 import numpy as np
+import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
+import yaml
 from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
 
-from compute_FLOPs.config.config_utils import (
-    resolve_ckpt_info,
-    load_config_from_yaml,
+from analyses.flops.activated_params_tracker import ActivatedParamsTracker
+from analyses.flops.checkpoint_utils import (
     build_model_from_cfg,
+    load_config_from_yaml,
     load_ema_weights,
+    resolve_ckpt_info,
 )
-from compute_FLOPs.tracking.expert_tracker import (
+from analyses.flops.expert_tracker import (
     ExpertActivationTracker,
     raw_counts_to_frequencies,
 )
-from compute_FLOPs.profiling.flops_counter import FLOPsAccumulator
-from compute_FLOPs.tracking.activated_params_tracker import ActivatedParamsTracker
-from compute_FLOPs.visualization.visualize import plot_expert_frequencies
+from analyses.flops.flops_counter import FLOPsAccumulator
+from analyses.flops.plotting import plot_expert_frequencies
 from utils import find_free_port
 
 M = 1024 ** 2  # Mebi (for parameter counts)
@@ -590,16 +586,43 @@ def worker(rank, world_size, args, model_name, custom_cfg_name, ckpt_step,
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Compute FLOPs and expert activation frequency for a trained checkpoint.")
-    parser.add_argument("ckpt", type=str, help="Relative path to the checkpoint file (.pth)")
-    parser.add_argument("--num_samples_per_class", type=int, default=5,
-                        help="Number of samples to generate per class (default: 5)")
+    parser = argparse.ArgumentParser(
+        description="Compute FLOPs and expert activation frequency for a trained checkpoint."
+    )
+    parser.add_argument("--ckpt", type=str, help="Path to the checkpoint file (.pth).")
+    parser.add_argument("legacy_ckpt", nargs="?", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--num-samples-per-class",
+        "--num_samples_per_class",
+        dest="num_samples_per_class",
+        type=int,
+        default=5,
+        help="Number of samples to generate per class (default: 5)",
+    )
     parser.add_argument("--seed", type=int, default=0, help="Random seed (default: 0)")
-    parser.add_argument("--guide_scale", type=float, default=1.0,
-                        help="Classifier-free guidance scale (default: 1.0)")
-    parser.add_argument("--save_every_steps", type=int, default=50,
-                        help="Save per-step expert activation frequencies every N denoising steps (default: 50)")
+    parser.add_argument(
+        "--guide-scale",
+        "--guide_scale",
+        dest="guide_scale",
+        type=float,
+        default=1.0,
+        help="Classifier-free guidance scale (default: 1.0)",
+    )
+    parser.add_argument(
+        "--save-every-steps",
+        "--save_every_steps",
+        dest="save_every_steps",
+        type=int,
+        default=50,
+        help="Save per-step expert activation frequencies every N denoising steps (default: 50)",
+    )
     args = parser.parse_args()
+
+    if args.ckpt and args.legacy_ckpt:
+        parser.error("Provide the checkpoint path either via --ckpt or as a positional argument, not both.")
+    if not args.ckpt and not args.legacy_ckpt:
+        parser.error("Checkpoint path is required. Use --ckpt <path>.")
+    args.ckpt = args.ckpt or args.legacy_ckpt
 
     # Resolve ckpt path to config YAML
     print(f"Resolving checkpoint: {args.ckpt}")
@@ -607,17 +630,16 @@ def main():
     print(f"  Config YAML:     {config_yaml_path}")
 
     # Read gpu_ids from the resolved config
-    import yaml
-    with open(config_yaml_path, 'r') as f:
+    with open(config_yaml_path, "r") as f:
         yaml_cfg = yaml.safe_load(f)
-    gpu_ids = yaml_cfg.get('gpu_ids', [0])
+    gpu_ids = yaml_cfg.get("gpu_ids", [0])
     if isinstance(gpu_ids, int):
         gpu_ids = [gpu_ids]
 
     world_size = len(gpu_ids)
 
     # Set CUDA_VISIBLE_DEVICES so that rank i maps to gpu_ids[i]
-    os.environ['CUDA_VISIBLE_DEVICES'] = ','.join(map(str, gpu_ids))
+    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, gpu_ids))
     master_port = find_free_port()
 
     print(f"  GPU IDs:         {gpu_ids} (world_size={world_size})")

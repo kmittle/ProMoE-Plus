@@ -1,10 +1,8 @@
 """Hook-based expert activation tracker for MoE models."""
 
-import torch
-import torch.nn as nn
 from collections import defaultdict
 
-from compute_FLOPs.tracking.utils import find_moe_blocks
+from analyses.flops.tracking_utils import find_moe_blocks
 
 
 def raw_counts_to_frequencies(raw_counts, num_routed_experts_per_block):

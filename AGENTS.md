@@ -20,12 +20,11 @@ Main code layout:
 - `repa/`: REPA helper package used by `train_with_repa.py` and `train_with_MoS_repa.py` (`encoder.py`, `loss.py`).
 - `preprocess/`: VAE latent preprocessing and shared cache file `preprocess/image_paths_cache.txt`.
 - `evaluation/`: OpenAI-style evaluation pipeline (`run_eval.py`, `evaluator.py`, `download_ref_batches.py`).
-- `analyses/`: analysis entry scripts live directly under this directory, with reusable helpers under `analyses/t_SNE/`; `analyses/README.md` should remain a brief directory-level overview only, while detailed usage belongs in per-entry Markdown files that share the same basename as each entry `.py`.
+- `analyses/`: analysis entry scripts live directly under this directory, with reusable helpers under subdirectories such as `analyses/t_SNE/`, `analyses/heatmap/`, and `analyses/flops/`; `analyses/README.md` should remain a brief directory-level overview only, while detailed usage belongs in per-entry Markdown files that share the same basename as each entry `.py`.
 - `scripts/repa/`: REPA-B / REPA-Shared-B / REPA-Cond-B helpers plus router / routed / double-share train + sample + eval wrappers.
 - `scripts/MoS_repa/`: MoS-REPA and MoS-REPA-Naive train + sample + eval wrappers following `scripts/template.sh`.
 - `scripts/hierar/`: B-scale hierarchical/expert train + infer/eval wrappers.
 - `scripts/dynamic_repa/`: REPA-DYNA-B, REPA-DYNA-SELECT-B, REPA-DYNA-SCALE-B, and REPA-DYNA-ONLY-B train + sample + eval pipelines (including select-ratio variants r25/r75).
-- `compute_FLOPs/`: FLOPs/statistics utilities.
 - `REPA/` (uppercase): separate upstream-style subproject with its own docs and `AGENTS.md`.
 
 Top-level wrappers:

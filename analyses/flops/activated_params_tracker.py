@@ -12,10 +12,7 @@ expert_indices — the set of unique expert IDs in the routing result tells
 us exactly which experts received real tokens, with no heuristics.
 """
 
-import torch
-import torch.nn as nn
-
-from compute_FLOPs.tracking.utils import find_moe_blocks
+from analyses.flops.tracking_utils import find_moe_blocks
 
 
 class ActivatedParamsTracker:
