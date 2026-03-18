@@ -27,6 +27,46 @@ class AddAuxiliaryLoss(torch.autograd.Function):
             grad_loss = torch.ones(1, dtype=ctx.dtype, device=grad_output.device)
         return grad_output, grad_loss
 
+
+#################################################################################
+#                            Alignment Projector                               #
+#################################################################################
+
+class AlignProjector(nn.Module):
+    """
+    adaLN-Zero projector conditioned on (t_low, t_high) timestep embeddings,
+    followed by a two-layer MLP. Projects noise expert features to predict
+    shared expert features.
+    """
+    def __init__(self, hidden_size, proj_hidden_dim=2048):
+        super().__init__()
+        self.norm = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        # Input: concat(t_low, t_high) → 2*hidden_size, Output: shift + scale → 2*hidden_size
+        self.adaLN_modulation = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(hidden_size * 2, hidden_size * 2, bias=True)
+        )
+        # Two-layer MLP after adaLN modulation
+        self.mlp = nn.Sequential(
+            nn.Linear(hidden_size, proj_hidden_dim),
+            nn.GELU(approximate="tanh"),
+            nn.Linear(proj_hidden_dim, hidden_size),
+        )
+
+    def forward(self, feat_high, t_low, t_high):
+        """
+        feat_high: (B, T, D) noise expert output features
+        t_low:     (B, D)    timestep embedding of low-noise (original clean) images
+        t_high:    (B, D)    timestep embedding of noise coefficient
+        Returns:   (B, T, D) projected features (prediction of shared expert features)
+        """
+        t_cond = torch.cat([t_low, t_high], dim=-1)            # (B, 2D)
+        shift, scale = self.adaLN_modulation(t_cond).chunk(2, dim=-1)  # each (B, D)
+        out = self.norm(feat_high) * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+        out = self.mlp(out)
+        return out
+
+
 class SparseMoeBlock(nn.Module):
     def __init__(
         self,
@@ -48,6 +88,7 @@ class SparseMoeBlock(nn.Module):
         noise_expert_noise_min=0.1,
         noise_expert_noise_max=0.4,
         noise_expert_align_coeff=0.8,
+        noise_expert_proj_dim=2048,
         **kwargs,
     ):
         super().__init__()
@@ -93,6 +134,7 @@ class SparseMoeBlock(nn.Module):
                 hidden_size=hidden_size,
                 intermediate_size=shared_expert_intermediate_size
             )
+            self.align_projector = AlignProjector(hidden_size, proj_hidden_dim=noise_expert_proj_dim)
 
         self._init_weights()
 
@@ -174,7 +216,9 @@ class SparseMoeBlock(nn.Module):
 
         return router_weights, expert_indices, load_balance_loss
 
-    def forward(self, hidden_states: torch.Tensor, labels: torch.Tensor, clean_mask: torch.Tensor = None):
+    def forward(self, hidden_states: torch.Tensor, labels: torch.Tensor,
+                clean_mask: torch.Tensor = None, t_emb: torch.Tensor = None,
+                noise_t_embedder: nn.Module = None):
         ### token assignment
         router_weights, expert_indices, load_balance_loss = self.compute_router(hidden_states, labels)
         batch_size, seq_len, hidden_dim = hidden_states.shape
@@ -244,7 +288,7 @@ class SparseMoeBlock(nn.Module):
             else:
                 loss = routing_contrastive_loss
 
-        ### noise expert alignment loss
+        ### noise expert alignment loss (with AlignProjector)
         if self.training and self.use_noise_expert:
             if clean_mask is not None and clean_mask.any():
                 # Select tokens of clean images
@@ -263,11 +307,20 @@ class SparseMoeBlock(nn.Module):
 
                 # Noise expert forward
                 noise_expert_out = self.noise_expert(noised_tokens)
-                # Align with shared expert output (detached to not affect shared expert)
-                shared_out_clean = shared_output[clean_mask].detach()
+
+                # Timestep embeddings for AlignProjector
+                t_low = t_emb[clean_mask]  # [num_clean, D] — original low-noise timestep embedding
+                noise_coeff_scalar = noise_coeff[:, 0, 0]  # [num_clean]
+                t_high = noise_t_embedder(noise_coeff_scalar)  # [num_clean, D] — noise coefficient embedding
+
+                # Project noise expert output → predict shared expert output
+                projected = self.align_projector(noise_expert_out, t_low, t_high)
+
+                # Align with shared expert output (gradient flows to shared expert)
+                shared_out_clean = shared_output[clean_mask]
 
                 # Negative cosine similarity loss
-                cos_sim = F.cosine_similarity(noise_expert_out, shared_out_clean, dim=-1)  # [num_clean, seq_len]
+                cos_sim = F.cosine_similarity(projected, shared_out_clean, dim=-1)  # [num_clean, seq_len]
                 noise_expert_loss = -cos_sim.mean() * self.noise_expert_align_coeff
 
                 if loss is not None:
@@ -275,10 +328,15 @@ class SparseMoeBlock(nn.Module):
                 else:
                     loss = noise_expert_loss
             else:
-                # Dummy forward for DDP gradient sync
+                # Dummy forward for DDP gradient sync (noise expert + align projector)
                 dummy_input = torch.zeros(1, 1, self.hidden_size, device=hidden_states.device)
                 dummy_out = self.noise_expert(dummy_input)
-                dummy_loss = dummy_out.sum() * 0
+                dummy_t = torch.zeros(1, self.hidden_size, device=hidden_states.device)
+                dummy_proj = self.align_projector(dummy_out, dummy_t, dummy_t)
+                dummy_loss = dummy_proj.sum() * 0
+                if noise_t_embedder is not None:
+                    dummy_noise_t = noise_t_embedder(torch.zeros(1, device=hidden_states.device))
+                    dummy_loss = dummy_loss + dummy_noise_t.sum() * 0
                 if loss is not None:
                     loss = loss + dummy_loss
                 else:
@@ -371,11 +429,14 @@ class DiTBlock(nn.Module):
             nn.Linear(hidden_size, 6 * hidden_size, bias=True)
         )
 
-    def forward(self, x, c, label, clean_mask=None):
+    def forward(self, x, c, label, clean_mask=None, t_emb=None, noise_t_embedder=None):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=1)
         x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
         if self.use_moe:
-            x_mlp, aux_loss = self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp), label, clean_mask=clean_mask)
+            x_mlp, aux_loss = self.mlp(
+                modulate(self.norm2(x), shift_mlp, scale_mlp), label,
+                clean_mask=clean_mask, t_emb=t_emb, noise_t_embedder=noise_t_embedder
+            )
             if aux_loss is not None:
                 x_mlp = AddAuxiliaryLoss.apply(x_mlp, aux_loss)
             x = x + gate_mlp.unsqueeze(1) * x_mlp
@@ -431,12 +492,16 @@ class DiT(nn.Module):
                      use_swiglu=use_swiglu, MoE_config=MoE_config, use_moe=use_moe_flag[i]) for i in range(depth)
         ])
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
-        self.init_MoeMLP= MoE_config.init_MoeMLP
+        self.init_MoeMLP = MoE_config.init_MoeMLP
 
         # Noise expert config
         self.use_noise_expert = MoE_config.get('use_noise_expert', False)
         self.noise_expert_clean_threshold = MoE_config.get('noise_expert_clean_threshold', 0.7)
         self.noise_expert_num_train_timesteps = MoE_config.get('noise_expert_num_train_timesteps', 1000)
+
+        # Shared TimestepEmbedder for noise coefficient (used by all blocks' AlignProjectors)
+        if self.use_noise_expert:
+            self.noise_t_embedder = TimestepEmbedder(hidden_size)
 
         # Adjust per-block noise expert coefficient so that the sum equals the total coefficient
         # (user wants: average across blocks * coeff)
@@ -473,10 +538,22 @@ class DiT(nn.Module):
         nn.init.normal_(self.t_embedder.mlp[0].weight, std=0.02)
         nn.init.normal_(self.t_embedder.mlp[2].weight, std=0.02)
 
+        # Initialize noise timestep embedding MLP:
+        if self.use_noise_expert:
+            nn.init.normal_(self.noise_t_embedder.mlp[0].weight, std=0.02)
+            nn.init.normal_(self.noise_t_embedder.mlp[2].weight, std=0.02)
+
         # Zero-out adaLN modulation layers in DiT blocks:
         for block in self.blocks:
             nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
             nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
+
+        # Zero-out AlignProjector adaLN layers (adaLN-Zero → identity at init):
+        if self.use_noise_expert:
+            for block in self.blocks:
+                if block.use_moe:
+                    nn.init.constant_(block.mlp.align_projector.adaLN_modulation[-1].weight, 0)
+                    nn.init.constant_(block.mlp.align_projector.adaLN_modulation[-1].bias, 0)
 
         # Zero-out output layers:
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
@@ -528,13 +605,16 @@ class DiT(nn.Module):
 
         # Compute clean_mask for noise expert: images with high signal fraction (low noise)
         clean_mask = None
+        noise_t_embedder = None
         if self.training and self.use_noise_expert:
             # sigma = timestep / num_train_timesteps; clean means (1 - sigma) > threshold
             sigma = timestep / self.noise_expert_num_train_timesteps
             clean_mask = (1.0 - sigma) > self.noise_expert_clean_threshold  # [N]
+            noise_t_embedder = self.noise_t_embedder
 
         for block in self.blocks:
-            x = block(x, c, labels, clean_mask=clean_mask)                      # (N, T, D)
+            x = block(x, c, labels, clean_mask=clean_mask, t_emb=t,
+                      noise_t_embedder=noise_t_embedder)       # (N, T, D)
         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
         x = self.unpatchify(x)                   # (N, out_channels, H, W)
 
