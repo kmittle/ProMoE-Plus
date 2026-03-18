@@ -10,7 +10,7 @@ from .modules import get_2d_sincos_pos_embed, Attention, modulate, TimestepEmbed
 #################################################################################
 class AddAuxiliaryLoss(torch.autograd.Function):
     """
-    The trick function of adding auxiliary (aux) loss, 
+    The trick function of adding auxiliary (aux) loss,
     which includes the gradient of the aux loss during backpropagation.
     """
     @staticmethod
@@ -29,10 +29,10 @@ class AddAuxiliaryLoss(torch.autograd.Function):
 
 class SparseMoeBlock(nn.Module):
     def __init__(
-        self, 
-        num_routed_experts, 
-        hidden_size, 
-        moe_intermediate_size, 
+        self,
+        num_routed_experts,
+        hidden_size,
+        moe_intermediate_size,
         shared_expert_intermediate_size,
         top_k=2,
         load_balance_loss_coef=0,
@@ -44,6 +44,10 @@ class SparseMoeBlock(nn.Module):
         routing_contrastive_lam=0,
         use_top_k_for_routing_contrastive=False,
         routing_contrastive_temperature=0.1,
+        use_noise_expert=False,
+        noise_expert_noise_min=0.1,
+        noise_expert_noise_max=0.4,
+        noise_expert_align_coeff=0.8,
         **kwargs,
     ):
         super().__init__()
@@ -57,7 +61,7 @@ class SparseMoeBlock(nn.Module):
         self.top_k = top_k
 
         self.cluster_centers = nn.Parameter(torch.randn(num_routed_experts, hidden_size))
-        
+
         self.alpha = load_balance_loss_coef
         self.use_shared_expert = use_shared_expert
         self.use_uncond_expert = use_uncond_expert
@@ -66,18 +70,30 @@ class SparseMoeBlock(nn.Module):
         self.routing_contrastive_lam = routing_contrastive_lam
         self.use_top_k_for_routing_contrastive = use_top_k_for_routing_contrastive
         self.routing_contrastive_temperature = routing_contrastive_temperature
-        
+
         self.experts = nn.ModuleList(
-            [MoeMLP(hidden_size=hidden_size, intermediate_size=moe_intermediate_size) 
+            [MoeMLP(hidden_size=hidden_size, intermediate_size=moe_intermediate_size)
              for _ in range(self.num_experts)]
         )
-        
+
         if use_shared_expert:
             self.shared_expert = MoeMLP(
-                hidden_size=hidden_size, 
+                hidden_size=hidden_size,
                 intermediate_size=shared_expert_intermediate_size
             )
-        
+
+        # Noise expert: same architecture as shared expert, receives noised tokens
+        self.use_noise_expert = use_noise_expert
+        self.noise_expert_noise_min = noise_expert_noise_min
+        self.noise_expert_noise_max = noise_expert_noise_max
+        self.noise_expert_align_coeff = noise_expert_align_coeff
+        if use_noise_expert:
+            assert use_shared_expert, "Noise expert requires shared expert to be enabled"
+            self.noise_expert = MoeMLP(
+                hidden_size=hidden_size,
+                intermediate_size=shared_expert_intermediate_size
+            )
+
         self._init_weights()
 
     def compute_router(self, hidden_states, labels):
@@ -99,7 +115,7 @@ class SparseMoeBlock(nn.Module):
         expert_indices = torch.zeros(
             batch_size * seq_len, self.top_k, device=device, dtype=torch.long
         )
-        
+
         if uncond_mask is not None and uncond_mask.any():
             uncond_positions = torch.where(uncond_mask)[0]
             router_weights[uncond_positions, 0] = 1.0
@@ -108,10 +124,10 @@ class SparseMoeBlock(nn.Module):
         if cond_mask.any():
             cond_positions = torch.where(cond_mask)[0]
             cond_input = flat_input[cond_positions]
-            
+
             input_norm = F.normalize(cond_input, p=2, dim=1)
             cluster_norm = F.normalize(self.cluster_centers, p=2, dim=1)
-            
+
             cos_sim = input_norm @ cluster_norm.T
 
             if self.router_weight_mode == "softmax":
@@ -123,9 +139,9 @@ class SparseMoeBlock(nn.Module):
                 cond_weights = cos_sim
             else:
                 raise ValueError(f"Unsupported router_weight_mode: {self.router_weight_mode}")
-            
+
             topk_scores, topk_idx = torch.topk(cond_weights, k=self.top_k, dim=1)
-            
+
             router_weights[cond_positions] = topk_scores.to(router_weights.dtype)
             expert_indices[cond_positions] = topk_idx
 
@@ -155,21 +171,21 @@ class SparseMoeBlock(nn.Module):
                 load_balance_loss = (Pi * fi).sum() * self.alpha
         else:
             load_balance_loss = None
-        
+
         return router_weights, expert_indices, load_balance_loss
 
-    def forward(self, hidden_states: torch.Tensor, labels: torch.Tensor):
+    def forward(self, hidden_states: torch.Tensor, labels: torch.Tensor, clean_mask: torch.Tensor = None):
         ### token assignment
         router_weights, expert_indices, load_balance_loss = self.compute_router(hidden_states, labels)
         batch_size, seq_len, hidden_dim = hidden_states.shape
-        
+
         flat_input = hidden_states.view(-1, hidden_dim)
         flat_weights = router_weights.view(-1, self.top_k)
         flat_indices = expert_indices.view(-1, self.top_k)
         total_tokens = batch_size * seq_len
-        
+
         final_output = torch.zeros(total_tokens, hidden_dim, device=hidden_states.device)
-        
+
         ### process routed experts and unconditional expert
         for expert_id in range(self.num_experts):
             expert_mask = (flat_indices == expert_id).any(dim=1)
@@ -186,14 +202,15 @@ class SparseMoeBlock(nn.Module):
                 dummy_input = torch.zeros(1, hidden_dim, device=hidden_states.device)
                 dummy_output = self.experts[expert_id](dummy_input).float()
                 final_output[0] += dummy_output[0] * 0
-        
+
         final_output = final_output.view(batch_size, seq_len, hidden_dim)
-        
+
         ### process shared experts
+        shared_output = None
         if self.use_shared_expert:
             shared_output = self.shared_expert(hidden_states)
             final_output += shared_output
-        
+
         loss = load_balance_loss  # None
         ### routing contrastive loss
         if self.training and self.routing_contrastive_lam > 0:
@@ -203,9 +220,9 @@ class SparseMoeBlock(nn.Module):
                 cond_mask = ~uncond_mask
             else:
                 cond_mask = torch.ones(batch_size * seq_len, dtype=torch.bool, device=hidden_states.device)
-            
+
             cond_token_embeddings = flat_input[cond_mask]  # [num_cond_tokens, hidden_dim]
-            
+
             if self.use_top_k_for_routing_contrastive:
                 # top-k
                 topk_expert_indices = expert_indices.view(batch_size * seq_len, self.top_k)[cond_mask]  # [num_cond_tokens, top_k]
@@ -214,42 +231,82 @@ class SparseMoeBlock(nn.Module):
                 # top-1
                 top1_expert_indices = expert_indices.view(batch_size * seq_len, self.top_k)[:, 0]  # [batch_size * seq_len]
                 cond_cluster_assignments = top1_expert_indices[cond_mask]  # [num_cond_tokens]
-            
+
             routing_contrastive_loss = self.compute_routing_contrastive_loss(
                 cond_token_embeddings,
                 cond_cluster_assignments,
                 use_top_k=self.use_top_k_for_routing_contrastive
             )
-            
+
             routing_contrastive_loss = routing_contrastive_loss * self.routing_contrastive_lam
             if loss is not None:
                 loss += routing_contrastive_loss
             else:
                 loss = routing_contrastive_loss
-        
+
+        ### noise expert alignment loss
+        if self.training and self.use_noise_expert:
+            if clean_mask is not None and clean_mask.any():
+                # Select tokens of clean images
+                clean_tokens = hidden_states[clean_mask]  # [num_clean, seq_len, hidden_dim]
+                num_clean = clean_tokens.shape[0]
+
+                # Flow matching interpolation: noised = (1-t)*data + t*noise
+                # t ~ U[noise_min, noise_max], per image
+                noise_coeff = (
+                    torch.rand(num_clean, 1, 1, device=hidden_states.device)
+                    * (self.noise_expert_noise_max - self.noise_expert_noise_min)
+                    + self.noise_expert_noise_min
+                )
+                noise = torch.randn_like(clean_tokens)
+                noised_tokens = (1.0 - noise_coeff) * clean_tokens + noise_coeff * noise
+
+                # Noise expert forward
+                noise_expert_out = self.noise_expert(noised_tokens)
+                # Align with shared expert output (detached to not affect shared expert)
+                shared_out_clean = shared_output[clean_mask].detach()
+
+                # Negative cosine similarity loss
+                cos_sim = F.cosine_similarity(noise_expert_out, shared_out_clean, dim=-1)  # [num_clean, seq_len]
+                noise_expert_loss = -cos_sim.mean() * self.noise_expert_align_coeff
+
+                if loss is not None:
+                    loss = loss + noise_expert_loss
+                else:
+                    loss = noise_expert_loss
+            else:
+                # Dummy forward for DDP gradient sync
+                dummy_input = torch.zeros(1, 1, self.hidden_size, device=hidden_states.device)
+                dummy_out = self.noise_expert(dummy_input)
+                dummy_loss = dummy_out.sum() * 0
+                if loss is not None:
+                    loss = loss + dummy_loss
+                else:
+                    loss = dummy_loss
+
         return final_output, loss
-    
+
     def compute_routing_contrastive_loss(self, token_embeddings, cluster_assignments, use_top_k=False):
         """
         cluster_centers: [num_clusters, hidden_size]
         token_embeddings: [num_tokens, hidden_size]
-        cluster_assignments: 
+        cluster_assignments:
             - use_top_k=False: [num_tokens]
             - use_top_k=True: [num_tokens, top_k]
         """
         cluster_centers = self.cluster_centers
         num_clusters = cluster_centers.size(0)
         device = cluster_centers.device
-        
+
         cluster_means = []
         valid_clusters = []
-        
+
         for cluster_id in range(num_clusters):
             if use_top_k:
                 mask = (cluster_assignments == cluster_id).any(dim=1)
             else:
                 mask = (cluster_assignments == cluster_id)
-                     
+
             if mask.sum() > 0:
                 cluster_mean = token_embeddings[mask].mean(dim=0, keepdim=True)
                 cluster_means.append(cluster_mean)
@@ -257,21 +314,21 @@ class SparseMoeBlock(nn.Module):
 
         if len(valid_clusters) < 2:
             return torch.tensor(0.0, device=device)
-        
+
         cluster_means = torch.cat(cluster_means, dim=0)  # [num_valid_clusters, hidden_size]
         valid_centers = cluster_centers[valid_clusters]  # [num_valid_clusters, hidden_size]
-        
+
         centers_norm = F.normalize(valid_centers, p=2, dim=1)
         means_norm = F.normalize(cluster_means, p=2, dim=1)
-        
+
         sim_matrix = centers_norm @ means_norm.T
-        
+
         temperature = self.routing_contrastive_temperature
         labels = torch.arange(sim_matrix.size(0), device=device)
         logits = sim_matrix / temperature
-        
+
         loss = F.cross_entropy(logits, labels)
-        
+
         return loss
 
     def _init_weights(self):
@@ -286,7 +343,7 @@ class DiTBlock(nn.Module):
     """
     A DiT block with adaptive layer norm zero (adaLN-Zero) conditioning.
     """
-    def __init__(self, hidden_size, num_heads, head_dim=None, mlp_ratio=4.0, 
+    def __init__(self, hidden_size, num_heads, head_dim=None, mlp_ratio=4.0,
                  use_swiglu=False, MoE_config=None,
                  use_moe=False,
                  **block_kwargs):
@@ -314,11 +371,11 @@ class DiTBlock(nn.Module):
             nn.Linear(hidden_size, 6 * hidden_size, bias=True)
         )
 
-    def forward(self, x, c, label):
+    def forward(self, x, c, label, clean_mask=None):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=1)
         x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
         if self.use_moe:
-            x_mlp, aux_loss = self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp), label)
+            x_mlp, aux_loss = self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp), label, clean_mask=clean_mask)
             if aux_loss is not None:
                 x_mlp = AddAuxiliaryLoss.apply(x_mlp, aux_loss)
             x = x + gate_mlp.unsqueeze(1) * x_mlp
@@ -370,11 +427,25 @@ class DiT(nn.Module):
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, hidden_size), requires_grad=False)
 
         self.blocks = nn.ModuleList([
-            DiTBlock(hidden_size, num_heads // (1 if use_moe_flag[i] else 1), head_dim=head_dim, mlp_ratio=mlp_ratio, qk_norm=qk_norm, 
+            DiTBlock(hidden_size, num_heads // (1 if use_moe_flag[i] else 1), head_dim=head_dim, mlp_ratio=mlp_ratio, qk_norm=qk_norm,
                      use_swiglu=use_swiglu, MoE_config=MoE_config, use_moe=use_moe_flag[i]) for i in range(depth)
         ])
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
         self.init_MoeMLP= MoE_config.init_MoeMLP
+
+        # Noise expert config
+        self.use_noise_expert = MoE_config.get('use_noise_expert', False)
+        self.noise_expert_clean_threshold = MoE_config.get('noise_expert_clean_threshold', 0.7)
+        self.noise_expert_num_train_timesteps = MoE_config.get('noise_expert_num_train_timesteps', 1000)
+
+        # Adjust per-block noise expert coefficient so that the sum equals the total coefficient
+        # (user wants: average across blocks * coeff)
+        if self.use_noise_expert:
+            num_moe_blocks = sum(use_moe_flag)
+            for block in self.blocks:
+                if block.use_moe:
+                    block.mlp.noise_expert_align_coeff /= num_moe_blocks
+
         self.initialize_weights()
 
     def initialize_weights(self):
@@ -413,7 +484,7 @@ class DiT(nn.Module):
         nn.init.constant_(self.final_layer.linear.weight, 0)
         nn.init.constant_(self.final_layer.linear.bias, 0)
 
-        # new init 
+        # new init
         def init_MoeMLP(module, std=0.006):
             nn.init.normal_(module.gate_proj.weight, std=std)
             nn.init.normal_(module.up_proj.weight, std=std)
@@ -454,12 +525,20 @@ class DiT(nn.Module):
         t = self.t_embedder(timestep)                   # (N, D)
         y, labels = self.y_embedder(y, self.training)    # (N, D)
         c = t + y                                # (N, D)
+
+        # Compute clean_mask for noise expert: images with high signal fraction (low noise)
+        clean_mask = None
+        if self.training and self.use_noise_expert:
+            # sigma = timestep / num_train_timesteps; clean means (1 - sigma) > threshold
+            sigma = timestep / self.noise_expert_num_train_timesteps
+            clean_mask = (1.0 - sigma) > self.noise_expert_clean_threshold  # [N]
+
         for block in self.blocks:
-            x = block(x, c, labels)                      # (N, T, D)
+            x = block(x, c, labels, clean_mask=clean_mask)                      # (N, T, D)
         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
         x = self.unpatchify(x)                   # (N, out_channels, H, W)
 
-        return x 
+        return x
 
     def forward_with_cfg(self, x, t, y, cfg_scale):
         """
