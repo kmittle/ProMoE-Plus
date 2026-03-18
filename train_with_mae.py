@@ -34,11 +34,15 @@ os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
 
 from config import cfg
 from models.models_ProMoE_TC_group_align import DiT as ProMoE_TC_group_align
+from models.models_ProMoE_TC_group_align_proj import DiT as ProMoE_TC_group_align_proj
 
 model_dict = {
     "ProMoE_TC_B_group_align": (ProMoE_TC_group_align, "DiT_B_config"),
     "ProMoE_TC_L_group_align": (ProMoE_TC_group_align, "DiT_L_config"),
     "ProMoE_TC_XL_group_align": (ProMoE_TC_group_align, "DiT_XL_config"),
+    "ProMoE_TC_B_group_align_proj": (ProMoE_TC_group_align_proj, "DiT_B_config"),
+    "ProMoE_TC_L_group_align_proj": (ProMoE_TC_group_align_proj, "DiT_L_config"),
+    "ProMoE_TC_XL_group_align_proj": (ProMoE_TC_group_align_proj, "DiT_XL_config"),
 }
 
 class CustomImageFolder(Dataset):
@@ -343,19 +347,24 @@ def compute_density_for_timestep_sampling(
     return u
 
 
-def compute_mae_align_loss(block_features, half_batch_size):
+def compute_mae_align_loss(block_features, half_batch_size, projected_features=None):
     """
     Compute MAE-style alignment loss between high-noise and low-noise groups.
     block_features: list of (N, T, D) tensors, one per block
     half_batch_size: N/2, the number of unique images
+    projected_features: optional list of (N/2, T, D) tensors from alignment projectors.
+        If provided, aligns projected high-noise features with low-noise features.
+        If None, directly aligns raw high-noise features with low-noise features.
     Returns: scalar alignment loss (mean negative cosine similarity across all blocks)
     """
     align_loss = 0.0
-    for feat in block_features:
-        feat_a = feat[:half_batch_size]   # group A
-        feat_b = feat[half_batch_size:]   # group B (same images, different noise)
-        # negative cosine similarity per token, then average
-        cos_sim = F.cosine_similarity(feat_a, feat_b, dim=-1)  # (N/2, T)
+    for i, feat in enumerate(block_features):
+        feat_low = feat[:half_batch_size]   # low-noise group (target)
+        if projected_features is not None:
+            feat_pred = projected_features[i]   # projected high-noise → predicted low-noise
+        else:
+            feat_pred = feat[half_batch_size:]   # raw high-noise features
+        cos_sim = F.cosine_similarity(feat_pred, feat_low, dim=-1)  # (N/2, T)
         align_loss += (-cos_sim).mean()
     align_loss = align_loss / len(block_features)
     return align_loss
@@ -590,7 +599,7 @@ def worker(gpu, cfg):
         t, sigmas, z = rank_img_t, rank_img_sigma, rank_img_z
 
         arg_c = {'context': context, 'use_gradient_checkpointing': cfg.use_gradient_checkpointing,
-                 'return_block_features': True}
+                 'return_block_features': True, 'half_batch_size': half_bs}
 
         # Independent noise for each sample (both groups get different noise)
         noise = torch.randn_like(z)
@@ -599,8 +608,13 @@ def worker(gpu, cfg):
         with amp.autocast(dtype=cfg.param_dtype, enabled=use_amp):
             model_output = model(noised_z_in, t, **arg_c)
 
-        # model returns (pred, block_features) when return_block_features=True
-        model_pred_raw, block_features = model_output
+        # model returns (pred, block_features, projected_features) for proj model,
+        # or (pred, block_features) for non-proj model
+        projected_features = None
+        if len(model_output) == 3:
+            model_pred_raw, block_features, projected_features = model_output
+        else:
+            model_pred_raw, block_features = model_output
 
         loss_dict = {}
         loss_dict["loss"] = 0
@@ -621,7 +635,7 @@ def worker(gpu, cfg):
         loss_dict["loss"] += mse_loss
 
         # MAE-style alignment loss between the two noise groups
-        mae_loss = compute_mae_align_loss(block_features, half_bs)
+        mae_loss = compute_mae_align_loss(block_features, half_bs, projected_features)
         loss_dict["mae_align_loss"] = mae_loss
         loss_dict["loss"] += mae_align_coeff * mae_loss
 

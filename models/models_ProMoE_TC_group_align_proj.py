@@ -279,6 +279,45 @@ class SparseMoeBlock(nn.Module):
 
 
 #################################################################################
+#                            Alignment Projector                               #
+#################################################################################
+
+class AlignProjector(nn.Module):
+    """
+    adaLN-Zero projector conditioned on (t_low, t_high) timestep embeddings,
+    followed by a two-layer MLP. Projects high-noise block features to predict
+    low-noise block features.
+    """
+    def __init__(self, hidden_size, proj_hidden_dim=2048):
+        super().__init__()
+        self.norm = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        # Input: concat(t_low, t_high) → 2*hidden_size, Output: shift + scale → 2*hidden_size
+        self.adaLN_modulation = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(hidden_size * 2, hidden_size * 2, bias=True)
+        )
+        # Two-layer MLP after adaLN modulation
+        self.mlp = nn.Sequential(
+            nn.Linear(hidden_size, proj_hidden_dim),
+            nn.GELU(approximate="tanh"),
+            nn.Linear(proj_hidden_dim, hidden_size),
+        )
+
+    def forward(self, feat_high, t_low, t_high):
+        """
+        feat_high: (B, T, D) high-noise block features
+        t_low:     (B, D)    timestep embedding of low-noise group
+        t_high:    (B, D)    timestep embedding of high-noise group
+        Returns:   (B, T, D) projected features (prediction of low-noise features)
+        """
+        t_cond = torch.cat([t_low, t_high], dim=-1)            # (B, 2D)
+        shift, scale = self.adaLN_modulation(t_cond).chunk(2, dim=-1)  # each (B, D)
+        out = self.norm(feat_high) * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
+        out = self.mlp(out)
+        return out
+
+
+#################################################################################
 #                                 Core ProMoE Model                            #
 #################################################################################
 
@@ -374,6 +413,10 @@ class DiT(nn.Module):
                      use_swiglu=use_swiglu, MoE_config=MoE_config, use_moe=use_moe_flag[i]) for i in range(depth)
         ])
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
+        # One alignment projector per block (adaLN-Zero, conditioned on timesteps)
+        self.align_projectors = nn.ModuleList([
+            AlignProjector(hidden_size) for _ in range(depth)
+        ])
         self.init_MoeMLP= MoE_config.init_MoeMLP
         self.initialize_weights()
 
@@ -407,6 +450,11 @@ class DiT(nn.Module):
             nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
             nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
 
+        # Zero-out alignment projector adaLN layers (adaLN-Zero → identity at init):
+        for proj in self.align_projectors:
+            nn.init.constant_(proj.adaLN_modulation[-1].weight, 0)
+            nn.init.constant_(proj.adaLN_modulation[-1].bias, 0)
+
         # Zero-out output layers:
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
@@ -439,13 +487,16 @@ class DiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def forward(self, x, timestep, context, return_block_features=False, **kwargs):
+    def forward(self, x, timestep, context, return_block_features=False, half_batch_size=None, **kwargs):
         """
         Forward pass of DiT.
         x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
         timestep: (N,) tensor of diffusion timesteps
         context: (N,) tensor of class labels
-        return_block_features: if True, also return list of each block's output (N, T, D)
+        return_block_features: if True, also return block features and projected features
+        half_batch_size: N/2. When provided with return_block_features=True, applies
+            alignment projectors to high-noise features (back half) conditioned on
+            timestep embeddings of both groups.
         """
         y = context
         if len(x.shape) != 4:
@@ -463,6 +514,16 @@ class DiT(nn.Module):
         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
         x = self.unpatchify(x)                   # (N, out_channels, H, W)
 
+        if return_block_features and half_batch_size is not None:
+            # Apply alignment projectors: project high-noise features → predict low-noise
+            t_low = t[:half_batch_size]    # (N/2, D)
+            t_high = t[half_batch_size:]   # (N/2, D)
+            projected_features = []
+            for i, feat in enumerate(block_features):
+                feat_high = feat[half_batch_size:]  # (N/2, T, D)
+                proj = self.align_projectors[i](feat_high, t_low, t_high)
+                projected_features.append(proj)
+            return x, block_features, projected_features
         if return_block_features:
             return x, block_features
         return x
