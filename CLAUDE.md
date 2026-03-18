@@ -78,6 +78,7 @@ bash scripts/hierar/run_B_hierar_expert_train.sh
 bash scripts/hierar/run_B_hierar_expert_infer_eval.sh
 bash scripts/hierar/run_B_hierar_expert_NoPenalty_train.sh
 bash scripts/hierar/run_B_hierar_expert_NoPenalty_infer_eval.sh
+bash scripts/hierar/run_B_hierar_expert_repa_dyna_train_sample_eval.sh
 ```
 
 ### VAE Latent Preprocessing (speeds up training)
@@ -124,6 +125,7 @@ python run_eval.py /path/to/generated/images --count 50000 --no-eval
 - `models_ProMoE_TC_repa_dyna_select.py` — Dynamic REPA variant with selective alignment (e.g., ratio-based token selection).
 - `models_ProMoE_TC_repa_dyna_only.py` — Dynamic REPA variant applying alignment only (no standard REPA fallback).
 - `models_ProMoE_TC_hierar.py` / `models_ProMoE_TC_hierar_expert.py` — Hierarchical routing variants. Used by configs `004_ProMoE_*_hierar*.yaml` and scripts under `scripts/hierar/`.
+- `models_ProMoE_TC_hierar_expert_repa_dyna.py` — Hierarchical expert routing combined with dynamic REPA alignment.
 - `models_ProMoE_TC_repa_router.py` — REPA variant with router-level alignment: K-Means clusters teacher features, projects cluster centers to prototype space via `router_projectors`, then uses Hungarian matching + negative cosine similarity to align prototypes with teacher clusters. No contrastive loss (`routing_contrastive_lam` must be 0). Router REPA loss injected via `AddAuxiliaryLoss`.
 - `models_ProMoE_TC_repa_router_contra.py` — Extends router REPA with contrastive routing loss using linear coefficient handoff: REPA alignment starts at full weight and decays to 0, while contrastive loss grows from 0 to full, over `router_loss_decay_steps`. Total lambda = `routing_contrastive_lam`.
 - `models_ProMoE_TC_repa_routed.py` — REPA variant aligning routed (expert-processed) features.

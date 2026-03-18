@@ -20,7 +20,7 @@ Main code layout:
 - `repa/`: REPA helper package used by `train_with_repa.py` and `train_with_MoS_repa.py` (`encoder.py`, `loss.py`).
 - `preprocess/`: VAE latent preprocessing and shared cache file `preprocess/image_paths_cache.txt`.
 - `evaluation/`: OpenAI-style evaluation pipeline (`run_eval.py`, `evaluator.py`, `download_ref_batches.py`).
-- `analyses/`: analysis entry scripts live directly under this directory, with reusable helpers under subdirectories such as `analyses/t_SNE/`, `analyses/heatmap/`, and `analyses/flops/`; `analyses/README.md` should remain a brief directory-level overview only, while detailed usage belongs in per-entry Markdown files that share the same basename as each entry `.py`.
+- `analyses/`: analysis entry scripts live directly under this directory. Current entrypoints include `run_tokenwise_tsne.py`, `run_samplewise_pooled_tsne.py`, `run_imagewise_tsne.py`, `run_repa_dyna_heatmap.py`, and `run_compute_flops.py`. Reusable helpers live under subdirectories such as `analyses/t_SNE/`, `analyses/heatmap/`, and `analyses/flops/`; `analyses/README.md` should remain a brief directory-level overview only, while detailed usage belongs in per-entry Markdown files that share the same basename as each entry `.py`.
 - `scripts/repa/`: REPA-B / REPA-Shared-B / REPA-Cond-B helpers plus router / routed / double-share train + sample + eval wrappers.
 - `scripts/MoS_repa/`: MoS-REPA and MoS-REPA-Naive train + sample + eval wrappers following `scripts/template.sh`.
 - `scripts/hierar/`: B-scale hierarchical/expert train + infer/eval wrappers.
@@ -42,6 +42,7 @@ with:
 - `training.log`, `sample.log`
 - `tensorboard/`
 - `sample/step<step>/img<...>/images`
+- `sample/step<step>/<analysis_name>/` for analysis artifacts such as `flops_eval/` and t-SNE outputs
 
 ## Build, Test, and Development Commands
 Create training env:
@@ -100,6 +101,16 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python sample.py \
   --num_fid_samples 50000
 ```
 
+Run FLOPs / activated-parameter / expert-frequency analysis:
+
+```bash
+python analyses/run_compute_flops.py \
+  --ckpt outputs/ProMoE_TC_REPA_B/004_ProMoE_B_repa/checkpoints/ckpt_step_500000.pth \
+  --num-samples-per-class 5 \
+  --guide-scale 1.0 \
+  --save-every-steps 50
+```
+
 Common wrappers:
 
 ```bash
@@ -131,6 +142,7 @@ bash scripts/hierar/run_B_hierar_expert_train.sh
 bash scripts/hierar/run_B_hierar_expert_infer_eval.sh
 bash scripts/hierar/run_B_hierar_expert_NoPenalty_train.sh
 bash scripts/hierar/run_B_hierar_expert_NoPenalty_infer_eval.sh
+bash scripts/hierar/run_B_hierar_expert_repa_dyna_train_sample_eval.sh
 
 bash scripts/run_all_infer_eval_500K.sh
 ```
@@ -165,11 +177,13 @@ No dedicated `tests/` directory. Use smoke checks aligned to your change surface
 - Training changes: `python train.py --config ...`, `python train_with_repa.py --config ...`, or `python train_with_MoS_repa.py --config ...`.
 - Sampling changes: `python sample.py --config ...` (with `--step_list_for_sample` / `--guide_scale_list` as needed).
 - Evaluation changes: run from inside `evaluation/`: `python run_eval.py ...`.
+- Analysis changes: run the relevant entry script under `analyses/`; for FLOPs/statistics, use `python analyses/run_compute_flops.py --help` for import/CLI validation or a checkpoint-backed smoke run with `--ckpt ...`.
 - Syntax checks: `python -m py_compile <modified_python_files>`.
 - End-to-end REPA-DYNA smoke check: run one wrapper in `scripts/dynamic_repa/` and verify train/sample/eval logs are produced.
 - End-to-end MoS-REPA smoke check: run `bash scripts/MoS_repa/run_B_repa_mos_train_sample_eval.sh` and verify train/sample/eval logs are produced.
 - One-click experimental wrappers should keep the hard-coded interpreter launch style from `scripts/template.sh`: `/mnt/workspace/yujie/.conda/envs/promoe/bin/python` for training/sampling and `/mnt/workspace/yujie/.conda/envs/fid_eval/bin/python` for evaluation.
 - When writing a new training + sampling + evaluation three-in-one shell script, start from `scripts/template.sh`, preserve its interpreter-launch pattern, and do not replace it with `conda activate`; otherwise the script may fail on the experiment server.
+- For new analysis entrypoints, add a matching `analyses/<basename>.md` usage guide and keep shared logic in a subpackage under `analyses/` rather than embedding everything in the root script.
 
 If you touch dataset traversal, latent mapping, or preprocessing logic, clear/regenerate `preprocess/image_paths_cache.txt` before re-running checks.
 
@@ -211,6 +225,12 @@ Weight caching:
 - VAE auto-cache path: `pretrained_ckpt/vae/<hf_repo_id_with_slash_replaced>/` (unless `--vae-path` is passed).
 - REPA teacher cache path: `pretrained_ckpt/encoder/<hub_name>/state_dict.pth` (unless `--repa-enc-path` is passed).
 - For REPA and MoS-REPA, rank 0 performs initial teacher download/cache, then other ranks load from local cache after barrier.
+
+Analysis notes:
+
+- `analyses/run_compute_flops.py` resolves the YAML config from the checkpoint path, reads `gpu_ids` from that YAML, and sets `CUDA_VISIBLE_DEVICES` before spawning workers.
+- The FLOPs analysis entrypoint accepts both `--ckpt` and the legacy positional checkpoint argument; hyphenated and underscore flag spellings are both supported for its sampling/reporting options.
+- FLOPs/statistics outputs are written under `outputs/<model_name>/<config_stem>/sample/step<ckpt_step>/flops_eval/`, including `flops_result.txt`, expert-frequency plots, and optional per-step reports.
 
 Evaluation notes:
 

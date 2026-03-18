@@ -1,1 +1,1 @@
-"""Heatmap analysis helpers for dynamic REPA token weights."""
+"""Heatmap analysis helpers for dynamic REPA and token-choice expert overlays."""

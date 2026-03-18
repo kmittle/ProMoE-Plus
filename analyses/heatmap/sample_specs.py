@@ -58,3 +58,16 @@ def build_heatmap_output_stem(
         f"_cls{len(class_ids)}_{class_signature}"
         f"_spc{samples_per_class}_every{analysis_every}"
     )
+
+
+def build_token_choice_expert_heatmap_output_stem(
+    class_ids: list[int],
+    seed: int,
+    analysis_every: int,
+) -> str:
+    class_signature = build_class_id_signature(class_ids)
+    return (
+        f"token_choice_expert_heatmap_seed{seed}"
+        f"_cls{len(class_ids)}_{class_signature}"
+        f"_every{analysis_every}"
+    )
