@@ -70,6 +70,7 @@ bash scripts/repa/run_B_repa_double_share_train_sample_eval.sh
 
 # MoS (Mixture-of-Softmaxes) REPA experiments
 bash scripts/MoS_repa/run_B_repa_mos_train_sample_eval.sh
+bash scripts/MoS_repa/run_B_repa_mos_naive_train_sample_eval.sh
 
 # Hierarchical routing experiments
 bash scripts/hierar/run_B_hierar_train.sh
@@ -132,6 +133,7 @@ python run_eval.py /path/to/generated/images --count 50000 --no-eval
 - `models_ProMoE_TC_repa_double_share.py` — REPA variant with double shared expert architecture.
 - `models_ProMoE_TC_repa_MoS.py` — REPA variant with Mixture-of-Softmaxes routing. Uses `num_teacher_blocks` teacher feature blocks (instead of `encoder_depth`-based single alignment point). Trained via `train_with_MoS_repa.py`.
 - `models_ProMoE_TC_repa_MoS_naive.py` — Simplified/naive MoS REPA variant (in development on `repa` branch).
+- `models_ProMoE_TC_group_align.py` — ProMoE-TC variant for group alignment experiments. Base ProMoE architecture without REPA; returns plain tensor from `forward()`.
 - `models_ProMoE_TC_sigmoid.py` / `models_ProMoE_TC_symmetric.py` — Routing ablation variants (sigmoid gating, symmetric routing).
 
 ### Auxiliary Loss Convention

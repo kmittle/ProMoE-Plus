@@ -439,12 +439,13 @@ class DiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def forward(self, x, timestep, context, **kwargs):
+    def forward(self, x, timestep, context, return_block_features=False, **kwargs):
         """
         Forward pass of DiT.
         x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
         timestep: (N,) tensor of diffusion timesteps
         context: (N,) tensor of class labels
+        return_block_features: if True, also return list of each block's output (N, T, D)
         """
         y = context
         if len(x.shape) != 4:
@@ -454,12 +455,17 @@ class DiT(nn.Module):
         t = self.t_embedder(timestep)                   # (N, D)
         y, labels = self.y_embedder(y, self.training)    # (N, D)
         c = t + y                                # (N, D)
+        block_features = [] if return_block_features else None
         for block in self.blocks:
             x = block(x, c, labels)                      # (N, T, D)
+            if return_block_features:
+                block_features.append(x)
         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
         x = self.unpatchify(x)                   # (N, out_channels, H, W)
 
-        return x 
+        if return_block_features:
+            return x, block_features
+        return x
 
     def forward_with_cfg(self, x, t, y, cfg_scale):
         """
