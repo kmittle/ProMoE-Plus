@@ -466,11 +466,11 @@ class DiTBlock(nn.Module):
 
 class DiT(nn.Module):
     """
-    Diffusion model with a Transformer backbone + MoS Naive REPA.
+    Diffusion model with a Transformer backbone + MoS Naive REPA (selective block alignment).
     Uses a global transformer-based block router (ref: arxiv 2511.12207) to determine
     which teacher encoder block each DiT block should align with.
-    The router takes the patchified embedding and conditioning as input,
-    and produces routing weights for all DiT blocks at once.
+    Supports selective alignment via repa_config['align_blocks']: only the specified
+    DiT block indices participate in MoS alignment. Defaults to all blocks if not set.
     """
     def __init__(
         self,
@@ -530,26 +530,38 @@ class DiT(nn.Module):
             self.mos_top_k = repa_config.get('mos_top_k', 2)
             self.mos_random_prob = repa_config.get('mos_random_prob', 0.05)
 
+            # Selective block alignment: only align specified DiT blocks
+            align_blocks = repa_config.get('align_blocks', None)
+            if align_blocks is None:
+                align_blocks = list(range(depth))
+            self.align_blocks = align_blocks  # list of DiT block indices to align
+            # Mapping: DiT block index -> projector/router column index
+            self.align_block_to_idx = {b: i for i, b in enumerate(align_blocks)}
+            num_align_blocks = len(align_blocks)
+            print(f"MoS REPA align_blocks ({num_align_blocks}/{depth}): {align_blocks}")
+
             # Global transformer-based block router
             self.block_router = BlockRouter(
                 hidden_size=hidden_size,
                 cond_size=hidden_size,  # c = t_embed + y_embed, same dim as hidden_size
                 num_teacher_blocks=num_teacher_blocks,
-                depth=depth,
+                depth=num_align_blocks,  # router only covers selected blocks
                 router_hidden_dim=router_hidden_dim,
                 num_router_blocks=num_router_blocks,
                 num_heads=router_num_heads,
                 qk_norm=qk_norm,
             )
 
-            # Per-block REPA projectors
+            # Projectors only for selected blocks
             self.mos_projectors = nn.ModuleList([
-                build_repa_projector(hidden_size, projector_dim, z_dim) for _ in range(depth)
+                build_repa_projector(hidden_size, projector_dim, z_dim) for _ in range(num_align_blocks)
             ])
         else:
             self.num_teacher_blocks = None
             self.mos_top_k = 2
             self.mos_random_prob = 0.05
+            self.align_blocks = []
+            self.align_block_to_idx = {}
             self.block_router = None
             self.mos_projectors = None
 
@@ -618,14 +630,15 @@ class DiT(nn.Module):
         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
         return imgs
 
-    def compute_mos_repa_loss(self, x, block_idx, routing_weights, teacher_all_z, N, T, D):
+    def compute_mos_repa_loss(self, x, block_idx, align_idx, routing_weights, teacher_all_z, N, T, D):
         """
         Compute MoS REPA loss for a single DiT block using pre-computed routing weights.
 
         Args:
             x: (N, T, D) block output features
-            block_idx: index of the current DiT block
-            routing_weights: (N, T, m, n) routing weights from block router
+            block_idx: index of the current DiT block (unused, kept for clarity)
+            align_idx: index into mos_projectors and routing_weights columns
+            routing_weights: (N, T, m, num_align_blocks) routing weights from block router
             teacher_all_z: (m, N, T, D_teacher) features from all teacher blocks
             N, T, D: batch size, num tokens, hidden dim
 
@@ -633,10 +646,10 @@ class DiT(nn.Module):
             block_loss: scalar MoS REPA loss for this block
         """
         # Project student features
-        z_proj = self.mos_projectors[block_idx](x.reshape(-1, D)).reshape(N, T, -1)  # (N, T, D_teacher)
+        z_proj = self.mos_projectors[align_idx](x.reshape(-1, D)).reshape(N, T, -1)  # (N, T, D_teacher)
 
         # Get routing weights for this DiT block: (N, T, m)
-        block_weights = routing_weights[:, :, :, block_idx]  # (N, T, m)
+        block_weights = routing_weights[:, :, :, align_idx]  # (N, T, m)
 
         # Normalize and compute cosine similarity with all teacher blocks
         z_proj_norm = F.normalize(z_proj, dim=-1)            # (N, T, D_teacher)
@@ -696,14 +709,15 @@ class DiT(nn.Module):
         mos_repa_loss = torch.tensor(0.0, device=x.device)
         for i, block in enumerate(self.blocks):
             x = block(x, c, labels)                      # (N, T, D)
-            # Compute MoS REPA loss for every block during training
-            if self.training and self.mos_projectors is not None and routing_weights is not None:
-                block_loss = self.compute_mos_repa_loss(x, i, routing_weights, teacher_all_z, N, T, D)
+            # Compute MoS REPA loss only for selected blocks
+            if self.training and routing_weights is not None and i in self.align_block_to_idx:
+                align_idx = self.align_block_to_idx[i]
+                block_loss = self.compute_mos_repa_loss(x, i, align_idx, routing_weights, teacher_all_z, N, T, D)
                 mos_repa_loss = mos_repa_loss + block_loss
 
-        # Average over all blocks
-        if self.training and self.mos_projectors is not None and routing_weights is not None:
-            mos_repa_loss = mos_repa_loss / len(self.blocks)
+        # Average over aligned blocks
+        if self.training and routing_weights is not None and len(self.align_blocks) > 0:
+            mos_repa_loss = mos_repa_loss / len(self.align_blocks)
 
         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
         x = self.unpatchify(x)                   # (N, out_channels, H, W)

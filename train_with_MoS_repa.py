@@ -35,6 +35,7 @@ from config import cfg
 from models.models_DiT import DiT as DiT
 from models.models_ProMoE_TC_repa_MoS import DiT as ProMoE_TC_REPA_MoS_DiT
 from models.models_ProMoE_TC_repa_MoS_naive import DiT as ProMoE_TC_REPA_MoS_Naive_DiT
+from models.models_ProMoE_TC_repa_MoS_naive_choice import DiT as ProMoE_TC_REPA_MoS_Naive_Choice_DiT
 from repa.encoder import load_teacher_encoder, extract_all_teacher_block_features, get_num_teacher_blocks
 from repa.loss import compute_repa_loss
 
@@ -43,6 +44,7 @@ model_dict = {
     "ProMoE_TC_REPA_MoS_L": (ProMoE_TC_REPA_MoS_DiT, "DiT_L_config"),
     "ProMoE_TC_REPA_MoS_Naive_B": (ProMoE_TC_REPA_MoS_Naive_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_MoS_Naive_L": (ProMoE_TC_REPA_MoS_Naive_DiT, "DiT_L_config"),
+    "ProMoE_TC_REPA_MoS_Naive_Choice_B": (ProMoE_TC_REPA_MoS_Naive_Choice_DiT, "DiT_B_config"),
 }
 
 
