@@ -551,9 +551,10 @@ def worker(gpu, cfg):
         # Duplicate labels: [y1, ..., yN/2, y1, ..., yN/2]
         rank_img_y = rank_img_y.repeat(2)
 
-        # Sample two timesteps per image, sort so front half = low noise, back half = high noise
+        # Sample timestep pairs with controlled gap: u_high ∈ [time_gap, 1], u_low = u_high - time_gap
         full_bs = half_bs * 2
-        u_a = compute_density_for_timestep_sampling(
+        time_gap = getattr(cfg, 'time_gap', 0.1)
+        u_high = compute_density_for_timestep_sampling(
             weighting_scheme=cfg.weighting_scheme,
             batch_size=half_bs,
             logit_mean=cfg.logit_mean,
@@ -563,19 +564,9 @@ def worker(gpu, cfg):
             generator=None,
             device=gpu
         )
-        u_b = compute_density_for_timestep_sampling(
-            weighting_scheme=cfg.weighting_scheme,
-            batch_size=half_bs,
-            logit_mean=cfg.logit_mean,
-            logit_std=cfg.logit_std,
-            sigmoid_scale=cfg.sigmoid_scale,
-            mode_scale=cfg.mode_scale,
-            generator=None,
-            device=gpu
-        )
-        # For each image pair: small u → low noise (front), large u → high noise (back)
-        u_low = torch.min(u_a, u_b)
-        u_high = torch.max(u_a, u_b)
+        # Clamp u_high to [time_gap, 1] so u_low = u_high - time_gap ∈ [0, 1 - time_gap]
+        u_high = u_high.clamp(min=time_gap, max=1.0)
+        u_low = u_high - time_gap
         rank_img_u = torch.cat([u_low, u_high], dim=0)  # (N,)
 
         rank_img_t, rank_img_sigma = get_sigmas_timesteps(rank_img_u, cfg.shift, cfg.num_train_timesteps, n_dim=4)
@@ -601,8 +592,8 @@ def worker(gpu, cfg):
         arg_c = {'context': context, 'use_gradient_checkpointing': cfg.use_gradient_checkpointing,
                  'return_block_features': True, 'half_batch_size': half_bs}
 
-        # Independent noise for each sample (both groups get different noise)
-        noise = torch.randn_like(z)
+        # Shared noise: same noise for low-noise and high-noise groups (only sigma differs)
+        noise = torch.randn(half_bs, *z.shape[1:], device=z.device, dtype=z.dtype).repeat(2, 1, 1, 1, 1)
         noised_z_in = (1.0 - sigmas.squeeze()).view(z.shape[0], 1, 1, 1, 1) * z + sigmas.squeeze().view(z.shape[0], 1, 1, 1, 1) * noise
 
         with amp.autocast(dtype=cfg.param_dtype, enabled=use_amp):

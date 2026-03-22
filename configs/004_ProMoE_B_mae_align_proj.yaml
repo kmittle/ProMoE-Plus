@@ -12,7 +12,8 @@ resume_checkpoint: True
 log_interval: 10
 num_steps: 501000
 
-mae_align_coeff: 0.8
+mae_align_coeff: 0.2
+time_gap: 0.1
 
 DiT_B_config:
   qk_norm: False
