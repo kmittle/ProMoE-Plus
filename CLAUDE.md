@@ -25,6 +25,9 @@ python train_with_repa.py --config configs/004_ProMoE_B_repa.yaml
 # MoS REPA training (Mixture-of-Softmaxes routing with REPA)
 python train_with_MoS_repa.py --config configs/004_ProMoE_B_repa_MoS.yaml
 
+# MAE-alignment / noise-expert training
+python train_with_mae.py --config configs/004_ProMoE_B_group_align.yaml
+
 # Offline/local pretrained weights (supported by train.py, train_with_repa.py, sample.py)
 python train_with_repa.py --config configs/004_ProMoE_B_repa.yaml \
   --vae-path /path/to/sd-vae-ft-mse --repa-enc-path /path/to/dinov2_state_dict.pth
@@ -80,6 +83,14 @@ bash scripts/hierar/run_B_hierar_expert_infer_eval.sh
 bash scripts/hierar/run_B_hierar_expert_NoPenalty_train.sh
 bash scripts/hierar/run_B_hierar_expert_NoPenalty_infer_eval.sh
 bash scripts/hierar/run_B_hierar_expert_repa_dyna_train_sample_eval.sh
+
+# MAE alignment experiments
+bash scripts/mae_align/run_B_mae_align_train_sample_eval.sh
+bash scripts/mae_align/run_B_mae_align_proj_train_sample_eval.sh
+
+# Noise expert experiments
+bash scripts/noise_expert/run_B_noise_expert_train_sample_eval.sh
+bash scripts/noise_expert/run_B_noise_expert_proj_train_sample_eval.sh
 ```
 
 ### VAE Latent Preprocessing (speeds up training)
@@ -109,7 +120,7 @@ python run_eval.py /path/to/generated/images --count 50000 --no-eval
 - The YAML filename (minus extension) becomes `custom_cfg_name`, which determines the output subdirectory: `outputs/{model_name}/{custom_cfg_name}/`.
 
 ### Model Registry
-`train.py`, `train_with_repa.py`, and `train_with_MoS_repa.py` each define a `model_dict` mapping `model_name` strings to `(ModelClass, config_key)` pairs. `sample.py` merges all dicts so it can sample from any model variant. Adding a new model requires an entry in the appropriate training script's `model_dict`.
+`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, and `train_with_mae.py` each define a `model_dict` mapping `model_name` strings to `(ModelClass, config_key)` pairs. `sample.py` merges all dicts so it can sample from any model variant. Adding a new model requires an entry in the appropriate training script's `model_dict`.
 
 ### Model Hierarchy (in `models/`)
 - `modules.py` — Shared building blocks: `Attention`, `PatchEmbed`, `TimestepEmbedder`, `LabelEmbedder`, `FinalLayer`, `MLP`/`Mlp`, `SwiGLU`, `MoeMLP`, and sinusoidal position embedding utilities.
@@ -133,7 +144,12 @@ python run_eval.py /path/to/generated/images --count 50000 --no-eval
 - `models_ProMoE_TC_repa_double_share.py` — REPA variant with double shared expert architecture.
 - `models_ProMoE_TC_repa_MoS.py` — REPA variant with Mixture-of-Softmaxes routing. Uses `num_teacher_blocks` teacher feature blocks (instead of `encoder_depth`-based single alignment point). Trained via `train_with_MoS_repa.py`.
 - `models_ProMoE_TC_repa_MoS_naive.py` — Simplified/naive MoS REPA variant (in development on `repa` branch).
-- `models_ProMoE_TC_group_align.py` — ProMoE-TC variant for group alignment experiments. Base ProMoE architecture without REPA; returns plain tensor from `forward()`.
+- `models_ProMoE_TC_repa_MoS_choice.py` — MoS REPA variant with choice-based teacher block selection (in development on `repa` branch).
+- `models_ProMoE_TC_repa_MoS_naive_choice.py` — MoS REPA variant with a `BlockRouter` (bidirectional self-attention transformer) that produces per-token routing weights for teacher block selection (in development on `repa` branch).
+- `models_ProMoE_TC_group_align.py` — ProMoE-TC variant for group alignment experiments. Base ProMoE architecture without REPA; returns plain tensor from `forward()`. Trained via `train_with_mae.py`.
+- `models_ProMoE_TC_group_align_proj.py` — Group alignment variant with projection heads for alignment loss. Trained via `train_with_mae.py`.
+- `models_ProMoE_TC_noise_expert.py` — ProMoE-TC variant with a dedicated noise-level expert routing mechanism. Trained via `train_with_mae.py`.
+- `models_ProMoE_TC_noise_expert_proj.py` — Noise expert variant with projection heads. Trained via `train_with_mae.py`.
 - `models_ProMoE_TC_sigmoid.py` / `models_ProMoE_TC_symmetric.py` — Routing ablation variants (sigmoid gating, symmetric routing).
 
 ### Auxiliary Loss Convention
@@ -197,7 +213,7 @@ Training-level parameters (top-level `repa_config`):
 
 ### Pretrained Weights
 - VAE loading uses `load_vae()` from `utils.py`: checks `pretrained_ckpt/vae/{repo_id}/` for a local copy first; if absent, downloads from HuggingFace and saves locally for future use.
-- All training entry points (`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, `sample.py`, `preprocess/preprocess_vae.py`) use this cached loading path.
+- All training entry points (`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, `train_with_mae.py`, `sample.py`, `preprocess/preprocess_vae.py`) use this cached loading path.
 - REPA teacher encoders (DINOv2) are cached to `pretrained_ckpt/encoder/` after first download via torch.hub.
 
 ### FLOPs Computation (`analyses/`)
@@ -225,3 +241,8 @@ Training-level parameters (top-level `repa_config`):
 - Offline/air-gapped training: pass `--vae-path /path/to/sd-vae-ft-mse` and `--repa-enc-path /path/to/dinov2_state_dict.pth` to skip automatic downloads. See `ProMoE-REPA.md` for details.
 - `preprocess/image_paths_cache.txt` caches the dataset file list; delete and rebuild it after switching datasets or reorganizing files.
 - When `use_pre_latents=True`, the latent directory must be a sibling of `train/` named `sd-vae-ft-mse_Latents_256img_npz` — the code derives latent paths by replacing `train` in image paths.
+
+## Companion Documentation
+- `ProMoE-REPA.md` — Detailed guide for all REPA variant workflows, configuration reference, and FAQ.
+- `AGENTS.md` — Full project structure reference, output layout, testing guidelines, and commit conventions.
+- `analyses/README.md` — Overview of analysis entrypoints; per-script usage in `analyses/<basename>.md` files.
