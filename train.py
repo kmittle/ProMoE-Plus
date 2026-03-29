@@ -44,6 +44,7 @@ from models.models_ProMoE_TC_hierar_expert import DiT as ProMoE_TC_hierar_expert
 from models.models_ProMoE_EC import DiT as ProMoE_EC
 from models.models_ProMoE_TC_noise_expert import DiT as ProMoE_TC_noise_expert
 from models.models_ProMoE_TC_noise_expert_proj import DiT as ProMoE_TC_noise_expert_proj
+from models.models_ProMoE_TC_noise_expert_ema import DiT as ProMoE_TC_noise_expert_ema
 
 model_dict = {
     "DiT_B": (DiT, "DiT_B_config"),
@@ -69,6 +70,8 @@ model_dict = {
     "ProMoE_TC_L_noise_expert": (ProMoE_TC_noise_expert, "DiT_L_config"),
     "ProMoE_TC_B_noise_expert_proj": (ProMoE_TC_noise_expert_proj, "DiT_B_config"),
     "ProMoE_TC_L_noise_expert_proj": (ProMoE_TC_noise_expert_proj, "DiT_L_config"),
+    "ProMoE_TC_B_noise_expert_ema": (ProMoE_TC_noise_expert_ema, "DiT_B_config"),
+    "ProMoE_TC_L_noise_expert_ema": (ProMoE_TC_noise_expert_ema, "DiT_L_config"),
 }
 
 class CustomImageFolder(Dataset):
@@ -492,9 +495,11 @@ def worker(gpu, cfg):
     model_size = sum([p.numel() for p in model.parameters()]) / (1024 ** 2)
     logging.info(f'Created models with {model_size:.3f} M parameters')
 
-    # [optim] optimizer
+    # [optim] optimizer (only include parameters that require gradients;
+    # e.g. noise_expert_ema model freezes noise_expert params)
+    train_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = optim.AdamW(
-        params=model.parameters(),
+        params=train_params,
         lr=cfg.lr,
         betas=cfg.betas,
         weight_decay=cfg.weight_decay,
@@ -503,7 +508,7 @@ def worker(gpu, cfg):
     scaler = amp.GradScaler(enabled=False)
 
     for para_id, (name, param) in enumerate(model.named_parameters()):
-        logging.info(f"Train parameter {para_id}: {name}")
+        logging.info(f"Train parameter {para_id}: {name} (requires_grad={param.requires_grad})")
 
     cfg.checkpoint_dir = osp.join(cfg.output_dir, 'checkpoints')
     if cfg.resume_checkpoint:
@@ -633,6 +638,9 @@ def worker(gpu, cfg):
         grad_norm = clip_grad_norm_(model.parameters(), cfg.max_grad_norm)
         scaler.step(optimizer)
         scaler.update()
+        # Update noise expert as EMA of shared expert (if model supports it)
+        if hasattr(model.module, 'update_noise_expert_ema'):
+            model.module.update_noise_expert_ema()
         optimizer.zero_grad(set_to_none=True)
         update_ema(model_ema, model.module)
 
