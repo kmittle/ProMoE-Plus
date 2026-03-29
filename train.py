@@ -45,6 +45,7 @@ from models.models_ProMoE_EC import DiT as ProMoE_EC
 from models.models_ProMoE_TC_noise_expert import DiT as ProMoE_TC_noise_expert
 from models.models_ProMoE_TC_noise_expert_proj import DiT as ProMoE_TC_noise_expert_proj
 from models.models_ProMoE_TC_noise_expert_ema import DiT as ProMoE_TC_noise_expert_ema
+from models.models_ProMoE_TC_expert_contra import DiT as ProMoE_TC_expert_contra
 
 model_dict = {
     "DiT_B": (DiT, "DiT_B_config"),
@@ -72,6 +73,8 @@ model_dict = {
     "ProMoE_TC_L_noise_expert_proj": (ProMoE_TC_noise_expert_proj, "DiT_L_config"),
     "ProMoE_TC_B_noise_expert_ema": (ProMoE_TC_noise_expert_ema, "DiT_B_config"),
     "ProMoE_TC_L_noise_expert_ema": (ProMoE_TC_noise_expert_ema, "DiT_L_config"),
+    "ProMoE_TC_B_expert_contra": (ProMoE_TC_expert_contra, "DiT_B_config"),
+    "ProMoE_TC_L_expert_contra": (ProMoE_TC_expert_contra, "DiT_L_config"),
 }
 
 class CustomImageFolder(Dataset):
