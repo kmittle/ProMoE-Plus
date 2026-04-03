@@ -91,6 +91,12 @@ bash scripts/mae_align/run_B_mae_align_proj_train_sample_eval.sh
 # Noise expert experiments
 bash scripts/noise_expert/run_B_noise_expert_train_sample_eval.sh
 bash scripts/noise_expert/run_B_noise_expert_proj_train_sample_eval.sh
+bash scripts/noise_expert/run_B_noise_expert_ema_on_noise_train_sample_eval.sh
+bash scripts/noise_expert/run_B_noise_expert_ema_on_shared_train_sample_eval.sh
+
+# Expert contrastive experiments
+bash scripts/expert_contra/run_B_expert_contra_output_train_sample_eval.sh
+bash scripts/expert_contra/run_B_expert_contra_param_train_sample_eval.sh
 ```
 
 ### VAE Latent Preprocessing (speeds up training)
@@ -120,7 +126,7 @@ python run_eval.py /path/to/generated/images --count 50000 --no-eval
 - The YAML filename (minus extension) becomes `custom_cfg_name`, which determines the output subdirectory: `outputs/{model_name}/{custom_cfg_name}/`.
 
 ### Model Registry
-`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, and `train_with_mae.py` each define a `model_dict` mapping `model_name` strings to `(ModelClass, config_key)` pairs. `sample.py` merges all dicts so it can sample from any model variant. Adding a new model requires an entry in the appropriate training script's `model_dict`.
+`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, and `train_with_mae.py` each define a `model_dict` mapping `model_name` strings to `(ModelClass, config_key)` pairs. `sample.py` merges all four dicts so it can sample from any model variant. Adding a new model requires an entry in the appropriate training script's `model_dict`. Note: `train.py` hosts most model families (base DiT, baselines, ProMoE-TC/EC, noise expert variants, expert contrastive); `train_with_mae.py` only hosts group_align models.
 
 ### Model Hierarchy (in `models/`)
 - `modules.py` — Shared building blocks: `Attention`, `PatchEmbed`, `TimestepEmbedder`, `LabelEmbedder`, `FinalLayer`, `MLP`/`Mlp`, `SwiGLU`, `MoeMLP`, and sinusoidal position embedding utilities.
@@ -148,8 +154,10 @@ python run_eval.py /path/to/generated/images --count 50000 --no-eval
 - `models_ProMoE_TC_repa_MoS_naive_choice.py` — MoS REPA variant with a `BlockRouter` (bidirectional self-attention transformer) that produces per-token routing weights for teacher block selection (in development on `repa` branch).
 - `models_ProMoE_TC_group_align.py` — ProMoE-TC variant for group alignment experiments. Base ProMoE architecture without REPA; returns plain tensor from `forward()`. Trained via `train_with_mae.py`.
 - `models_ProMoE_TC_group_align_proj.py` — Group alignment variant with projection heads for alignment loss. Trained via `train_with_mae.py`.
-- `models_ProMoE_TC_noise_expert.py` — ProMoE-TC variant with a dedicated noise-level expert routing mechanism. Trained via `train_with_mae.py`.
-- `models_ProMoE_TC_noise_expert_proj.py` — Noise expert variant with projection heads. Trained via `train_with_mae.py`.
+- `models_ProMoE_TC_noise_expert.py` — ProMoE-TC variant with a dedicated noise-level expert routing mechanism. Trained via `train.py`.
+- `models_ProMoE_TC_noise_expert_proj.py` — Noise expert variant with adaLN-conditioned AlignProjector per MoE block. Trained via `train.py`.
+- `models_ProMoE_TC_noise_expert_ema.py` — Noise expert variant where noise_expert is initialized from shared_expert and updated via EMA (decay=0.999, configurable) instead of gradient descent. `noise_target` hyperparameter (`"noise_expert"` or `"shared_expert"`) controls which expert receives the noised input. `DiT.update_noise_expert_ema()` must be called after each optimizer step (handled automatically in `train.py` via `hasattr` check). Trained via `train.py`.
+- `models_ProMoE_TC_expert_contra.py` — ProMoE-TC with expert representation contrastive loss added on top of routing contrastive loss. `expert_contrastive_mode` switches between `"output"` (pairwise L2 repulsion on mean-pooled expert outputs) and `"param"` (pairwise L2 repulsion on flattened expert parameters). `expert_contrastive_blocks` list controls which blocks compute this loss (asserts all selected blocks are MoE blocks). Trained via `train.py`.
 - `models_ProMoE_TC_sigmoid.py` / `models_ProMoE_TC_symmetric.py` — Routing ablation variants (sigmoid gating, symmetric routing).
 
 ### Auxiliary Loss Convention
@@ -192,6 +200,12 @@ Training-level parameters (top-level `repa_config`):
 - `use_shared_expert` / `use_uncond_expert`: Toggle shared global expert and dedicated unconditional expert
 - `interleave`: Whether to alternate MoE and dense FFN layers
 - `router_weight_mode`: How to weight expert outputs (`"softmax"`, `"identity"`)
+- `noise_target`: For noise_expert_ema model — which expert receives noised input (`"noise_expert"` or `"shared_expert"`)
+- `noise_expert_ema_decay`: EMA decay rate for noise expert parameter update (default 0.999)
+- `expert_contrastive_lam`: Weight of expert representation contrastive loss (default 0)
+- `expert_contrastive_temperature`: Temperature for pairwise L2 repulsion (default 0.5)
+- `expert_contrastive_mode`: `"output"` (mean-pooled expert outputs) or `"param"` (flattened expert parameters)
+- `expert_contrastive_blocks`: List of block indices where expert contrastive loss is computed (must be MoE blocks)
 
 ### Training Pipeline (`train.py`)
 - PyTorch DDP for multi-GPU distributed training via `mp.spawn`
@@ -199,7 +213,8 @@ Training-level parameters (top-level `repa_config`):
 - Mixed precision with bfloat16; gradient clipping at `max_grad_norm=0.5`
 - EMA model maintained for stable generation
 - Supports both raw image loading and pre-computed VAE latents (`use_pre_latents=True`)
-- Loss = MSE reconstruction + auxiliary losses (routing contrastive for ProMoE, capacity prediction for DiffMoE)
+- Loss = MSE reconstruction + auxiliary losses (routing contrastive for ProMoE, capacity prediction for DiffMoE, expert contrastive for expert_contra)
+- After each optimizer step, `train.py` calls `model.module.update_noise_expert_ema()` if the model exposes it (noise_expert_ema models). Noise expert parameters are excluded from the optimizer (`requires_grad=False`).
 - Checkpoints saved every `save_ckpt_interval` steps to `outputs/{model_name}/{custom_cfg_name}/checkpoints/`
 
 ### Sampling Pipeline (`sample.py`)
