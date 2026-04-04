@@ -38,6 +38,7 @@ from models.models_ProMoE_TC_repa_MoS_naive import DiT as ProMoE_TC_REPA_MoS_Nai
 from models.models_ProMoE_TC_repa_MoS_naive_choice import DiT as ProMoE_TC_REPA_MoS_Naive_Choice_DiT
 from models.models_ProMoE_TC_repa_MoS_naive_choice_ import DiT as ProMoE_TC_REPA_MoS_Naive_Choice_Sep_DiT
 from models.models_ProMoE_TC_repa_multi_align import DiT as ProMoE_TC_REPA_Multi_Align_DiT
+from models.models_ProMoE_TC_repa_MoS_choice_per_block import DiT as ProMoE_TC_REPA_MoS_Choice_PerBlock_DiT
 from repa.encoder import load_teacher_encoder, extract_all_teacher_block_features, get_num_teacher_blocks
 from repa.loss import compute_repa_loss
 
@@ -49,6 +50,7 @@ model_dict = {
     "ProMoE_TC_REPA_MoS_Naive_Choice_B": (ProMoE_TC_REPA_MoS_Naive_Choice_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_MoS_Naive_Choice_Sep_B": (ProMoE_TC_REPA_MoS_Naive_Choice_Sep_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_Multi_Align_B": (ProMoE_TC_REPA_Multi_Align_DiT, "DiT_B_config"),
+    "ProMoE_TC_REPA_MoS_Choice_PerBlock_B": (ProMoE_TC_REPA_MoS_Choice_PerBlock_DiT, "DiT_B_config"),
 }
 
 
