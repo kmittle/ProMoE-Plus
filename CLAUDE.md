@@ -75,6 +75,10 @@ bash scripts/repa/run_B_repa_double_share_train_sample_eval.sh
 bash scripts/MoS_repa/run_B_repa_mos_train_sample_eval.sh
 bash scripts/MoS_repa/run_B_repa_mos_naive_train_sample_eval.sh
 
+# MoS Naive Choice experiments (block range ablations: b{start}_{end})
+bash scripts/MoS_repa/run_B_repa_mos_naive_choice_b3_5_train_sample_eval.sh  # example
+bash scripts/MoS_repa/run_B_repa_mos_naive_choice_sep_b3_5_train_sample_eval.sh  # Sep variant
+
 # Hierarchical routing experiments
 bash scripts/hierar/run_B_hierar_train.sh
 bash scripts/hierar/run_B_hierar_infer_eval.sh
@@ -126,7 +130,7 @@ python run_eval.py /path/to/generated/images --count 50000 --no-eval
 - The YAML filename (minus extension) becomes `custom_cfg_name`, which determines the output subdirectory: `outputs/{model_name}/{custom_cfg_name}/`.
 
 ### Model Registry
-`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, and `train_with_mae.py` each define a `model_dict` mapping `model_name` strings to `(ModelClass, config_key)` pairs. `sample.py` merges all four dicts so it can sample from any model variant. Adding a new model requires an entry in the appropriate training script's `model_dict`. Note: `train.py` hosts most model families (base DiT, baselines, ProMoE-TC/EC, noise expert variants, expert contrastive); `train_with_mae.py` only hosts group_align models.
+`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, and `train_with_mae.py` each define a `model_dict` mapping `model_name` strings to `(ModelClass, config_key)` pairs. `sample.py` merges all four dicts so it can sample from any model variant. Adding a new model requires an entry in the appropriate training script's `model_dict`. Note: `train.py` hosts most model families (base DiT, baselines, ProMoE-TC/EC, noise expert variants, expert contrastive); `train_with_MoS_repa.py` hosts MoS, MoS Naive, MoS Naive Choice, and MoS Naive Choice Sep variants; `train_with_mae.py` only hosts group_align models.
 
 ### Model Hierarchy (in `models/`)
 - `modules.py` — Shared building blocks: `Attention`, `PatchEmbed`, `TimestepEmbedder`, `LabelEmbedder`, `FinalLayer`, `MLP`/`Mlp`, `SwiGLU`, `MoeMLP`, and sinusoidal position embedding utilities.
@@ -151,7 +155,9 @@ python run_eval.py /path/to/generated/images --count 50000 --no-eval
 - `models_ProMoE_TC_repa_MoS.py` — REPA variant with Mixture-of-Softmaxes routing. Uses `num_teacher_blocks` teacher feature blocks (instead of `encoder_depth`-based single alignment point). Trained via `train_with_MoS_repa.py`.
 - `models_ProMoE_TC_repa_MoS_naive.py` — Simplified/naive MoS REPA variant (in development on `repa` branch).
 - `models_ProMoE_TC_repa_MoS_choice.py` — MoS REPA variant with choice-based teacher block selection (in development on `repa` branch).
-- `models_ProMoE_TC_repa_MoS_naive_choice.py` — MoS REPA variant with a `BlockRouter` (bidirectional self-attention transformer) that produces per-token routing weights for teacher block selection (in development on `repa` branch).
+- `models_ProMoE_TC_repa_MoS_naive_choice.py` — MoS REPA variant with a `BlockRouter` (bidirectional self-attention transformer) that produces per-token routing weights for teacher block selection. Configs specify teacher block ranges via `num_teacher_blocks` (e.g., `b3_5` = blocks 3–5). Trained via `train_with_MoS_repa.py`.
+- `models_ProMoE_TC_repa_MoS_naive_choice_.py` — "Sep" variant of MoS Naive Choice with separate projectors per teacher block (vs shared). Registered as `ProMoE_TC_REPA_MoS_Naive_Choice_Sep_B` in `train_with_MoS_repa.py`.
+- `models_ProMoE_TC_repa_multi_align.py` — REPA variant with multi-point alignment (multiple encoder depths aligned simultaneously).
 - `models_ProMoE_TC_group_align.py` — ProMoE-TC variant for group alignment experiments. Base ProMoE architecture without REPA; returns plain tensor from `forward()`. Trained via `train_with_mae.py`.
 - `models_ProMoE_TC_group_align_proj.py` — Group alignment variant with projection heads for alignment loss. Trained via `train_with_mae.py`.
 - `models_ProMoE_TC_noise_expert.py` — ProMoE-TC variant with a dedicated noise-level expert routing mechanism. Trained via `train.py`.
@@ -171,6 +177,7 @@ Model `forward()` returns either a plain tensor (DiT) or a tuple for models with
 - `REPA/` (uppercase) — Separate standalone REPA subproject (original codebase). Treat changes there as scoped work independent from ProMoE.
 - `repa/encoder.py` — Loads frozen DINOv2 teacher encoders (`dinov2-vit-{b,l,g}` and `dinov2reg-vit-{b,l,g}`). Downloads via torch.hub on first use, caches to `pretrained_ckpt/encoder/`. Handles positional embedding resampling for target resolution.
 - `repa/loss.py` — `compute_repa_loss(z_teacher, z_student_list)`: negative cosine similarity between teacher patch features and projected student features, averaged across alignment points.
+- `repa/encoder.py` also provides `extract_all_teacher_block_features()` (returns features from all intermediate blocks, used by MoS training) and `get_num_teacher_blocks()` (returns block count for a given encoder type).
 - `train_with_repa.py` — Extended training loop that loads raw images alongside VAE latents, extracts teacher features with `extract_teacher_features()`, and adds REPA projection loss to the total loss.
 
 ### REPA Parameters (two-level `repa_config` in YAML)
@@ -231,9 +238,12 @@ Training-level parameters (top-level `repa_config`):
 - All training entry points (`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, `train_with_mae.py`, `sample.py`, `preprocess/preprocess_vae.py`) use this cached loading path.
 - REPA teacher encoders (DINOv2) are cached to `pretrained_ckpt/encoder/` after first download via torch.hub.
 
-### FLOPs Computation (`analyses/`)
+### Analysis Tools (`analyses/`)
 - `run_compute_flops.py` — Computes theoretical FLOPs, activated parameters, and expert frequencies for checkpoints.
-- `analyses/flops/flops_counter.py` — FLOPs counting utilities.
+- `run_tokenwise_tsne.py` / `run_samplewise_pooled_tsne.py` / `run_imagewise_tsne.py` — t-SNE visualization of expert routing at different granularities.
+- `run_repa_dyna_heatmap.py` — Heatmap visualization of dynamic REPA weights across timesteps.
+- `run_token_choice_expert_heatmap.py` — Heatmap of token-to-expert assignment patterns.
+- Each entry script has a matching `analyses/<basename>.md` usage guide. Reusable helpers live in `analyses/t_SNE/`, `analyses/heatmap/`, `analyses/flops/`.
 
 ## Coding Conventions
 - 4-space indentation, `snake_case` for functions/variables, `PascalCase` for classes.
