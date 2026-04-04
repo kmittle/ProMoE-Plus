@@ -52,13 +52,14 @@ class BlockRouter(nn.Module):
     """
     Transformer-based block router for MoS REPA (ref: arxiv 2511.12207).
 
-    Takes the patchified embedding and conditioning as input, and produces
-    per-token routing weights that determine which teacher encoder block
-    each DiT block should align with.
+    Takes the patchified embedding, timestep embedding, and class embedding
+    as three separate inputs, projects each through RMSNorm + Linear,
+    concatenates them, and produces per-token routing weights.
 
     Inputs:
         x_embed: (N, T, D) patchified noised latent + positional embedding
-        c: (N, D) conditioning embedding (timestep + class)
+        t_embed: (N, D_t) timestep embedding
+        y_embed: (N, D_y) class embedding
 
     Outputs:
         routing_weights: (N, T, m, n) softmax-normalized weights
@@ -69,7 +70,8 @@ class BlockRouter(nn.Module):
     def __init__(
         self,
         hidden_size,
-        cond_size,
+        t_size,
+        y_size,
         num_teacher_blocks,
         depth,
         router_hidden_dim=None,
@@ -85,13 +87,17 @@ class BlockRouter(nn.Module):
             router_hidden_dim = hidden_size
         self.router_hidden_dim = router_hidden_dim
 
-        # Input projections
-        self.x_norm = nn.LayerNorm(hidden_size, eps=1e-6)
+        # Input projections (latent patches)
+        self.x_norm = nn.RMSNorm(hidden_size, eps=1e-6)
         self.x_proj = nn.Linear(hidden_size, router_hidden_dim, bias=False)
 
-        # Conditioning projection: timestep + class -> extra token
-        self.c_norm = nn.LayerNorm(cond_size, eps=1e-6)
-        self.c_proj = nn.Linear(cond_size, router_hidden_dim, bias=False)
+        # Timestep projection
+        self.t_norm = nn.RMSNorm(t_size, eps=1e-6)
+        self.t_proj = nn.Linear(t_size, router_hidden_dim, bias=False)
+
+        # Class embedding projection
+        self.y_norm = nn.RMSNorm(y_size, eps=1e-6)
+        self.y_proj = nn.Linear(y_size, router_hidden_dim, bias=False)
 
         # Router transformer blocks (2 blocks, bidirectional self-attention)
         self.blocks = nn.ModuleList([
@@ -106,30 +112,32 @@ class BlockRouter(nn.Module):
             router_hidden_dim, num_teacher_blocks * depth, bias=False
         )
 
-    def forward(self, x_embed, c):
+    def forward(self, x_embed, t_embed, y_embed):
         """
         Args:
             x_embed: (N, T, D) patchified embedding
-            c: (N, D) conditioning (timestep + class embedding)
+            t_embed: (N, D_t) timestep embedding
+            y_embed: (N, D_y) class embedding
 
         Returns:
             routing_weights: (N, T, m, n) with softmax over m (teacher blocks)
         """
         N, T, _ = x_embed.shape
 
-        # Project inputs to router hidden dim
-        x_proj = self.x_proj(self.x_norm(x_embed))     # (N, T, router_dim)
-        c_proj = self.c_proj(self.c_norm(c)).unsqueeze(1)  # (N, 1, router_dim)
+        # Project each input to router hidden dim
+        x_proj = self.x_proj(self.x_norm(x_embed))              # (N, T, router_dim)
+        t_proj = self.t_proj(self.t_norm(t_embed)).unsqueeze(1)  # (N, 1, router_dim)
+        y_proj = self.y_proj(self.y_norm(y_embed)).unsqueeze(1)  # (N, 1, router_dim)
 
-        # Concatenate conditioning token with patch tokens
-        h = torch.cat([c_proj, x_proj], dim=1)  # (N, T+1, router_dim)
+        # Concatenate: [t, y, x] tokens
+        h = torch.cat([t_proj, y_proj, x_proj], dim=1)  # (N, T+2, router_dim)
 
         # Process through router transformer blocks
         for block in self.blocks:
             h = block(h)
 
-        # Extract patch token outputs (skip the conditioning token)
-        h = h[:, 1:, :]  # (N, T, router_dim)
+        # Extract patch token outputs (skip the 2 conditioning tokens)
+        h = h[:, 2:, :]  # (N, T, router_dim)
 
         # Project to routing logits and reshape
         logits = self.routing_head(h)  # (N, T, m * n)
@@ -543,7 +551,8 @@ class DiT(nn.Module):
             # Global transformer-based block router
             self.block_router = BlockRouter(
                 hidden_size=hidden_size,
-                cond_size=hidden_size,  # c = t_embed + y_embed, same dim as hidden_size
+                t_size=hidden_size,
+                y_size=hidden_size,
                 num_teacher_blocks=num_teacher_blocks,
                 depth=num_align_blocks,  # router only covers selected blocks
                 router_hidden_dim=router_hidden_dim,
@@ -704,7 +713,7 @@ class DiT(nn.Module):
         # Pre-compute routing weights for all blocks via the block router
         routing_weights = None
         if self.training and self.block_router is not None and teacher_all_z is not None:
-            routing_weights = self.block_router(x, c)  # (N, T, m, n)
+            routing_weights = self.block_router(x, t, y)  # (N, T, m, n)
 
         mos_repa_loss = torch.tensor(0.0, device=x.device)
         for i, block in enumerate(self.blocks):
