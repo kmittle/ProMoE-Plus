@@ -130,7 +130,7 @@ python run_eval.py /path/to/generated/images --count 50000 --no-eval
 - The YAML filename (minus extension) becomes `custom_cfg_name`, which determines the output subdirectory: `outputs/{model_name}/{custom_cfg_name}/`.
 
 ### Model Registry
-`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, and `train_with_mae.py` each define a `model_dict` mapping `model_name` strings to `(ModelClass, config_key)` pairs. `sample.py` merges all four dicts so it can sample from any model variant. Adding a new model requires an entry in the appropriate training script's `model_dict`. Note: `train.py` hosts most model families (base DiT, baselines, ProMoE-TC/EC, noise expert variants, expert contrastive); `train_with_MoS_repa.py` hosts MoS, MoS Naive, MoS Naive Choice, and MoS Naive Choice Sep variants; `train_with_mae.py` only hosts group_align models.
+`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, and `train_with_mae.py` each define a `model_dict` mapping `model_name` strings to `(ModelClass, config_key)` pairs. `sample.py` merges all four dicts so it can sample from any model variant. Adding a new model requires an entry in the appropriate training script's `model_dict`. Note: `train.py` hosts most model families (base DiT, baselines, ProMoE-TC/EC, noise expert variants, expert contrastive); `train_with_MoS_repa.py` hosts MoS, MoS Naive, MoS Naive Choice, MoS Naive Choice Sep, MoS Naive Choice Blockwise, MoS Choice PerBlock, and Multi-Align variants; `train_with_mae.py` only hosts group_align models.
 
 ### Model Hierarchy (in `models/`)
 - `modules.py` — Shared building blocks: `Attention`, `PatchEmbed`, `TimestepEmbedder`, `LabelEmbedder`, `FinalLayer`, `MLP`/`Mlp`, `SwiGLU`, `MoeMLP`, and sinusoidal position embedding utilities.
@@ -157,7 +157,9 @@ python run_eval.py /path/to/generated/images --count 50000 --no-eval
 - `models_ProMoE_TC_repa_MoS_choice.py` — MoS REPA variant with choice-based teacher block selection (in development on `repa` branch).
 - `models_ProMoE_TC_repa_MoS_naive_choice.py` — MoS REPA variant with a `BlockRouter` (bidirectional self-attention transformer) that produces per-token routing weights for teacher block selection. Configs specify teacher block ranges via `num_teacher_blocks` (e.g., `b3_5` = blocks 3–5). Trained via `train_with_MoS_repa.py`.
 - `models_ProMoE_TC_repa_MoS_naive_choice_.py` — "Sep" variant of MoS Naive Choice with separate projectors per teacher block (vs shared). Registered as `ProMoE_TC_REPA_MoS_Naive_Choice_Sep_B` in `train_with_MoS_repa.py`.
-- `models_ProMoE_TC_repa_multi_align.py` — REPA variant with multi-point alignment (multiple encoder depths aligned simultaneously).
+- `models_ProMoE_TC_repa_MoS_naive_choice_blockwise.py` — Ablation variant of MoS Naive Choice with **block-wise routing**: mean-pools token features before routing head so all tokens within a block share the same `(m,)` routing weights. Only `BlockRouter.forward()` differs from `naive_choice`. Registered as `ProMoE_TC_REPA_MoS_Naive_Choice_Blockwise_B`.
+- `models_ProMoE_TC_repa_MoS_choice_per_block.py` — Per-block MoS routing variant. Replaces the global `BlockRouter` with per-aligned-block `PerBlockRouter` (single-layer transformer) that runs **after** each DiT block's output. Each router predicts `(N, T, m)` routing weights for its own block. Registered as `ProMoE_TC_REPA_MoS_Choice_PerBlock_B`.
+- `models_ProMoE_TC_repa_multi_align.py` — Multi-point REPA with fixed alignment to teacher **last layer** (like naive REPA). DiT blocks 3, 4, 5 (default) each have a projector. An `AlignCoefficientPredictor` (transformer-based) predicts per-token sigmoid alignment coefficients controlling alignment strength per block. Trained via `train_with_MoS_repa.py` (accepts `teacher_all_z`, uses only last layer). Registered as `ProMoE_TC_REPA_Multi_Align_B`.
 - `models_ProMoE_TC_group_align.py` — ProMoE-TC variant for group alignment experiments. Base ProMoE architecture without REPA; returns plain tensor from `forward()`. Trained via `train_with_mae.py`.
 - `models_ProMoE_TC_group_align_proj.py` — Group alignment variant with projection heads for alignment loss. Trained via `train_with_mae.py`.
 - `models_ProMoE_TC_noise_expert.py` — ProMoE-TC variant with a dedicated noise-level expert routing mechanism. Trained via `train.py`.
@@ -171,6 +173,8 @@ Model `forward()` returns either a plain tensor (DiT) or a tuple for models with
 - **DiffMoE**: Returns `(pred, "Capacity_Pred", layer_idx_list, ones_list, pred_c_list, loss_weight)`. Training loop computes BCEWithLogitsLoss for capacity prediction.
 - **ProMoE**: Uses `AddAuxiliaryLoss` autograd function to inject contrastive loss gradients directly into the forward pass — returns a plain tensor but the auxiliary loss gradient flows through automatically.
 - **ProMoE-REPA**: Returns `(pred, zs_proj)` during training. The training loop in `train_with_repa.py` computes `compute_repa_loss(teacher_z, zs_proj)` and adds it weighted by `proj_coeff`. Total loss = MSE + REPA loss * `proj_coeff` + routing contrastive loss (via autograd).
+- **ProMoE-MoS-REPA**: Returns `(pred, mos_repa_loss)` during training, where `mos_repa_loss` is a scalar computed inside the model (weighted cosine similarity across selected teacher blocks). The training loop in `train_with_MoS_repa.py` multiplies by `proj_coeff` (default 0.5). Total loss = MSE + mos_repa_loss * `proj_coeff` + routing contrastive loss (via autograd). Note: `teacher_all_z` (all teacher block features) is passed to forward; the model selects which teacher blocks to align with via its router.
+- **ProMoE-Multi-Align**: Returns `(pred, repa_loss)` during training. Similar to MoS-REPA but aligns with teacher last layer only; `AlignCoefficientPredictor` produces per-token sigmoid coefficients that weight the alignment loss. Also trained via `train_with_MoS_repa.py`.
 
 ### REPA Module (`repa/` vs `REPA/`)
 - `repa/` (lowercase) — ProMoE's REPA integration: encoder loading, loss computation, used by `train_with_repa.py`.
@@ -194,9 +198,18 @@ Model-level parameters (in `DiT_B_config.repa_config`):
 - `router_projector_dim`: Hidden size of router projector (defaults to `projector_dim`)
 - `kmeans_n_iters`: K-Means iterations for teacher feature clustering (default 10)
 
+MoS-specific model-level parameters (in `DiT_B_config.repa_config`):
+- `num_teacher_blocks`: Number of teacher encoder blocks to extract features from (e.g., 12 for dinov2-vit-b). Auto-injected by `train_with_MoS_repa.py` if not specified.
+- `align_blocks`: List of DiT block indices that participate in MoS alignment (e.g., `[2, 3, 4]` for blocks 3–5). Defaults vary by model: all blocks for MoS/MoS Naive, `[3, 4, 5]` for Multi-Align.
+- `mos_top_k`: Number of teacher blocks to select per token (default 2)
+- `mos_random_prob`: Epsilon-greedy exploration probability (default 0.05)
+- `router_hidden_dim`: Hidden dimension of BlockRouter/PerBlockRouter transformer (default: same as `hidden_size`)
+- `num_router_blocks`: Number of transformer layers in BlockRouter (default 2; PerBlockRouter always uses 1)
+- `router_num_heads`: Number of attention heads in the router transformer
+
 Training-level parameters (top-level `repa_config`):
 - `enc_type`: Teacher encoder model (must match model-level)
-- `proj_coeff`: Weight of naive REPA loss in total loss (e.g., 0.5)
+- `proj_coeff`: Weight of REPA/MoS-REPA loss in total loss (e.g., 0.5)
 
 ### Key MoE Parameters (in YAML `MoE_config`)
 - `num_routed_experts`: Number of routable experts (typically 12)
