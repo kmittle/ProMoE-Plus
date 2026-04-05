@@ -49,6 +49,8 @@ model_dict = {
     "ProMoE_TC_REPA_MoS_Naive_B": (ProMoE_TC_REPA_MoS_Naive_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_MoS_Naive_L": (ProMoE_TC_REPA_MoS_Naive_DiT, "DiT_L_config"),
     "ProMoE_TC_REPA_MoS_Naive_Choice_B": (ProMoE_TC_REPA_MoS_Naive_Choice_DiT, "DiT_B_config"),
+    "ProMoE_TC_REPA_MoS_Naive_Choice_L": (ProMoE_TC_REPA_MoS_Naive_Choice_DiT, "DiT_L_config"),
+    "ProMoE_TC_REPA_MoS_Naive_Choice_XL": (ProMoE_TC_REPA_MoS_Naive_Choice_DiT, "DiT_XL_config"),
     "ProMoE_TC_REPA_MoS_Naive_Choice_Sep_B": (ProMoE_TC_REPA_MoS_Naive_Choice_Sep_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_Multi_Align_B": (ProMoE_TC_REPA_Multi_Align_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_MoS_Choice_PerBlock_B": (ProMoE_TC_REPA_MoS_Choice_PerBlock_DiT, "DiT_B_config"),
