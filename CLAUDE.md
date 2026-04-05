@@ -78,6 +78,20 @@ bash scripts/MoS_repa/run_B_repa_mos_naive_train_sample_eval.sh
 # MoS Naive Choice experiments (block range ablations: b{start}_{end})
 bash scripts/MoS_repa/run_B_repa_mos_naive_choice_b3_5_train_sample_eval.sh  # example
 bash scripts/MoS_repa/run_B_repa_mos_naive_choice_sep_b3_5_train_sample_eval.sh  # Sep variant
+bash scripts/MoS_repa/run_B_repa_mos_naive_choice_blockwise_b3_5_train_sample_eval.sh  # Blockwise ablation
+bash scripts/MoS_repa/run_B_repa_mos_choice_per_block_b3_5_train_sample_eval.sh  # Per-block router
+bash scripts/MoS_repa/run_B_repa_multi_align_train_sample_eval.sh  # Multi-align (sigmoid coeff)
+
+# MoS Naive Choice proj_coeff ablations (baseline: 0.5)
+bash scripts/MoS_repa/run_B_repa_mos_naive_choice_b3_5_coeff025_train_sample_eval.sh  # 0.25
+bash scripts/MoS_repa/run_B_repa_mos_naive_choice_b3_5_coeff075_train_sample_eval.sh  # 0.75
+bash scripts/MoS_repa/run_B_repa_mos_naive_choice_b3_5_no_coeff_train_sample_eval.sh  # 1.0
+bash scripts/MoS_repa/run_B_repa_mos_naive_choice_b3_5_coeff125_train_sample_eval.sh  # 1.25
+bash scripts/MoS_repa/run_B_repa_mos_naive_choice_b3_5_coeff150_train_sample_eval.sh  # 1.5
+
+# MoS Naive Choice L/XL scale-up (align blocks 7-9)
+bash scripts/MoS_repa/run_L_repa_mos_naive_choice_b7_9_train_sample_eval.sh
+bash scripts/MoS_repa/run_XL_repa_mos_naive_choice_b7_9_train_sample_eval.sh
 
 # Hierarchical routing experiments
 bash scripts/hierar/run_B_hierar_train.sh
@@ -130,7 +144,7 @@ python run_eval.py /path/to/generated/images --count 50000 --no-eval
 - The YAML filename (minus extension) becomes `custom_cfg_name`, which determines the output subdirectory: `outputs/{model_name}/{custom_cfg_name}/`.
 
 ### Model Registry
-`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, and `train_with_mae.py` each define a `model_dict` mapping `model_name` strings to `(ModelClass, config_key)` pairs. `sample.py` merges all four dicts so it can sample from any model variant. Adding a new model requires an entry in the appropriate training script's `model_dict`. Note: `train.py` hosts most model families (base DiT, baselines, ProMoE-TC/EC, noise expert variants, expert contrastive); `train_with_MoS_repa.py` hosts MoS, MoS Naive, MoS Naive Choice, MoS Naive Choice Sep, MoS Naive Choice Blockwise, MoS Choice PerBlock, and Multi-Align variants; `train_with_mae.py` only hosts group_align models.
+`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, and `train_with_mae.py` each define a `model_dict` mapping `model_name` strings to `(ModelClass, config_key)` pairs. `sample.py` merges all four dicts so it can sample from any model variant. Adding a new model requires an entry in the appropriate training script's `model_dict`. Note: `train.py` hosts most model families (base DiT, baselines, ProMoE-TC/EC, noise expert variants, expert contrastive); `train_with_MoS_repa.py` hosts MoS, MoS Naive, MoS Naive Choice (B/L/XL), MoS Naive Choice Sep, MoS Naive Choice Blockwise, MoS Choice PerBlock, and Multi-Align variants; `train_with_mae.py` only hosts group_align models.
 
 ### Model Hierarchy (in `models/`)
 - `modules.py` — Shared building blocks: `Attention`, `PatchEmbed`, `TimestepEmbedder`, `LabelEmbedder`, `FinalLayer`, `MLP`/`Mlp`, `SwiGLU`, `MoeMLP`, and sinusoidal position embedding utilities.
@@ -256,7 +270,8 @@ Training-level parameters (top-level `repa_config`):
 - `run_tokenwise_tsne.py` / `run_samplewise_pooled_tsne.py` / `run_imagewise_tsne.py` — t-SNE visualization of expert routing at different granularities.
 - `run_repa_dyna_heatmap.py` — Heatmap visualization of dynamic REPA weights across timesteps.
 - `run_token_choice_expert_heatmap.py` — Heatmap of token-to-expert assignment patterns.
-- Each entry script has a matching `analyses/<basename>.md` usage guide. Reusable helpers live in `analyses/t_SNE/`, `analyses/heatmap/`, `analyses/flops/`.
+- `run_mos_routing_analysis.py` — MoS router teacher block selection analysis: per-block and aggregated frequency histograms, timestep evolution, token variance, and routing entropy. Uses hook-based routing weight capture (`analyses/mos_routing/extract.py`), online statistical aggregation (`analyses/mos_routing/aggregate.py`), and plotting (`analyses/mos_routing/plotting.py`). Supports all MoS model variants (global/blockwise/per_block/mos router types) via auto-detection.
+- Each entry script has a matching `analyses/<basename>.md` usage guide. Reusable helpers live in `analyses/t_SNE/`, `analyses/heatmap/`, `analyses/flops/`, `analyses/mos_routing/`.
 
 ## Coding Conventions
 - 4-space indentation, `snake_case` for functions/variables, `PascalCase` for classes.
@@ -265,7 +280,7 @@ Training-level parameters (top-level `repa_config`):
 - No `tests/` directory; validate changes with `python -m py_compile <file>` for syntax checks and targeted smoke tests (short training run, sample pass).
 
 ### Shell Script Convention
-- **新建训练+采样+评估三合一脚本时，必须以 `scripts/template.sh` 为模板**，否则另一台实验服务器无法运行。模板的关键模式包括：`set -euo pipefail`、通过 `SCRIPT_DIR`/`REPO_ROOT` 定位仓库根目录、用内联 Python 从 YAML 解析 `model_name`/`gpu_ids`/`num_fid_samples` 等参数、使用绝对 python 路径调用训练/采样/评估、以及 `find ... -name images | sort -V` 遍历评估目录。
+- **所有新建的 `.sh` 实验脚本必须以 `scripts/template.sh` 为模板**，否则另一台实验服务器无法运行。模板的关键模式包括：`set -euo pipefail`、通过 `SCRIPT_DIR`/`REPO_ROOT` 定位仓库根目录、用内联 Python 从 YAML 解析 `model_name`/`gpu_ids`/`num_fid_samples` 等参数、使用绝对 python 路径调用训练/采样/评估、以及 `find ... -name images | sort -V` 遍历评估目录。不要使用 `conda activate` 模式。
 - End-to-end scripts under `scripts/` use **absolute python paths** (e.g., `/mnt/workspace/yujie/.conda/envs/promoe/bin/python`) instead of `conda activate` for company server compatibility.
 - Training/sampling uses the `promoe` env; evaluation uses the `fid_eval` env.
 
