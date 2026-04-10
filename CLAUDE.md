@@ -28,7 +28,8 @@ python train_with_MoS_repa.py --config configs/004_ProMoE_B_repa_MoS.yaml
 # MAE-alignment / noise-expert training
 python train_with_mae.py --config configs/004_ProMoE_B_group_align.yaml
 
-# Offline/local pretrained weights (supported by train.py, train_with_repa.py, sample.py)
+# Offline/local pretrained weights (all training scripts + sample.py support --vae-path;
+# train_with_repa.py and train_with_MoS_repa.py also support --repa-enc-path)
 python train_with_repa.py --config configs/004_ProMoE_B_repa.yaml \
   --vae-path /path/to/sd-vae-ft-mse --repa-enc-path /path/to/dinov2_state_dict.pth
 ```
@@ -44,77 +45,21 @@ CUDA_VISIBLE_DEVICES=0 python sample.py --config configs/004_ProMoE_L.yaml \
 ```
 
 ### End-to-End Scripts
+Scripts under `scripts/` run train + sample + eval in one go. Organized by experiment family:
+
+| Directory | Variants |
+|-----------|----------|
+| `scripts/repa/` | REPA, REPA-Shared, REPA-Cond, Router, Router-Contra, Routed, Double-Share |
+| `scripts/dynamic_repa/` | REPA-Dyna, Dyna-Select (r25/r75), Dyna-Scale, Dyna-Only |
+| `scripts/MoS_repa/` | MoS, MoS Naive, MoS Naive Choice (block ranges, Sep, Blockwise, PerBlock, Multi-Align, proj_coeff ablations, L/XL scale-up) |
+| `scripts/hierar/` | Hierarchical, Hierarchical-Expert, NoPenalty, Expert-REPA-Dyna |
+| `scripts/mae_align/` | MAE alignment, MAE alignment with projection |
+| `scripts/noise_expert/` | Noise expert, Noise expert proj, EMA on noise/shared |
+| `scripts/expert_contra/` | Expert contrastive output/param |
+
 ```bash
-# Train REPA variant
-bash scripts/repa/train_repa_B.sh
-# Train REPA-Shared variant (align shared expert output with teacher)
-bash scripts/repa/train_repa_shared_B.sh
-# Train REPA-Cond variant
-bash scripts/repa/train_repa_cond_B.sh
-
-# Sample + evaluate in one go (handles conda env switching)
-bash scripts/repa/sample_and_eval_repa_B.sh
-bash scripts/repa/sample_and_eval_repa_shared_B.sh
-bash scripts/repa/sample_and_eval_repa_cond_B.sh
-
-# Dynamic REPA experiments
-bash scripts/dynamic_repa/run_B_repa_dyna_train_sample_eval.sh
-bash scripts/dynamic_repa/run_B_repa_dyna_select_train_sample_eval.sh
-bash scripts/dynamic_repa/run_B_repa_dyna_select_r25_train_sample_eval.sh
-bash scripts/dynamic_repa/run_B_repa_dyna_select_r75_train_sample_eval.sh
-bash scripts/dynamic_repa/run_B_repa_dyna_scale_train_sample_eval.sh
-bash scripts/dynamic_repa/run_B_repa_dyna_only_train_sample_eval.sh
-
-# Router / routed / double-share REPA experiments
-bash scripts/repa/run_B_repa_router_train_sample_eval.sh
-bash scripts/repa/run_B_repa_router_contra_train_sample_eval.sh
-bash scripts/repa/run_B_repa_routed_train_sample_eval.sh
-bash scripts/repa/run_B_repa_double_share_train_sample_eval.sh
-
-# MoS (Mixture-of-Softmaxes) REPA experiments
-bash scripts/MoS_repa/run_B_repa_mos_train_sample_eval.sh
-bash scripts/MoS_repa/run_B_repa_mos_naive_train_sample_eval.sh
-
-# MoS Naive Choice experiments (block range ablations: b{start}_{end})
-bash scripts/MoS_repa/run_B_repa_mos_naive_choice_b3_5_train_sample_eval.sh  # example
-bash scripts/MoS_repa/run_B_repa_mos_naive_choice_sep_b3_5_train_sample_eval.sh  # Sep variant
-bash scripts/MoS_repa/run_B_repa_mos_naive_choice_blockwise_b3_5_train_sample_eval.sh  # Blockwise ablation
-bash scripts/MoS_repa/run_B_repa_mos_choice_per_block_b3_5_train_sample_eval.sh  # Per-block router
-bash scripts/MoS_repa/run_B_repa_multi_align_train_sample_eval.sh  # Multi-align (sigmoid coeff)
-
-# MoS Naive Choice proj_coeff ablations (baseline: 0.5)
-bash scripts/MoS_repa/run_B_repa_mos_naive_choice_b3_5_coeff025_train_sample_eval.sh  # 0.25
-bash scripts/MoS_repa/run_B_repa_mos_naive_choice_b3_5_coeff075_train_sample_eval.sh  # 0.75
-bash scripts/MoS_repa/run_B_repa_mos_naive_choice_b3_5_no_coeff_train_sample_eval.sh  # 1.0
-bash scripts/MoS_repa/run_B_repa_mos_naive_choice_b3_5_coeff125_train_sample_eval.sh  # 1.25
-bash scripts/MoS_repa/run_B_repa_mos_naive_choice_b3_5_coeff150_train_sample_eval.sh  # 1.5
-
-# MoS Naive Choice L/XL scale-up (align blocks 7-9)
-bash scripts/MoS_repa/run_L_repa_mos_naive_choice_b7_9_train_sample_eval.sh
-bash scripts/MoS_repa/run_XL_repa_mos_naive_choice_b7_9_train_sample_eval.sh
-
-# Hierarchical routing experiments
-bash scripts/hierar/run_B_hierar_train.sh
-bash scripts/hierar/run_B_hierar_infer_eval.sh
-bash scripts/hierar/run_B_hierar_expert_train.sh
-bash scripts/hierar/run_B_hierar_expert_infer_eval.sh
-bash scripts/hierar/run_B_hierar_expert_NoPenalty_train.sh
-bash scripts/hierar/run_B_hierar_expert_NoPenalty_infer_eval.sh
-bash scripts/hierar/run_B_hierar_expert_repa_dyna_train_sample_eval.sh
-
-# MAE alignment experiments
-bash scripts/mae_align/run_B_mae_align_train_sample_eval.sh
-bash scripts/mae_align/run_B_mae_align_proj_train_sample_eval.sh
-
-# Noise expert experiments
-bash scripts/noise_expert/run_B_noise_expert_train_sample_eval.sh
-bash scripts/noise_expert/run_B_noise_expert_proj_train_sample_eval.sh
-bash scripts/noise_expert/run_B_noise_expert_ema_on_noise_train_sample_eval.sh
-bash scripts/noise_expert/run_B_noise_expert_ema_on_shared_train_sample_eval.sh
-
-# Expert contrastive experiments
-bash scripts/expert_contra/run_B_expert_contra_output_train_sample_eval.sh
-bash scripts/expert_contra/run_B_expert_contra_param_train_sample_eval.sh
+# Example: run a MoS experiment end-to-end
+bash scripts/MoS_repa/run_B_repa_mos_naive_choice_b3_5_train_sample_eval.sh
 ```
 
 ### VAE Latent Preprocessing (speeds up training)
@@ -141,46 +86,35 @@ python run_eval.py /path/to/generated/images --count 50000 --no-eval
 - `config.py`: Global defaults using EasyDict. Defines base model configs (`DiT_S_config` through `DiT_XL_config`) and MoE-specific configs (`DiffMoE_DiT_*`, `TCDiT_*`, `ECDiT_*`).
 - `configs/*.yaml`: Per-experiment overrides deep-merged onto `config.py` defaults at runtime via `deep_update()` in `utils.py`.
 - **Config merging flow**: ProMoE models reuse base DiT configs (e.g., `ProMoE_TC_L` maps to `DiT_L_config` in `model_dict`). The YAML adds `MoE_config` as a nested dict under the base config key (e.g., `DiT_L_config.MoE_config`), which `deep_update()` merges in. This means MoE parameters are not in `config.py` for ProMoE — they come entirely from YAML.
-- The YAML filename (minus extension) becomes `custom_cfg_name`, which determines the output subdirectory: `outputs/{model_name}/{custom_cfg_name}/`.
+- The YAML filename (minus extension) becomes `custom_cfg_name`, which determines the output subdirectory: `outputs/{model_name}/{custom_cfg_name}/` containing `checkpoints/`, `training.log`, `sample.log`, `tensorboard/`, and `sample/step{N}/`.
 
 ### Model Registry
 `train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, and `train_with_mae.py` each define a `model_dict` mapping `model_name` strings to `(ModelClass, config_key)` pairs. `sample.py` merges all four dicts so it can sample from any model variant. Adding a new model requires an entry in the appropriate training script's `model_dict`. Note: `train.py` hosts most model families (base DiT, baselines, ProMoE-TC/EC, noise expert variants, expert contrastive); `train_with_MoS_repa.py` hosts MoS, MoS Naive, MoS Naive Choice (B/L/XL), MoS Naive Choice Sep, MoS Naive Choice Blockwise, MoS Choice PerBlock, and Multi-Align variants; `train_with_mae.py` only hosts group_align models.
 
 ### Model Hierarchy (in `models/`)
-- `modules.py` — Shared building blocks: `Attention`, `PatchEmbed`, `TimestepEmbedder`, `LabelEmbedder`, `FinalLayer`, `MLP`/`Mlp`, `SwiGLU`, `MoeMLP`, and sinusoidal position embedding utilities.
-- `models_DiT.py` — Dense DiT baseline (no MoE). `DiTBlock` uses AdaLN-Zero modulation (6-param per-sample conditioning from timestep+class).
-- `models_TCDiT.py` / `models_ECDiT.py` — Token-Choice and Expert-Choice MoE baselines.
-- `models_DiffMoE.py` — DiffMoE baseline with capacity prediction.
-- **`models_ProMoE_TC.py`** — Main proposed model. `SparseMoeBlock` implements two-step routing: (1) conditional routing separates uncond tokens (class=1000) to a dedicated expert, (2) prototypical routing assigns cond tokens via cosine similarity to learnable `cluster_centers`. Includes routing contrastive loss via `AddAuxiliaryLoss` autograd trick.
-- `models_ProMoE_EC.py` — Expert-Choice variant of ProMoE (recommended for DDPM training).
-- `models_ProMoE_TC_repa.py` — ProMoE-TC with REPA projectors. Adds MLP projectors (`build_repa_projector`) that align intermediate DiT features with a frozen DINOv2 teacher encoder. In training, `forward()` returns `(pred, zs_proj)` where `zs_proj` is a list of projected features for REPA loss; in eval mode returns only `pred`.
-- `models_ProMoE_TC_repa_shared.py` — REPA variant that aligns the **shared expert output** (rather than the full block output) with the DINOv2 teacher. `SparseMoeBlock.forward()` returns `(final_output, loss, shared_output)` and `DiTBlock.forward()` returns `(x, shared_output)`. The projector at `encoder_depth` operates on `shared_output` instead of `x`. Requires `encoder_depth` to point to a MoE block (asserted at init).
-- `models_ProMoE_TC_repa_cond.py` — REPA variant with conditional-only alignment.
-- `models_ProMoE_TC_repa_dyna.py` — Dynamic REPA variant of ProMoE-TC with timestep-dependent REPA loss weighting.
-- `models_ProMoE_TC_repa_dyna_scale.py` — Dynamic REPA variant with learned scaling of the REPA projection.
-- `models_ProMoE_TC_repa_dyna_select.py` — Dynamic REPA variant with selective alignment (e.g., ratio-based token selection).
-- `models_ProMoE_TC_repa_dyna_only.py` — Dynamic REPA variant applying alignment only (no standard REPA fallback).
-- `models_ProMoE_TC_hierar.py` / `models_ProMoE_TC_hierar_expert.py` — Hierarchical routing variants. Used by configs `004_ProMoE_*_hierar*.yaml` and scripts under `scripts/hierar/`.
-- `models_ProMoE_TC_hierar_expert_repa_dyna.py` — Hierarchical expert routing combined with dynamic REPA alignment.
-- `models_ProMoE_TC_repa_router.py` — REPA variant with router-level alignment: K-Means clusters teacher features, projects cluster centers to prototype space via `router_projectors`, then uses Hungarian matching + negative cosine similarity to align prototypes with teacher clusters. No contrastive loss (`routing_contrastive_lam` must be 0). Router REPA loss injected via `AddAuxiliaryLoss`.
-- `models_ProMoE_TC_repa_router_contra.py` — Extends router REPA with contrastive routing loss using linear coefficient handoff: REPA alignment starts at full weight and decays to 0, while contrastive loss grows from 0 to full, over `router_loss_decay_steps`. Total lambda = `routing_contrastive_lam`.
-- `models_ProMoE_TC_repa_routed.py` — REPA variant aligning routed (expert-processed) features.
-- `models_ProMoE_TC_repa_double_share.py` — REPA variant with double shared expert architecture.
-- `models_ProMoE_TC_repa_MoS.py` — REPA variant with Mixture-of-Softmaxes routing. Uses `num_teacher_blocks` teacher feature blocks (instead of `encoder_depth`-based single alignment point). Trained via `train_with_MoS_repa.py`.
-- `models_ProMoE_TC_repa_MoS_naive.py` — Simplified/naive MoS REPA variant (in development on `repa` branch).
-- `models_ProMoE_TC_repa_MoS_choice.py` — MoS REPA variant with choice-based teacher block selection (in development on `repa` branch).
-- `models_ProMoE_TC_repa_MoS_naive_choice.py` — MoS REPA variant with a `BlockRouter` (bidirectional self-attention transformer) that produces per-token routing weights for teacher block selection. Configs specify teacher block ranges via `num_teacher_blocks` (e.g., `b3_5` = blocks 3–5). Trained via `train_with_MoS_repa.py`.
-- `models_ProMoE_TC_repa_MoS_naive_choice_.py` — "Sep" variant of MoS Naive Choice with separate projectors per teacher block (vs shared). Registered as `ProMoE_TC_REPA_MoS_Naive_Choice_Sep_B` in `train_with_MoS_repa.py`.
-- `models_ProMoE_TC_repa_MoS_naive_choice_blockwise.py` — Ablation variant of MoS Naive Choice with **block-wise routing**: mean-pools token features before routing head so all tokens within a block share the same `(m,)` routing weights. Only `BlockRouter.forward()` differs from `naive_choice`. Registered as `ProMoE_TC_REPA_MoS_Naive_Choice_Blockwise_B`.
-- `models_ProMoE_TC_repa_MoS_choice_per_block.py` — Per-block MoS routing variant. Replaces the global `BlockRouter` with per-aligned-block `PerBlockRouter` (single-layer transformer) that runs **after** each DiT block's output. Each router predicts `(N, T, m)` routing weights for its own block. Registered as `ProMoE_TC_REPA_MoS_Choice_PerBlock_B`.
-- `models_ProMoE_TC_repa_multi_align.py` — Multi-point REPA with fixed alignment to teacher **last layer** (like naive REPA). DiT blocks 3, 4, 5 (default) each have a projector. An `AlignCoefficientPredictor` (transformer-based) predicts per-token sigmoid alignment coefficients controlling alignment strength per block. Trained via `train_with_MoS_repa.py` (accepts `teacher_all_z`, uses only last layer). Registered as `ProMoE_TC_REPA_Multi_Align_B`.
-- `models_ProMoE_TC_group_align.py` — ProMoE-TC variant for group alignment experiments. Base ProMoE architecture without REPA; returns plain tensor from `forward()`. Trained via `train_with_mae.py`.
-- `models_ProMoE_TC_group_align_proj.py` — Group alignment variant with projection heads for alignment loss. Trained via `train_with_mae.py`.
-- `models_ProMoE_TC_noise_expert.py` — ProMoE-TC variant with a dedicated noise-level expert routing mechanism. Trained via `train.py`.
-- `models_ProMoE_TC_noise_expert_proj.py` — Noise expert variant with adaLN-conditioned AlignProjector per MoE block. Trained via `train.py`.
-- `models_ProMoE_TC_noise_expert_ema.py` — Noise expert variant where noise_expert is initialized from shared_expert and updated via EMA (decay=0.999, configurable) instead of gradient descent. `noise_target` hyperparameter (`"noise_expert"` or `"shared_expert"`) controls which expert receives the noised input. `DiT.update_noise_expert_ema()` must be called after each optimizer step (handled automatically in `train.py` via `hasattr` check). Trained via `train.py`.
-- `models_ProMoE_TC_expert_contra.py` — ProMoE-TC with expert representation contrastive loss added on top of routing contrastive loss. `expert_contrastive_mode` switches between `"output"` (pairwise L2 repulsion on mean-pooled expert outputs) and `"param"` (pairwise L2 repulsion on flattened expert parameters). `expert_contrastive_blocks` list controls which blocks compute this loss (asserts all selected blocks are MoE blocks). Trained via `train.py`.
-- `models_ProMoE_TC_sigmoid.py` / `models_ProMoE_TC_symmetric.py` — Routing ablation variants (sigmoid gating, symmetric routing).
+All model files follow the `models_*.py` naming convention. Key layers:
+
+- **`modules.py`** — Shared building blocks: `Attention`, `PatchEmbed`, `TimestepEmbedder`, `LabelEmbedder`, `FinalLayer`, `MLP`/`Mlp`, `SwiGLU`, `MoeMLP`.
+- **`models_DiT.py`** — Dense DiT baseline. `DiTBlock` uses AdaLN-Zero modulation (6-param per-sample conditioning from timestep+class). All ProMoE variants inherit this block structure.
+- **Baselines**: `models_TCDiT.py` (Token-Choice MoE), `models_ECDiT.py` (Expert-Choice MoE), `models_DiffMoE.py` (capacity prediction).
+- **`models_ProMoE_TC.py`** — Main proposed model. `SparseMoeBlock` implements two-step routing: (1) conditional routing separates uncond tokens (class=1000) to a dedicated expert, (2) prototypical routing assigns cond tokens via cosine similarity to learnable `cluster_centers`. Includes routing contrastive loss via `AddAuxiliaryLoss` autograd trick. `models_ProMoE_EC.py` is the Expert-Choice variant (recommended for DDPM).
+
+**Variant families** (all extend ProMoE-TC):
+
+| Family | Files | Training script | Key difference |
+|--------|-------|----------------|----------------|
+| REPA | `_repa.py`, `_repa_shared.py`, `_repa_cond.py` | `train_with_repa.py` | MLP projectors align DiT features with frozen DINOv2 teacher |
+| Dynamic REPA | `_repa_dyna.py`, `_dyna_scale.py`, `_dyna_select.py`, `_dyna_only.py` | `train_with_repa.py` | Timestep-dependent REPA loss weighting/selection |
+| Router REPA | `_repa_router.py`, `_repa_router_contra.py`, `_repa_routed.py`, `_repa_double_share.py` | `train_with_repa.py` | Alignment at router/prototype level instead of block output |
+| MoS REPA | `_repa_MoS.py`, `_MoS_naive.py`, `_MoS_naive_choice.py`, `_MoS_naive_choice_.py` (sep), `_MoS_naive_choice_blockwise.py`, `_MoS_choice_per_block.py` | `train_with_MoS_repa.py` | `BlockRouter` selects which teacher blocks to align with per-token |
+| Multi-Align | `_repa_multi_align.py` | `train_with_MoS_repa.py` | Per-token sigmoid coefficients from `AlignCoefficientPredictor` |
+| Hierarchical | `_hierar.py`, `_hierar_expert.py`, `_hierar_expert_repa_dyna.py` | `train.py` | Hierarchical routing structure |
+| Noise Expert | `_noise_expert.py`, `_noise_expert_proj.py`, `_noise_expert_ema.py` | `train.py` | Dedicated noise-level expert; EMA variant calls `update_noise_expert_ema()` after each optimizer step |
+| Expert Contrastive | `_expert_contra.py` | `train.py` | Pairwise L2 repulsion on expert outputs or params |
+| Group Align | `_group_align.py`, `_group_align_proj.py` | `train_with_mae.py` | Group alignment without REPA |
+| Ablations | `_sigmoid.py`, `_symmetric.py` | `train.py` | Routing gating variants |
+
+**REPA model forward() behavior**: Returns `(pred, zs_proj)` during training (eval returns only `pred`). The `_repa_shared.py` variant aligns shared expert output specifically — requires `encoder_depth` to point to a MoE block.
 
 ### Auxiliary Loss Convention
 Model `forward()` returns either a plain tensor (DiT) or a tuple for models with auxiliary losses:
@@ -198,51 +132,24 @@ Model `forward()` returns either a plain tensor (DiT) or a tuple for models with
 - `repa/encoder.py` also provides `extract_all_teacher_block_features()` (returns features from all intermediate blocks, used by MoS training) and `get_num_teacher_blocks()` (returns block count for a given encoder type).
 - `train_with_repa.py` — Extended training loop that loads raw images alongside VAE latents, extracts teacher features with `extract_teacher_features()`, and adds REPA projection loss to the total loss.
 
-### REPA Parameters (two-level `repa_config` in YAML)
-YAML files have **two** `repa_config` blocks with different scopes:
-- **`DiT_B_config.repa_config`** (nested under the model config key) — read by the model at init time. Controls projectors, encoder depth, and router REPA settings.
-- **Top-level `repa_config`** — read by `train_with_repa.py` training loop. Controls `enc_type` (teacher encoder to load) and `proj_coeff` (REPA loss weight).
+### REPA Parameters — Two-Level `repa_config` Gotcha
+YAML files have **two** `repa_config` blocks with different scopes — this is the most common source of config bugs:
+- **`DiT_B_config.repa_config`** (nested under the model config key) — read by the model at init time. Controls projectors (`encoder_depth`, `z_dims`, `projector_dim`), router REPA settings, and MoS-specific knobs (`align_blocks`, `num_teacher_blocks`, `mos_top_k`).
+- **Top-level `repa_config`** — read by the training loop. Controls `enc_type` (teacher encoder to load) and `proj_coeff` (REPA loss weight). `enc_type` must match between both levels.
 
-Model-level parameters (in `DiT_B_config.repa_config`):
-- `enc_type`: Teacher encoder model (e.g., `"dinov2-vit-b"`)
-- `encoder_depth`: Which transformer layer to extract student features from (e.g., 4)
-- `z_dims`: List of projection dimensions for alignment (e.g., `[768]`)
-- `projector_dim`: Hidden size of the 3-layer MLP projector (e.g., 2048)
-- `router_repa_coeff`: Weight of router REPA alignment loss (default 1, router models only)
-- `router_projector_dim`: Hidden size of router projector (defaults to `projector_dim`)
-- `kmeans_n_iters`: K-Means iterations for teacher feature clustering (default 10)
-
-MoS-specific model-level parameters (in `DiT_B_config.repa_config`):
-- `num_teacher_blocks`: Number of teacher encoder blocks to extract features from (e.g., 12 for dinov2-vit-b). Auto-injected by `train_with_MoS_repa.py` if not specified.
-- `align_blocks`: List of DiT block indices that participate in MoS alignment (e.g., `[2, 3, 4]` for blocks 3–5). Defaults vary by model: all blocks for MoS/MoS Naive, `[3, 4, 5]` for Multi-Align.
-- `mos_top_k`: Number of teacher blocks to select per token (default 2)
-- `mos_random_prob`: Epsilon-greedy exploration probability (default 0.05)
-- `router_hidden_dim`: Hidden dimension of BlockRouter/PerBlockRouter transformer (default: same as `hidden_size`)
-- `num_router_blocks`: Number of transformer layers in BlockRouter (default 2; PerBlockRouter always uses 1)
-- `router_num_heads`: Number of attention heads in the router transformer
-
-Training-level parameters (top-level `repa_config`):
-- `enc_type`: Teacher encoder model (must match model-level)
-- `proj_coeff`: Weight of REPA/MoS-REPA loss in total loss (e.g., 0.5)
+For MoS variants, `num_teacher_blocks` is auto-injected by `train_with_MoS_repa.py` if not specified. See existing YAML configs for the full parameter set.
 
 ### Key MoE Parameters (in YAML `MoE_config`)
-- `num_routed_experts`: Number of routable experts (typically 12)
-- `top_k`: Experts per token (default 1)
-- `routing_contrastive_lam`: Weight of contrastive loss (default 1.0). Must be 0 for `repa_router` model (no contrastive). For `repa_router_contra`, this is `router_aux_total_lam` (shared between REPA alignment and contrastive via linear handoff).
-- `router_loss_decay_steps`: Steps over which router REPA decays and contrastive grows (router_contra model only)
-- `routing_contrastive_temperature`: Contrastive loss temperature (default 0.07)
-- `use_shared_expert` / `use_uncond_expert`: Toggle shared global expert and dedicated unconditional expert
-- `interleave`: Whether to alternate MoE and dense FFN layers
-- `router_weight_mode`: How to weight expert outputs (`"softmax"`, `"identity"`)
-- `noise_target`: For noise_expert_ema model — which expert receives noised input (`"noise_expert"` or `"shared_expert"`)
-- `noise_expert_ema_decay`: EMA decay rate for noise expert parameter update (default 0.999)
-- `expert_contrastive_lam`: Weight of expert representation contrastive loss (default 0)
-- `expert_contrastive_temperature`: Temperature for pairwise L2 repulsion (default 0.5)
-- `expert_contrastive_mode`: `"output"` (mean-pooled expert outputs) or `"param"` (flattened expert parameters)
-- `expert_contrastive_blocks`: List of block indices where expert contrastive loss is computed (must be MoE blocks)
+Core parameters: `num_routed_experts` (typically 12), `top_k` (experts per token, default 1), `use_shared_expert`/`use_uncond_expert`, `interleave` (alternate MoE/dense layers).
+
+Constraints to know:
+- `routing_contrastive_lam` must be **0** for `repa_router` model. For `repa_router_contra`, it is the total budget shared between REPA alignment and contrastive via linear handoff over `router_loss_decay_steps`.
+- `expert_contrastive_blocks` must all be MoE blocks (asserted at init).
+- `noise_expert_ema` model: noise expert params are `requires_grad=False` and updated via EMA — excluded from optimizer.
 
 ### Training Pipeline (`train.py`)
-- PyTorch DDP for multi-GPU distributed training via `mp.spawn`
+- PyTorch DDP for multi-GPU distributed training via `mp.spawn`. The YAML `gpu_ids` field sets `CUDA_VISIBLE_DEVICES` and determines the DDP world size (`gpus_per_machine`).
+- Training hyperparameters (`lr`, `total_train_batch_size`, `weight_decay`, `num_steps`) are per-YAML — `config.py` only has framework defaults like `max_grad_norm`, `betas`, `weighting_scheme`.
 - Logit-normal timestep sampling (SD3-style) with Rectified Flow objective
 - Mixed precision with bfloat16; gradient clipping at `max_grad_norm=0.5`
 - EMA model maintained for stable generation
@@ -280,9 +187,17 @@ Training-level parameters (top-level `repa_config`):
 - No `tests/` directory; validate changes with `python -m py_compile <file>` for syntax checks and targeted smoke tests (short training run, sample pass).
 
 ### Shell Script Convention
-- **所有新建的 `.sh` 实验脚本必须以 `scripts/template.sh` 为模板**，否则另一台实验服务器无法运行。模板的关键模式包括：`set -euo pipefail`、通过 `SCRIPT_DIR`/`REPO_ROOT` 定位仓库根目录、用内联 Python 从 YAML 解析 `model_name`/`gpu_ids`/`num_fid_samples` 等参数、使用绝对 python 路径调用训练/采样/评估、以及 `find ... -name images | sort -V` 遍历评估目录。不要使用 `conda activate` 模式。
+- **All new `.sh` experiment scripts must use `scripts/template.sh` as a template** — otherwise the other experiment server cannot run them. Key template patterns: `set -euo pipefail`, locate repo root via `SCRIPT_DIR`/`REPO_ROOT`, parse `model_name`/`gpu_ids`/`num_fid_samples` from YAML using inline Python, call training/sampling/evaluation with absolute python paths, and `find ... -name images | sort -V` for evaluation directory traversal. Never use `conda activate`.
 - End-to-end scripts under `scripts/` use **absolute python paths** (e.g., `/mnt/workspace/yujie/.conda/envs/promoe/bin/python`) instead of `conda activate` for company server compatibility.
 - Training/sampling uses the `promoe` env; evaluation uses the `fid_eval` env.
+
+## Adding a New Experiment
+
+1. **Model**: Create `models/models_ProMoE_TC_<variant>.py`. Inherit from the closest existing variant. Follow `forward()` return conventions (see Auxiliary Loss Convention above).
+2. **Register**: Add a `(ModelClass, config_key)` entry to `model_dict` in the appropriate training script (`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, or `train_with_mae.py`). `sample.py` merges all dicts automatically.
+3. **Config**: Create `configs/004_ProMoE_<size>_<variant>.yaml`. Set `model_name` to match the registered key. Add `MoE_config` and/or `repa_config` under the model config key as needed.
+4. **Shell script**: Copy `scripts/template.sh` to `scripts/<family>/run_<size>_<variant>_train_sample_eval.sh`. Update `CONFIG` and `LOG` variables. Choose the correct training entrypoint in the train step.
+5. **Validate**: `python -m py_compile models/models_ProMoE_TC_<variant>.py` then a short training run.
 
 ## Important Notes
 - All paper results use `qk_norm=False`. Enable `qk_norm=True` for training beyond 2M steps.
@@ -291,7 +206,7 @@ Training-level parameters (top-level `repa_config`):
 - `cfg.data_path` in `config.py` must be set to your ImageNet train directory.
 - Multi-GPU sampling produces different random sequences than single-GPU (different class label ordering).
 - REPA training requires raw images (not just pre-computed latents) since the teacher encoder operates on pixel space. The dataset returns `(path, label, latent, raw_image)` when `load_raw_image=True`.
-- Offline/air-gapped training: pass `--vae-path /path/to/sd-vae-ft-mse` and `--repa-enc-path /path/to/dinov2_state_dict.pth` to skip automatic downloads. See `ProMoE-REPA.md` for details.
+- Offline/air-gapped training: all training scripts and `sample.py` accept `--vae-path`; `train_with_repa.py` and `train_with_MoS_repa.py` also accept `--repa-enc-path`. See `ProMoE-REPA.md` for details.
 - `preprocess/image_paths_cache.txt` caches the dataset file list; delete and rebuild it after switching datasets or reorganizing files.
 - When `use_pre_latents=True`, the latent directory must be a sibling of `train/` named `sd-vae-ft-mse_Latents_256img_npz` — the code derives latent paths by replacing `train` in image paths.
 
