@@ -108,7 +108,7 @@ DiT_B_config:
     num_teacher_blocks: 12
     z_dims: [768]
     projector_dim: 2048
-    align_blocks: [3, 4, 5]
+    align_blocks: [2, 3, 4]      # 0-indexed blocks 2,3,4
     mos_top_k: 2
     mos_random_prob: 0.05
     cross_align_type: "global_block"
