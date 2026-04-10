@@ -47,6 +47,7 @@ from models.models_ProMoE_TC_repa_cross_proto import DiT as ProMoE_TC_REPA_Cross
 from models.models_ProMoE_TC_repa_MoS_naive_choice_cross_global_pre import DiT as ProMoE_TC_REPA_MoS_CrossGlobalPre_DiT
 from models.models_ProMoE_TC_repa_MoS_naive_choice_cross_global_block import DiT as ProMoE_TC_REPA_MoS_CrossGlobalBlock_DiT
 from models.models_ProMoE_TC_repa_MoS_naive_choice_cross_expert_local import DiT as ProMoE_TC_REPA_MoS_CrossExpertLocal_DiT
+from models.models_ProMoE_TC_repa_MoS_naive_choice_cross_proto import DiT as ProMoE_TC_REPA_MoS_CrossProto_DiT
 from repa.encoder import load_teacher_encoder, extract_all_teacher_block_features, get_num_teacher_blocks
 from repa.loss import compute_repa_loss
 
@@ -69,6 +70,7 @@ model_dict = {
     "ProMoE_TC_REPA_MoS_CROSS_GLOBAL_PRE_B": (ProMoE_TC_REPA_MoS_CrossGlobalPre_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_MoS_CROSS_GLOBAL_BLOCK_B": (ProMoE_TC_REPA_MoS_CrossGlobalBlock_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_MoS_CROSS_EXPERT_LOCAL_B": (ProMoE_TC_REPA_MoS_CrossExpertLocal_DiT, "DiT_B_config"),
+    "ProMoE_TC_REPA_MoS_CROSS_PROTO_B": (ProMoE_TC_REPA_MoS_CrossProto_DiT, "DiT_B_config"),
 }
 
 
