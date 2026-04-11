@@ -329,6 +329,7 @@ class SparseMoeBlock(nn.Module):
         final_output = final_output.view(batch_size, seq_len, hidden_dim)
 
         ### process shared experts
+        shared_output = None
         if self.use_shared_expert:
             shared_output = self.shared_expert(hidden_states)
             final_output += shared_output
@@ -366,7 +367,7 @@ class SparseMoeBlock(nn.Module):
             else:
                 loss = routing_contrastive_loss
 
-        return final_output, loss
+        return final_output, loss, shared_output
 
     def compute_routing_contrastive_loss(self, token_embeddings, cluster_assignments, use_top_k=False):
         """
@@ -457,14 +458,14 @@ class DiTBlock(nn.Module):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=1)
         x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
         if self.use_moe:
-            x_mlp, aux_loss = self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp), label)
+            x_mlp, aux_loss, shared_output = self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp), label)
             if aux_loss is not None:
                 x_mlp = AddAuxiliaryLoss.apply(x_mlp, aux_loss)
             x = x + gate_mlp.unsqueeze(1) * x_mlp
-            return x
+            return x, shared_output
         else:
             x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
-            return x
+            return x, None
 
 
 class DiT(nn.Module):
@@ -541,7 +542,8 @@ class DiT(nn.Module):
             # Mapping: DiT block index -> projector/router column index
             self.align_block_to_idx = {b: i for i, b in enumerate(align_blocks)}
             num_align_blocks = len(align_blocks)
-            print(f"MoS REPA align_blocks ({num_align_blocks}/{depth}): {align_blocks}")
+            self.align_target = repa_config.get('align_target', 'block_output')
+            print(f"MoS REPA align_blocks ({num_align_blocks}/{depth}): {align_blocks}, align_target={self.align_target}")
 
             # Global transformer-based block router
             router_norm_type = repa_config.get('router_norm_type', 'layernorm')
@@ -567,6 +569,7 @@ class DiT(nn.Module):
             self.mos_random_prob = 0.05
             self.align_blocks = []
             self.align_block_to_idx = {}
+            self.align_target = 'block_output'
             self.block_router = None
             self.mos_projectors = None
 
@@ -713,11 +716,16 @@ class DiT(nn.Module):
 
         mos_repa_loss = torch.tensor(0.0, device=x.device)
         for i, block in enumerate(self.blocks):
-            x = block(x, c, labels)                      # (N, T, D)
+            x, shared_output = block(x, c, labels)       # (N, T, D), shared_output: (N, T, D) or None
             # Compute MoS REPA loss only for selected blocks
             if self.training and routing_weights is not None and i in self.align_block_to_idx:
                 align_idx = self.align_block_to_idx[i]
-                block_loss = self.compute_mos_repa_loss(x, i, align_idx, routing_weights, teacher_all_z, N, T, D)
+                # Use shared expert output for alignment when available, else block output
+                if self.align_target == 'shared_expert' and shared_output is not None:
+                    align_features = shared_output
+                else:
+                    align_features = x
+                block_loss = self.compute_mos_repa_loss(align_features, i, align_idx, routing_weights, teacher_all_z, N, T, D)
                 mos_repa_loss = mos_repa_loss + block_loss
 
         # Average over aligned blocks
