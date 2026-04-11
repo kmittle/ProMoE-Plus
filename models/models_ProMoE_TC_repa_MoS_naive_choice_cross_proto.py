@@ -668,7 +668,15 @@ class DiT(nn.Module):
         cond_mask = (labels != 1000).unsqueeze(1).expand(-1, T)  # (N, T)
         pair_cond = cond_mask.unsqueeze(2) & cond_mask.unsqueeze(1)  # (N, T, T)
 
-        # Outer product: sim_i * sim_j
+        # Clamp proto_sim to non-negative before computing cross-weights.
+        # Negative proto_sim (token anti-correlated with all prototypes) would
+        # produce negative off-diagonal entries, which can make the row_sum
+        # negative.  After clamp(min=1e-8) in row normalisation the resulting
+        # division by ~0 blows W up to ~1e8, causing the loss to spike.
+        # Clamping to 0 makes those tokens fall back to self-alignment only.
+        proto_sim = proto_sim.clamp(min=0)
+
+        # Outer product: sim_i * sim_j  (non-negative after clamp)
         outer_sim = proto_sim.unsqueeze(2) * proto_sim.unsqueeze(1)  # (N, T, T)
 
         # Combine: same expert + conditional + similarity outer product
@@ -731,10 +739,6 @@ class DiT(nn.Module):
             pair_cond = cond_mask.unsqueeze(2) & cond_mask.unsqueeze(1)
             W = cross_weights * pair_cond.float()
 
-        # Row normalization
-        row_sum = W.sum(dim=-1, keepdim=True).clamp(min=1e-8)
-        W = W / row_sum  # (N, T, T)
-
         # 4. Cross-alignment cos_sim for each selected teacher block
         z_proj_norm = F.normalize(z_proj, dim=-1)  # (N, T, D_z)
         total_loss = torch.tensor(0.0, device=x.device)
@@ -757,8 +761,10 @@ class DiT(nn.Module):
                 # Cross cos_sim: (N, T, T)
                 cos_sim_matrix = torch.bmm(z_proj_norm, teacher_norm.transpose(1, 2))
 
-                # Weighted cross-alignment similarity per token
+                # Weighted cross-alignment similarity per token, normalized by
+                # W row sum so cross_sim is a proper weighted average (bounded [-1,1]).
                 cross_sim = (W * cos_sim_matrix).sum(dim=-1)  # (N, T)
+                cross_sim = cross_sim / W.sum(dim=-1).clamp(min=1)  # (N, T)
 
                 k_loss = k_loss + (-(cross_sim * selected_block_weight) * token_mask.float()).sum()
 

@@ -492,7 +492,15 @@ class DiT(nn.Module):
         cond_mask = (labels != 1000).unsqueeze(1).expand(-1, T)  # (N, T)
         pair_cond = cond_mask.unsqueeze(2) & cond_mask.unsqueeze(1)  # (N, T, T)
 
-        # Outer product: sim_i * sim_j
+        # Clamp proto_sim to non-negative before computing cross-weights.
+        # Negative proto_sim (token anti-correlated with all prototypes) would
+        # produce negative off-diagonal entries, which can make the row_sum
+        # negative.  After clamp(min=1e-8) in row normalisation the resulting
+        # division by ~0 blows W up to ~1e8, causing the loss to spike.
+        # Clamping to 0 makes those tokens fall back to self-alignment only.
+        proto_sim = proto_sim.clamp(min=0)
+
+        # Outer product: sim_i * sim_j  (non-negative after clamp)
         outer_sim = proto_sim.unsqueeze(2) * proto_sim.unsqueeze(1)  # (N, T, T)
 
         # Combine: same expert + conditional + similarity outer product
@@ -537,11 +545,9 @@ class DiT(nn.Module):
 
         W = cross_weights * expert_mask.float() * pair_cond.float()
 
-        row_sum = W.sum(dim=-1, keepdim=True).clamp(min=1e-8)
-        W = W / row_sum
-
-        num_cond_tokens = token_cond.sum()
-        loss = -(W * cos_sim).sum() / num_cond_tokens.clamp(min=1)
+        # Normalize by total weight (not token count) so the loss is a proper
+        # weighted average of cosine similarities, bounded in [-1, 1].
+        loss = -(W * cos_sim).sum() / W.sum().clamp(min=1)
 
         return loss
 
