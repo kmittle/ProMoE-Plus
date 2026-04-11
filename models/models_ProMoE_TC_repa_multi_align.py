@@ -523,18 +523,24 @@ class DiT(nn.Module):
             self.align_blocks = align_blocks
             self.align_block_to_idx = {b: i for i, b in enumerate(align_blocks)}
             num_align_blocks = len(align_blocks)
-            print(f"Multi-point REPA align_blocks ({num_align_blocks}/{depth}): {align_blocks}")
 
-            # Transformer-based alignment coefficient predictor
-            self.align_coeff_predictor = AlignCoefficientPredictor(
-                hidden_size=hidden_size,
-                cond_size=hidden_size,
-                num_align_blocks=num_align_blocks,
-                router_hidden_dim=router_hidden_dim,
-                num_router_blocks=num_router_blocks,
-                num_heads=router_num_heads,
-                qk_norm=qk_norm,
-            )
+            # Dynamic coefficient predictor (can be disabled for uniform weighting)
+            self.use_dynamic_coeff = repa_config.get('use_dynamic_coeff', True)
+            print(f"Multi-point REPA align_blocks ({num_align_blocks}/{depth}): {align_blocks}, use_dynamic_coeff={self.use_dynamic_coeff}")
+
+            if self.use_dynamic_coeff:
+                # Transformer-based alignment coefficient predictor
+                self.align_coeff_predictor = AlignCoefficientPredictor(
+                    hidden_size=hidden_size,
+                    cond_size=hidden_size,
+                    num_align_blocks=num_align_blocks,
+                    router_hidden_dim=router_hidden_dim,
+                    num_router_blocks=num_router_blocks,
+                    num_heads=router_num_heads,
+                    qk_norm=qk_norm,
+                )
+            else:
+                self.align_coeff_predictor = None
 
             # Per-block projectors (project DiT features to teacher embedding space)
             self.projectors = nn.ModuleList([
@@ -543,6 +549,7 @@ class DiT(nn.Module):
         else:
             self.align_blocks = []
             self.align_block_to_idx = {}
+            self.use_dynamic_coeff = True
             self.align_coeff_predictor = None
             self.projectors = None
 
@@ -614,12 +621,12 @@ class DiT(nn.Module):
     def compute_multi_align_loss(self, x, align_idx, align_coeffs, teacher_z, N, T, D):
         """
         Compute multi-point REPA loss for a single DiT block.
-        Aligns with the teacher's last layer, weighted by predicted sigmoid coefficient.
+        Aligns with the teacher's last layer, optionally weighted by predicted sigmoid coefficient.
 
         Args:
             x: (N, T, D) block output features
             align_idx: index into self.projectors and align_coeffs columns
-            align_coeffs: (N, T, n) sigmoid coefficients from AlignCoefficientPredictor
+            align_coeffs: (N, T, n) sigmoid coefficients, or None for uniform weighting
             teacher_z: (N, T, D_teacher) teacher last-layer features
             N, T, D: batch size, num tokens, hidden dim
 
@@ -634,9 +641,13 @@ class DiT(nn.Module):
         teacher_norm = F.normalize(teacher_z, dim=-1)      # (N, T, D_teacher)
         neg_cos_sim = -(z_proj_norm * teacher_norm).sum(dim=-1)  # (N, T)
 
-        # Weight by predicted alignment coefficient for this block
-        coeff = align_coeffs[:, :, align_idx]  # (N, T)
-        block_loss = (neg_cos_sim * coeff).mean()  # scalar
+        if align_coeffs is not None:
+            # Weight by predicted alignment coefficient for this block
+            coeff = align_coeffs[:, :, align_idx]  # (N, T)
+            block_loss = (neg_cos_sim * coeff).mean()  # scalar
+        else:
+            # Uniform weighting
+            block_loss = neg_cos_sim.mean()  # scalar
 
         return block_loss
 
@@ -668,21 +679,22 @@ class DiT(nn.Module):
         # Pre-compute alignment coefficients and extract teacher last-layer features
         align_coeffs = None
         teacher_z = None
-        if self.training and self.align_coeff_predictor is not None and teacher_all_z is not None:
-            align_coeffs = self.align_coeff_predictor(x, c)  # (N, T, n)
+        if self.training and self.projectors is not None and teacher_all_z is not None:
+            if self.align_coeff_predictor is not None:
+                align_coeffs = self.align_coeff_predictor(x, c)  # (N, T, n)
             teacher_z = teacher_all_z[-1]  # (N, T, D_teacher) — last layer only
 
         repa_loss = torch.tensor(0.0, device=x.device)
         for i, block in enumerate(self.blocks):
             x = block(x, c, labels)                      # (N, T, D)
             # Compute alignment loss only for selected blocks
-            if self.training and align_coeffs is not None and i in self.align_block_to_idx:
+            if self.training and teacher_z is not None and i in self.align_block_to_idx:
                 align_idx = self.align_block_to_idx[i]
                 block_loss = self.compute_multi_align_loss(x, align_idx, align_coeffs, teacher_z, N, T, D)
                 repa_loss = repa_loss + block_loss
 
         # Average over aligned blocks
-        if self.training and align_coeffs is not None and len(self.align_blocks) > 0:
+        if self.training and teacher_z is not None and len(self.align_blocks) > 0:
             repa_loss = repa_loss / len(self.align_blocks)
 
         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
