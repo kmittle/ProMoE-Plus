@@ -77,6 +77,7 @@ class BlockRouter(nn.Module):
         num_heads=8,
         mlp_ratio=4.0,
         qk_norm=False,
+        router_norm_type="layernorm",
     ):
         super().__init__()
         self.num_teacher_blocks = num_teacher_blocks
@@ -85,12 +86,14 @@ class BlockRouter(nn.Module):
             router_hidden_dim = hidden_size
         self.router_hidden_dim = router_hidden_dim
 
+        norm_cls = nn.RMSNorm if router_norm_type == "rmsnorm" else nn.LayerNorm
+
         # Input projections
-        self.x_norm = nn.LayerNorm(hidden_size, eps=1e-6)
+        self.x_norm = norm_cls(hidden_size, eps=1e-6)
         self.x_proj = nn.Linear(hidden_size, router_hidden_dim, bias=False)
 
         # Conditioning projection: timestep + class -> extra token
-        self.c_norm = nn.LayerNorm(cond_size, eps=1e-6)
+        self.c_norm = norm_cls(cond_size, eps=1e-6)
         self.c_proj = nn.Linear(cond_size, router_hidden_dim, bias=False)
 
         # Router transformer blocks (2 blocks, bidirectional self-attention)
@@ -541,6 +544,7 @@ class DiT(nn.Module):
             print(f"MoS REPA align_blocks ({num_align_blocks}/{depth}): {align_blocks}")
 
             # Global transformer-based block router
+            router_norm_type = repa_config.get('router_norm_type', 'layernorm')
             self.block_router = BlockRouter(
                 hidden_size=hidden_size,
                 cond_size=hidden_size,  # c = t_embed + y_embed, same dim as hidden_size
@@ -550,6 +554,7 @@ class DiT(nn.Module):
                 num_router_blocks=num_router_blocks,
                 num_heads=router_num_heads,
                 qk_norm=qk_norm,
+                router_norm_type=router_norm_type,
             )
 
             # Projectors only for selected blocks
