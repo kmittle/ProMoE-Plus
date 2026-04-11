@@ -278,7 +278,7 @@ class SparseMoeBlock(nn.Module):
         if cond_mask.any():
             top1_idx = topk_idx[:, 0]  # (num_cond,)
             top1_sim = cos_sim[torch.arange(len(top1_idx), device=device), top1_idx]  # (num_cond,)
-            proto_sim[cond_positions] = top1_sim
+            proto_sim[cond_positions] = top1_sim.to(proto_sim.dtype)
         self._proto_sim = proto_sim.view(batch_size, seq_len)  # (N, T)
 
         ### load balancing loss (not used in ProMoE)

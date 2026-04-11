@@ -89,7 +89,7 @@ python run_eval.py /path/to/generated/images --count 50000 --no-eval
 - The YAML filename (minus extension) becomes `custom_cfg_name`, which determines the output subdirectory: `outputs/{model_name}/{custom_cfg_name}/` containing `checkpoints/`, `training.log`, `sample.log`, `tensorboard/`, and `sample/step{N}/`.
 
 ### Model Registry
-`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, and `train_with_mae.py` each define a `model_dict` mapping `model_name` strings to `(ModelClass, config_key)` pairs. `sample.py` merges all four dicts so it can sample from any model variant. Adding a new model requires an entry in the appropriate training script's `model_dict`. Note: `train.py` hosts most model families (base DiT, baselines, ProMoE-TC/EC, noise expert variants, expert contrastive); `train_with_MoS_repa.py` hosts MoS, MoS Naive, MoS Naive Choice (B/L/XL), MoS Naive Choice Sep, MoS Naive Choice Blockwise, MoS Choice PerBlock, and Multi-Align variants; `train_with_mae.py` only hosts group_align models.
+`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, and `train_with_mae.py` each define a `model_dict` mapping `model_name` strings to `(ModelClass, config_key)` pairs. `sample.py` merges all four dicts so it can sample from any model variant. Adding a new model requires an entry in the appropriate training script's `model_dict`. Note: `train.py` hosts most model families (base DiT, baselines, ProMoE-TC/EC, noise expert variants, expert contrastive); `train_with_MoS_repa.py` hosts MoS, MoS Naive, MoS Naive Choice (B/L/XL), MoS Naive Choice Sep, MoS Naive Choice Blockwise, MoS Choice PerBlock, Multi-Align, and Cross-Attention variants (both standard REPA and MoS); `train_with_mae.py` only hosts group_align models.
 
 ### Model Hierarchy (in `models/`)
 All model files follow the `models_*.py` naming convention. Key layers:
@@ -112,6 +112,8 @@ All model files follow the `models_*.py` naming convention. Key layers:
 | Noise Expert | `_noise_expert.py`, `_noise_expert_proj.py`, `_noise_expert_ema.py` | `train.py` | Dedicated noise-level expert; EMA variant calls `update_noise_expert_ema()` after each optimizer step |
 | Expert Contrastive | `_expert_contra.py` | `train.py` | Pairwise L2 repulsion on expert outputs or params |
 | Group Align | `_group_align.py`, `_group_align_proj.py` | `train_with_mae.py` | Group alignment without REPA |
+| Cross-Attention | `_repa_cross_global_pre.py`, `_repa_cross_global_block.py`, `_repa_cross_expert_local.py`, `_repa_cross_proto.py` | `train_with_MoS_repa.py` | Inter-token attention-weighted REPA alignment at different positions (pre-MoE, block, expert-local, prototype) |
+| Cross-Attention MoS | `_repa_MoS_naive_choice_cross_global_pre.py`, `..._block.py`, `..._expert_local.py`, `..._proto.py` | `train_with_MoS_repa.py` | MoS + cross-attention alignment (combines block router teacher selection with cross-alignment) |
 | Ablations | `_sigmoid.py`, `_symmetric.py` | `train.py` | Routing gating variants |
 
 **REPA model forward() behavior**: Returns `(pred, zs_proj)` during training (eval returns only `pred`). The `_repa_shared.py` variant aligns shared expert output specifically — requires `encoder_depth` to point to a MoE block.
@@ -123,6 +125,7 @@ Model `forward()` returns either a plain tensor (DiT) or a tuple for models with
 - **ProMoE-REPA**: Returns `(pred, zs_proj)` during training. The training loop in `train_with_repa.py` computes `compute_repa_loss(teacher_z, zs_proj)` and adds it weighted by `proj_coeff`. Total loss = MSE + REPA loss * `proj_coeff` + routing contrastive loss (via autograd).
 - **ProMoE-MoS-REPA**: Returns `(pred, mos_repa_loss)` during training, where `mos_repa_loss` is a scalar computed inside the model (weighted cosine similarity across selected teacher blocks). The training loop in `train_with_MoS_repa.py` multiplies by `proj_coeff` (default 0.5). Total loss = MSE + mos_repa_loss * `proj_coeff` + routing contrastive loss (via autograd). Note: `teacher_all_z` (all teacher block features) is passed to forward; the model selects which teacher blocks to align with via its router.
 - **ProMoE-Multi-Align**: Returns `(pred, repa_loss)` during training. Similar to MoS-REPA but aligns with teacher last layer only; `AlignCoefficientPredictor` produces per-token sigmoid coefficients that weight the alignment loss. Also trained via `train_with_MoS_repa.py`.
+- **ProMoE-Cross-Attention**: Returns `(pred, cross_align_loss)` during training. The cross-alignment loss uses attention weights (global, block-level, expert-local, or prototype-based) to weight the cosine similarity between student projections and teacher features. Computed inside the model via `compute_cross_align_loss()`. Trained via `train_with_MoS_repa.py` with same `proj_coeff` weighting.
 
 ### REPA Module (`repa/` vs `REPA/`)
 - `repa/` (lowercase) — ProMoE's REPA integration: encoder loading, loss computation, used by `train_with_repa.py`.
@@ -214,3 +217,4 @@ Constraints to know:
 - `ProMoE-REPA.md` — Detailed guide for all REPA variant workflows, configuration reference, and FAQ.
 - `AGENTS.md` — Full project structure reference, output layout, testing guidelines, and commit conventions.
 - `analyses/README.md` — Overview of analysis entrypoints; per-script usage in `analyses/<basename>.md` files.
+- `plans/` — Implementation plans for Cross-Attention variants (`plan_01` through `plan_08`), covering both standard REPA and MoS cross-alignment designs.
