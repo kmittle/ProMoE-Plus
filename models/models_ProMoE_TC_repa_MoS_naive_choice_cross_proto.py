@@ -759,7 +759,10 @@ class DiT(nn.Module):
                 teacher_norm = F.normalize(teacher_z, dim=-1)
 
                 # Cross cos_sim: (N, T, T)
-                cos_sim_matrix = torch.bmm(z_proj_norm, teacher_norm.transpose(1, 2))
+                # Clamp to [-1, 1] to enforce the mathematical range of cosine similarity;
+                # under bf16 autocast, F.normalize + bmm can slip outside this range due
+                # to rsqrt/matmul precision, which previously triggered loss spikes.
+                cos_sim_matrix = torch.bmm(z_proj_norm, teacher_norm.transpose(1, 2)).clamp(-1.0, 1.0)
 
                 # Weighted cross-alignment similarity per token, normalized by
                 # W row sum so cross_sim is a proper weighted average (bounded [-1,1]).

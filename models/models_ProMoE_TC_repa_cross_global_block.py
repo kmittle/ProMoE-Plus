@@ -575,7 +575,10 @@ class DiT(nn.Module):
         teacher_norm = F.normalize(teacher_z, dim=-1)
 
         # Cosine similarity matrix: (N, T, T)
-        cos_sim = torch.bmm(z_proj_norm, teacher_norm.transpose(1, 2))
+        # Clamp to [-1, 1] to enforce the mathematical range of cosine similarity;
+        # under bf16 autocast, F.normalize + bmm can slip outside this range due
+        # to rsqrt/matmul precision, which previously triggered loss spikes.
+        cos_sim = torch.bmm(z_proj_norm, teacher_norm.transpose(1, 2)).clamp(-1.0, 1.0)
 
         # Same-expert mask: (N, T, T)
         top1_experts = expert_indices[:, :, 0]  # (N, T)
@@ -632,8 +635,13 @@ class DiT(nn.Module):
             # Compute cross-alignment loss at encoder_depth
             if self.training and self.projectors is not None and (i + 1) == self.encoder_depth:
                 if teacher_all_z is not None:
-                    # Compute attention map at block output
-                    cross_attn_map = self.block_align_attn(x)  # (N, T, T)
+                    # Compute attention map at block output.
+                    # Detach x so the attention path does not leak gradient
+                    # back into block-(encoder_depth); block-(encoder_depth)
+                    # only receives REPA gradient via the projection path,
+                    # matching the plan 01 (global_pre) decoupling that
+                    # trains stably. See crash_diagnosis_report.md.
+                    cross_attn_map = self.block_align_attn(x.detach())  # (N, T, T)
                     # Get routing info from this block's SparseMoeBlock
                     expert_indices = block.mlp._expert_indices  # (N, T, top_k)
                     # Use last teacher block (consistent with naive REPA alignment target)

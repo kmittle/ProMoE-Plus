@@ -584,7 +584,10 @@ class DiT(nn.Module):
         z_proj_norm = F.normalize(z_proj, dim=-1)
         teacher_norm = F.normalize(teacher_z, dim=-1)
 
-        cos_sim = torch.bmm(z_proj_norm, teacher_norm.transpose(1, 2))
+        # Clamp to [-1, 1] to enforce the mathematical range of cosine similarity;
+        # under bf16 autocast, F.normalize + bmm can slip outside this range due
+        # to rsqrt/matmul precision, which previously triggered loss spikes.
+        cos_sim = torch.bmm(z_proj_norm, teacher_norm.transpose(1, 2)).clamp(-1.0, 1.0)
 
         top1_experts = expert_indices[:, :, 0]
         expert_mask = (top1_experts.unsqueeze(2) == top1_experts.unsqueeze(1))
@@ -644,7 +647,12 @@ class DiT(nn.Module):
                     )
 
                     # Compute expert-local attention map
-                    cross_attn_map = self.expert_local_attn(x, expert_local_mask)
+                    # Detach x so the attention path does not leak gradient
+                    # back into block-(encoder_depth); block-(encoder_depth)
+                    # only receives REPA gradient via the projection path,
+                    # matching the plan 01 (global_pre) decoupling that
+                    # trains stably. See crash_diagnosis_report.md.
+                    cross_attn_map = self.expert_local_attn(x.detach(), expert_local_mask)
 
                     teacher_z = teacher_all_z[-1]  # last teacher block
                     z_proj = self.projectors[0](x.reshape(-1, D)).reshape(N, T, -1)

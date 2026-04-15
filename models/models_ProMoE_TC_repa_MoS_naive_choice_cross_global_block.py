@@ -752,7 +752,10 @@ class DiT(nn.Module):
                 teacher_norm = F.normalize(teacher_z, dim=-1)
 
                 # Cross cos_sim: (N, T, T)
-                cos_sim_matrix = torch.bmm(z_proj_norm, teacher_norm.transpose(1, 2))
+                # Clamp to [-1, 1] to enforce the mathematical range of cosine similarity;
+                # under bf16 autocast, F.normalize + bmm can slip outside this range due
+                # to rsqrt/matmul precision, which previously triggered loss spikes.
+                cos_sim_matrix = torch.bmm(z_proj_norm, teacher_norm.transpose(1, 2)).clamp(-1.0, 1.0)
 
                 # Weighted cross-alignment similarity per token
                 cross_sim = (W * cos_sim_matrix).sum(dim=-1)  # (N, T)
@@ -805,8 +808,12 @@ class DiT(nn.Module):
                 align_idx = self.align_block_to_idx[i]
                 expert_indices = block.mlp._expert_indices if block.use_moe else None
 
-                # Compute per-block attention map at this block's output
-                cross_attn_map = self.block_align_attns[align_idx](x)  # (N, T, T)
+                # Compute per-block attention map at this block's output.
+                # Detach x so the attention path does not leak gradient back
+                # into the aligned DiT block; the block only receives REPA
+                # gradient via the projection path, matching the plan 05
+                # (global_pre) decoupling that trains stably.
+                cross_attn_map = self.block_align_attns[align_idx](x.detach())  # (N, T, T)
 
                 block_loss = self.compute_cross_mos_repa_loss(
                     x, align_idx, routing_weights, teacher_all_z,
