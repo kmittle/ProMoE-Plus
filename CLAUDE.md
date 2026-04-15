@@ -49,9 +49,9 @@ Scripts under `scripts/` run train + sample + eval in one go. Organized by exper
 
 | Directory | Variants |
 |-----------|----------|
-| `scripts/repa/` | REPA, REPA-Shared, REPA-Cond, Router, Router-Contra, Routed, Double-Share |
+| `scripts/repa/` | REPA, REPA-Shared, REPA-Cond, Router, Router-Contra, Routed, Double-Share, Cross-Attention (global-pre/global-block/expert-local/proto), L/XL scale-up |
 | `scripts/dynamic_repa/` | REPA-Dyna, Dyna-Select (r25/r75), Dyna-Scale, Dyna-Only |
-| `scripts/MoS_repa/` | MoS, MoS Naive, MoS Naive Choice (block ranges, Sep, Blockwise, PerBlock, Multi-Align, proj_coeff ablations, L/XL scale-up) |
+| `scripts/MoS_repa/` | MoS, MoS Naive, MoS Naive Choice (block-range sweep, Sep, Blockwise, PerBlock, Fused, Shared-Align, RMSNorm, No-Coeff, proj_coeff sweep), Multi-Align (±dynamic), Cross-Attention MoS, L/XL scale-up |
 | `scripts/hierar/` | Hierarchical, Hierarchical-Expert, NoPenalty, Expert-REPA-Dyna |
 | `scripts/mae_align/` | MAE alignment, MAE alignment with projection |
 | `scripts/noise_expert/` | Noise expert, Noise expert proj, EMA on noise/shared |
@@ -143,6 +143,15 @@ YAML files have **two** `repa_config` blocks with different scopes — this is t
 - **Top-level `repa_config`** — read by the training loop. Controls `enc_type` (teacher encoder to load) and `proj_coeff` (REPA loss weight). `enc_type` must match between both levels.
 
 For MoS variants, `num_teacher_blocks` is auto-injected by `train_with_MoS_repa.py` if not specified. See existing YAML configs for the full parameter set.
+
+### Cross-Alignment Stability Constraints
+Cross-alignment variants (`cross_global_pre`, `cross_global_block`, `cross_expert_local`, `cross_proto`, and their MoS counterparts) have two constraints any new variant must preserve:
+
+1. **Clamp `cos_sim` to `[-1, 1]` after `F.normalize + torch.bmm`.** Under bf16 autocast, `rsqrt` and `matmul` precision can produce cosine similarities slightly outside `[-1, 1]`, which accumulates into loss spikes and eventual MSE divergence (observed in plans 04, 08 crashes). Every `compute_cross_align_loss` / `compute_cross_mos_repa_loss` in the 8 cross-alignment models applies `.clamp(-1.0, 1.0)` after `torch.bmm(z_proj_norm, teacher_norm.T)`.
+
+2. **Detach the block output before feeding it to a block-wise weight-prediction module.** For `cross_global_block` and `cross_expert_local` variants (both standard and MoS), the attention module that predicts cross-alignment weights consumes the aligned DiT block's output `x`. Without `x.detach()`, two gradient paths leak into the same block: the projection path (which pushes features toward teacher) and the attention path (which pushes features to differentiate same-expert tokens for sharp attention). This creates gradient conflict and manifests as early MSE spikes (plan 03: step ~9890) or late MSE divergence (plan 02: step ~371k). The fix: call the attention module with `x.detach()` (e.g. `self.expert_local_attn(x.detach(), mask)`), keep the projection call on the original `x`. The attention module's internal parameters still receive gradient via `cross_align_loss`; only the gradient flow back into the DiT block is cut. `cross_global_pre` variants are exempt because they apply attention to the initial patch embedding (before any DiT block), and `cross_proto` variants are exempt because their weights come from MoE routing (`_proto_sim`) rather than a dedicated weight-prediction module.
+
+See `crash_diagnosis_report.md` for the full investigation.
 
 ### Key MoE Parameters (in YAML `MoE_config`)
 Core parameters: `num_routed_experts` (typically 12), `top_k` (experts per token, default 1), `use_shared_expert`/`use_uncond_expert`, `interleave` (alternate MoE/dense layers).
