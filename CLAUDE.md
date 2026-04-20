@@ -153,6 +153,26 @@ Cross-alignment variants (`cross_global_pre`, `cross_global_block`, `cross_exper
 
 See `crash_diagnosis_report.md` for the full investigation.
 
+### TrainingMonitor (Crash Diagnosis Utility)
+`utils.py` exposes a `TrainingMonitor` class that captures the precursor signals relevant to the cross-alignment crashes above (attention-row collapse, exploding projector features, runaway per-group grad norms, routing collapse, loss jumps). It is designed to be wired into a crashed model's re-run with minimal changes:
+
+```python
+from utils import TrainingMonitor
+monitor = TrainingMonitor(model, logger=logger, log_every=cfg.log_interval,
+                          enabled=(rank == 0))
+# inside the training loop, AFTER backward() + clip_grad_norm_, BEFORE zero_grad():
+monitor.on_step(step, losses=logged_loss_dict)
+```
+
+Mechanics — all non-invasive, no model code changes required:
+- Installs `forward_hook`s by **class name** on `ExpertLocalAttention` / `BlockAlignAttention` / `GlobalPreAttention` (attention maps), `CoeffPredictor` / `AlignCoefficientPredictor` (per-token sigmoid coefficients), and `BlockRouter` / `PerBlockRouter` / `AdaLNRouter` (router outputs — dispatched per class because the three have different output shapes and softmax conventions).
+- Auto-detects any top-level `nn.ModuleList` whose attribute name ends in `projectors` — covers `projectors`, `mos_projectors`, `align_projectors`, `router_projectors`.
+- Iterates `named_parameters()` each step for grad-norm stats grouped by param-name substring (attn_modules / projectors / block_router / coeff_predictor / cluster_centers / shared_expert / moe_experts / backbone). Frozen params (`requires_grad=False`, e.g. `pos_embed`, `noise_expert_ema` params) are skipped.
+- `cluster_centers` is a parameter inside each `SparseMoeBlock` (NOT on the top-level DiT), so stats are aggregated via `named_parameters()` traversal, not a top-level attribute lookup.
+- `ExpertLocalAttention` uses masked softmax + `nan_to_num(0)`, which produces fully-zero rows for uncond tokens (labels==1000) by design (~10% under CFG). The attention hook filters to "active rows" (`row_sum > 1e-4`) before computing min/max, and reports `inactive_frac` as a benign diagnostic instead of an alert.
+- Dense DiT / non-MoE / non-REPA models degrade gracefully — no hooks are installed, only backbone grad norms are reported.
+- Every stat path is wrapped in try/except so a monitoring bug cannot take the training run down.
+
 ### Key MoE Parameters (in YAML `MoE_config`)
 Core parameters: `num_routed_experts` (typically 12), `top_k` (experts per token, default 1), `use_shared_expert`/`use_uncond_expert`, `interleave` (alternate MoE/dense layers).
 

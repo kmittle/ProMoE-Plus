@@ -1,4 +1,5 @@
 import os
+import math
 import logging
 import torch
 import torch.nn as nn
@@ -405,3 +406,679 @@ def str_to_float_list(arg_string):
     except ValueError:
         msg = f"'{arg_string}' contains values ​​that cannot be converted to floating-point numbers."
         raise argparse.ArgumentTypeError(msg)
+
+
+# =============================================================================
+# TrainingMonitor — non-invasive statistics for diagnosing crashed models.
+#
+# Observed crashes (plans 02/03/04/08) shared the same symptom — MSE stays
+# healthy for thousands of steps, then suddenly spikes and never recovers.
+# This monitor is designed to surface the *precursor* signals in the hope that
+# a re-run on a fixed model exposes the leading indicator (attention-row
+# collapse, exploding projector features, a single group's grad norm running
+# away, etc.).
+#
+# Design goals:
+#   * Zero model code changes — uses `forward_hook`s keyed on class name and
+#     `named_parameters` iteration for gradient stats.
+#   * Minimal training-script changes — construct once after the model is
+#     built, call `on_step(step, losses=...)` once per optimizer step (after
+#     `backward()`, before `zero_grad()`), optional `close()` at the end.
+#   * Cheap — every stat is reduced to a python float on the captured
+#     tensor's device, never keeps whole feature maps alive.
+#   * Safe — the whole pipeline is wrapped in try/except so a monitoring bug
+#     cannot take the training run down with it.
+# =============================================================================
+
+
+class TrainingMonitor:
+    """Collect per-step statistics on cross-alignment / REPA modules.
+
+    What it captures (rank-0 only by default):
+        * Attention map W from cross-alignment modules (ExpertLocalAttention,
+          BlockAlignAttention, GlobalPreAttention) — min/max/mean, row-sum
+          min/max, fraction of near-empty rows, NaN/Inf counts.
+        * Projector outputs (REPA `projectors` / MoS `mos_projectors`) —
+          token-norm min/max/mean, max-abs, NaN/Inf counts.
+        * Coefficient-predictor outputs (`CoeffPredictor`,
+          `AlignCoefficientPredictor`) — per-sample sigmoid coefficient
+          min/max/mean.
+        * BlockRouter outputs — routing-weight max/mean and per-token entropy
+          (detects collapse onto a single teacher block).
+        * `cluster_centers` parameter norm min/max/mean (one per step).
+        * Gradient statistics grouped by parameter-name substring:
+            attn_modules, projectors, block_router, cluster_centers,
+            coeff_predictor, moe_experts, backbone.
+          Each group reports total L2 norm + NaN/Inf param count. `global`
+          reports the same across all parameters.
+        * Loss values passed via `on_step(losses=...)` — tracked with a simple
+          exponential moving average + a relative-jump alert.
+
+    Usage:
+        >>> from utils import TrainingMonitor
+        >>> monitor = TrainingMonitor(
+        ...     model, logger=logging.getLogger(),
+        ...     log_every=cfg.log_interval,
+        ...     enabled=(cfg.rank == 0),
+        ... )
+        >>> # inside the training loop, after backward(), before optimizer.step():
+        >>> monitor.on_step(step, losses=logged_loss_dict)
+        >>> # ... (optional at end)
+        >>> monitor.close()
+
+    The monitor logs a compact one-line summary every `log_every` steps and
+    always emits a warning line the moment an anomaly threshold is tripped
+    (regardless of `log_every`).
+    """
+
+    # -------- class-name-based hook targets (leaf modules) --------
+    # NOTE: we deliberately DON'T hook RouterTransformerBlock — it's a shared
+    # 2-layer transformer used *inside* attention/router classes, and hooking
+    # it would duplicate capture. We also don't hook FFN/MLP helpers.
+    _ATTN_CLASS_NAMES = (
+        'ExpertLocalAttention',
+        'BlockAlignAttention',
+        'GlobalPreAttention',
+    )
+    _COEFF_CLASS_NAMES = (
+        'CoeffPredictor',               # models_ProMoE_TC_repa_MoS_naive_choice_fused.py
+        'AlignCoefficientPredictor',    # models_ProMoE_TC_repa_multi_align.py
+    )
+    # Router classes differ in output shape and whether output is softmaxed,
+    # so we dispatch per-class in the hook body (see _make_router_hook).
+    #   BlockRouter    -> (N,T,m,n), softmax over m (dim=-2)  [MoS naive/choice]
+    #   PerBlockRouter -> (N,T,m),   softmax over dim=-1       [choice_per_block]
+    #   AdaLNRouter    -> (N,T,K),   raw logits                [MoS.py]
+    _ROUTER_CLASS_NAMES = (
+        'BlockRouter',
+        'PerBlockRouter',
+        'AdaLNRouter',
+    )
+
+    # -------- parameter-name grouping for grad stats --------
+    # Ordered: first match wins.  Keep `backbone` as the implicit catch-all.
+    # `shared_expert` must come before `moe_experts` so `blocks.*.mlp.shared_expert.*`
+    # doesn't fall through to the `.experts.` bucket (note: the singular
+    # "shared_expert" name does *not* contain `.experts.`, but be explicit anyway).
+    _GRAD_GROUPS = (
+        ('attn_modules', ('block_align_attn', 'expert_local_attn',
+                           'global_pre_attn')),
+        ('projectors', ('mos_projectors', 'align_projectors', 'projectors')),
+        ('block_router', ('block_router', 'per_block_routers', 'routers.')),
+        ('coeff_predictor', ('coeff_predictor', 'align_coeff_predictor')),
+        ('capacity_predictor', ('capacity_predictor',)),  # DiffMoE
+        ('cluster_centers', ('cluster_centers',)),
+        ('shared_expert', ('shared_expert',)),
+        ('moe_experts', ('.experts.',)),
+        # backbone: t_embedder, y_embedder, x_embedder, final_layer, DiT attention/ffn
+    )
+
+    # -------- alert thresholds (override via kwargs) --------
+    _DEFAULT_THRESHOLDS = {
+        'grad_norm_warn': 50.0,        # per-group L2 norm
+        'feature_norm_warn': 5.0e3,    # projector / attention output abs-max
+        'attn_row_sum_min': 0.5,       # active softmax rows that sum below this are suspect
+        'attn_row_sum_max': 1.5,       # or above this (shouldn't happen post-softmax)
+        'loss_jump_ratio': 3.0,        # total_loss > ratio * EMA => warn
+    }
+    # Rows whose sum <= this are treated as "inactive" (masked out by design).
+    # Kept well below any legitimate softmax normalisation to avoid mistaking
+    # a merely-collapsed row for an inactive one.
+    _ACTIVE_ROW_EPS = 1.0e-4
+
+    def __init__(self, model, logger=None, log_every=500, enabled=True,
+                 capture_attn=True, capture_projector=True,
+                 capture_coeff=True, capture_router=True,
+                 capture_grads=True, track_losses=True,
+                 thresholds=None):
+        self.logger = logger if logger is not None else logging.getLogger()
+        self.log_every = max(int(log_every), 1)
+        self.enabled = bool(enabled)
+        self.capture_attn = capture_attn
+        self.capture_projector = capture_projector
+        self.capture_coeff = capture_coeff
+        self.capture_router = capture_router
+        self.capture_grads = capture_grads
+        self.track_losses = track_losses
+
+        self.thresholds = dict(self._DEFAULT_THRESHOLDS)
+        if thresholds:
+            self.thresholds.update(thresholds)
+
+        self._hooks = []
+        self._attn_stats = {}         # name -> dict
+        self._projector_stats = {}    # name -> dict
+        self._coeff_stats = {}        # name -> dict
+        self._router_stats = {}       # name -> dict
+        self._hooked_names = {
+            'attn': [],
+            'projector': [],
+            'coeff': [],
+            'router': [],
+        }
+        self._loss_ema = {}           # loss_name -> running mean
+        self._ema_alpha = 0.05
+        self._last_step_logged = -1
+
+        self._model = model
+        self._real = self._unwrap(model)
+
+        if self.enabled:
+            try:
+                self._install_hooks()
+                self._log_init_summary()
+            except Exception as exc:
+                self.logger.warning(
+                    "[TrainingMonitor] hook installation failed: %r. "
+                    "Monitor disabled.", exc)
+                self.enabled = False
+
+    # ----- lifecycle -------------------------------------------------------
+    def close(self):
+        for h in self._hooks:
+            try:
+                h.remove()
+            except Exception:
+                pass
+        self._hooks = []
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    # ----- helpers ---------------------------------------------------------
+    @staticmethod
+    def _unwrap(model):
+        # DDP / DataParallel wrapping.
+        inner = getattr(model, 'module', None)
+        return inner if inner is not None else model
+
+    @staticmethod
+    def _cls_name(module):
+        return type(module).__name__
+
+    def _install_hooks(self):
+        for name, mod in self._real.named_modules():
+            cls = self._cls_name(mod)
+            if self.capture_attn and cls in self._ATTN_CLASS_NAMES:
+                self._hooks.append(mod.register_forward_hook(
+                    self._make_attn_hook(name)))
+                self._hooked_names['attn'].append(f"{name}[{cls}]")
+            elif self.capture_coeff and cls in self._COEFF_CLASS_NAMES:
+                self._hooks.append(mod.register_forward_hook(
+                    self._make_coeff_hook(name)))
+                self._hooked_names['coeff'].append(f"{name}[{cls}]")
+            elif self.capture_router and cls in self._ROUTER_CLASS_NAMES:
+                self._hooks.append(mod.register_forward_hook(
+                    self._make_router_hook(name, cls)))
+                self._hooked_names['router'].append(f"{name}[{cls}]")
+
+        if self.capture_projector:
+            # Auto-detect any top-level attribute whose name ends with
+            # `projectors` and is an nn.ModuleList — catches `projectors`,
+            # `mos_projectors`, `align_projectors`, and any future variant.
+            # Also match legacy singular `projector`/`shared_projector`.
+            for attr_name, sub in self._real._modules.items():
+                name_l = attr_name.lower()
+                is_list = isinstance(sub, nn.ModuleList)
+                if (name_l.endswith('projectors')
+                        or name_l.endswith('projector')):
+                    if is_list:
+                        for i, child in enumerate(sub):
+                            full_name = f"{attr_name}.{i}"
+                            self._hooks.append(child.register_forward_hook(
+                                self._make_projector_hook(full_name)))
+                            self._hooked_names['projector'].append(full_name)
+                    elif isinstance(sub, nn.Module):
+                        self._hooks.append(sub.register_forward_hook(
+                            self._make_projector_hook(attr_name)))
+                        self._hooked_names['projector'].append(attr_name)
+
+    def _log_init_summary(self):
+        def _fmt(names):
+            return ', '.join(names) if names else '(none)'
+        self.logger.info(
+            "[TrainingMonitor] enabled. hooked: attn=%s | projector=%s | "
+            "coeff=%s | router=%s | grads=%s | thresholds=%s",
+            _fmt(self._hooked_names['attn']),
+            _fmt(self._hooked_names['projector']),
+            _fmt(self._hooked_names['coeff']),
+            _fmt(self._hooked_names['router']),
+            self.capture_grads,
+            self.thresholds,
+        )
+
+    # ----- hook factories --------------------------------------------------
+    def _make_attn_hook(self, name):
+        def hook(module, inputs, output):
+            try:
+                # Some attention modules (ExpertLocalAttention) use masked
+                # softmax + nan_to_num(0), so rows belonging to unconditional
+                # samples (labels==1000) or otherwise fully-masked-out rows
+                # sum to exactly 0. CFG training has ~10% uncond samples, so
+                # such zero rows appear EVERY step by design. We therefore
+                # separate "active" rows (row_sum > _ACTIVE_ROW_EPS) from
+                # inactive ones, compute min/max only over active rows, and
+                # report `inactive_frac` as a benign diagnostic instead of an
+                # alert signal. Dense-softmax classes (BlockAlignAttention,
+                # GlobalPreAttention) have no inactive rows, so behaviour is
+                # unchanged for them.
+                if not torch.is_tensor(output):
+                    return
+                with torch.no_grad():
+                    W = output.detach()
+                    if W.dtype != torch.float32:
+                        W = W.float()
+                    row_sum = W.sum(dim=-1)
+                    active_mask = row_sum > self._ACTIVE_ROW_EPS
+                    num_active = int(active_mask.sum().item())
+                    num_total = int(row_sum.numel())
+                    inactive_frac = 1.0 - (num_active / max(num_total, 1))
+
+                    if num_active > 0:
+                        active_sums = row_sum[active_mask]
+                        row_sum_min = float(active_sums.min().item())
+                        row_sum_max = float(active_sums.max().item())
+                        # near-empty *within active rows* — this is the real
+                        # collapse signal (e.g. attention distributing its
+                        # mass evenly across too many keys wouldn't trigger,
+                        # but if an "active" row has sum <<1 it means softmax
+                        # itself is broken).
+                        near_empty = float(
+                            (active_sums < self.thresholds['attn_row_sum_min'])
+                            .float().mean().item()
+                        )
+                    else:
+                        # Entire batch is uncond — nothing to check this step.
+                        row_sum_min = 0.0
+                        row_sum_max = 0.0
+                        near_empty = 0.0
+
+                    nan_cnt = int(torch.isnan(W).sum().item())
+                    inf_cnt = int(torch.isinf(W).sum().item())
+                    self._attn_stats[name] = {
+                        'min': float(W.min().item()),
+                        'max': float(W.max().item()),
+                        'mean': float(W.mean().item()),
+                        'row_sum_min': row_sum_min,
+                        'row_sum_max': row_sum_max,
+                        'row_empty_frac': near_empty,
+                        'inactive_frac': inactive_frac,
+                        'num_active': num_active,
+                        'nan': nan_cnt,
+                        'inf': inf_cnt,
+                    }
+            except Exception as exc:
+                self._attn_stats[name] = {'error': repr(exc)}
+        return hook
+
+    def _make_projector_hook(self, name):
+        def hook(module, inputs, output):
+            try:
+                if not torch.is_tensor(output):
+                    return
+                with torch.no_grad():
+                    y = output.detach()
+                    if y.dtype != torch.float32:
+                        y = y.float()
+                    # y shape: (*, D_z) — token-level norm
+                    norms = y.norm(dim=-1)
+                    nan_cnt = torch.isnan(y).sum().item()
+                    inf_cnt = torch.isinf(y).sum().item()
+                    self._projector_stats[name] = {
+                        'norm_min': float(norms.min().item()),
+                        'norm_max': float(norms.max().item()),
+                        'norm_mean': float(norms.mean().item()),
+                        'abs_max': float(y.abs().max().item()),
+                        'nan': int(nan_cnt),
+                        'inf': int(inf_cnt),
+                    }
+            except Exception as exc:
+                self._projector_stats[name] = {'error': repr(exc)}
+        return hook
+
+    def _make_coeff_hook(self, name):
+        def hook(module, inputs, output):
+            try:
+                if not torch.is_tensor(output):
+                    return
+                with torch.no_grad():
+                    c = output.detach()
+                    if c.dtype != torch.float32:
+                        c = c.float()
+                    nan_cnt = torch.isnan(c).sum().item()
+                    inf_cnt = torch.isinf(c).sum().item()
+                    self._coeff_stats[name] = {
+                        'min': float(c.min().item()),
+                        'max': float(c.max().item()),
+                        'mean': float(c.mean().item()),
+                        'nan': int(nan_cnt),
+                        'inf': int(inf_cnt),
+                    }
+            except Exception as exc:
+                self._coeff_stats[name] = {'error': repr(exc)}
+        return hook
+
+    def _make_router_hook(self, name, cls_name):
+        """Class-aware router hook.
+
+        Output shapes across router classes:
+          BlockRouter    -> (N, T, m, n); softmaxed along m (dim=-2).
+          PerBlockRouter -> (N, T, m);    softmaxed along dim=-1.
+          AdaLNRouter    -> (N, T, K);    RAW LOGITS (no softmax applied yet).
+        Unknown / other tensor shapes fall back to a row-sum heuristic.
+        """
+        def hook(module, inputs, output):
+            try:
+                if not torch.is_tensor(output):
+                    return
+                with torch.no_grad():
+                    r = output.detach()
+                    if r.dtype != torch.float32:
+                        r = r.float()
+
+                    if cls_name == 'BlockRouter' and r.dim() >= 4:
+                        probs = r  # already softmaxed on dim=-2
+                        reduce_dim = -2
+                    elif cls_name == 'AdaLNRouter':
+                        probs = F.softmax(r, dim=-1)
+                        reduce_dim = -1
+                    elif cls_name == 'PerBlockRouter':
+                        probs = r  # already softmaxed on dim=-1
+                        reduce_dim = -1
+                    else:
+                        # Fallback: detect whether output is a probability
+                        # distribution on the last axis; otherwise softmax it.
+                        row_sum = r.sum(dim=-1)
+                        if (float(row_sum.min().item()) > 0.9 and
+                                float(row_sum.max().item()) < 1.1):
+                            probs = r
+                        else:
+                            probs = F.softmax(r, dim=-1)
+                        reduce_dim = -1
+
+                    p_safe = probs.clamp(min=1e-8)
+                    entropy = -(probs * p_safe.log()).sum(dim=reduce_dim)
+                    # raw_max/raw_min reports on the unsoftmaxed output so
+                    # logit explosion in AdaLNRouter is visible; p_max
+                    # reports on the softmaxed distribution so we can detect
+                    # routing collapse (p_max -> 1).
+                    self._router_stats[name] = {
+                        'cls': cls_name,
+                        'p_max': float(probs.max().item()),
+                        'p_mean': float(probs.mean().item()),
+                        'raw_min': float(r.min().item()),
+                        'raw_max': float(r.max().item()),
+                        'entropy_min': float(entropy.min().item()),
+                        'entropy_mean': float(entropy.mean().item()),
+                        'nan': int(torch.isnan(r).sum().item()),
+                        'inf': int(torch.isinf(r).sum().item()),
+                    }
+            except Exception as exc:
+                self._router_stats[name] = {'error': repr(exc)}
+        return hook
+
+    # ----- gradient stats --------------------------------------------------
+    def _grad_group_for(self, param_name):
+        for group_name, patterns in self._GRAD_GROUPS:
+            if any(p in param_name for p in patterns):
+                return group_name
+        return 'backbone'
+
+    def _collect_grad_stats(self):
+        # Accumulate per-group sum-of-squared on-device and do ONE .item()
+        # per group at the end. Previously we called .item() per-parameter,
+        # which produced O(n_params) GPU->CPU syncs per step — noticeable at
+        # log_every=1 on L/XL models with hundreds of parameters.
+        groups_sq = {}   # gname -> 0-d float tensor (sum of squared)
+        nan_count = None
+        inf_count = None
+        for pname, p in self._real.named_parameters():
+            # Skip frozen params (pos_embed universally, noise_expert EMA
+            # params on the noise_expert_ema variant). Without this skip
+            # they'd appear as "no grad" and clutter the summary.
+            if not p.requires_grad or p.grad is None:
+                continue
+            g = p.grad.detach()
+            if nan_count is None:
+                nan_count = torch.zeros((), dtype=torch.long, device=g.device)
+                inf_count = torch.zeros((), dtype=torch.long, device=g.device)
+            nan_count += torch.isnan(g).any().long()
+            inf_count += torch.isinf(g).any().long()
+            g_f = g.float()
+            sq = (g_f * g_f).sum()
+            gname = self._grad_group_for(pname)
+            if gname in groups_sq:
+                groups_sq[gname] = groups_sq[gname] + sq
+            else:
+                groups_sq[gname] = sq
+
+        if not groups_sq:
+            return {
+                'global': 0.0,
+                '__nan_params__': 0,
+                '__inf_params__': 0,
+            }
+        # Final sync — one .item() per group plus global + nan/inf counters.
+        total_sq = sum(groups_sq.values())
+        result = {g: float(s.sqrt().item()) for g, s in groups_sq.items()}
+        result['global'] = float(total_sq.sqrt().item())
+        result['__nan_params__'] = int(nan_count.item())
+        result['__inf_params__'] = int(inf_count.item())
+        return result
+
+    def _collect_cluster_center_stats(self):
+        # `cluster_centers` is defined INSIDE each SparseMoeBlock (not on the
+        # top-level DiT), so walk named_parameters and aggregate norms across
+        # every MoE block that has it. For dense DiT / non-MoE models this
+        # returns None.
+        collected = []
+        num_blocks = 0
+        with torch.no_grad():
+            for pname, p in self._real.named_parameters():
+                if 'cluster_centers' not in pname:
+                    continue
+                # p: (num_routed_experts, hidden_size) per block
+                norms = p.detach().float().norm(dim=-1)
+                collected.append(norms)
+                num_blocks += 1
+        if not collected:
+            return None
+        all_norms = torch.cat(collected)
+        return {
+            'norm_min': float(all_norms.min().item()),
+            'norm_max': float(all_norms.max().item()),
+            'norm_mean': float(all_norms.mean().item()),
+            'num_blocks': num_blocks,
+        }
+
+    # ----- loss tracking ---------------------------------------------------
+    def _update_loss_ema(self, losses):
+        warned = []
+        if not losses:
+            return warned
+        for k, v in losses.items():
+            if torch.is_tensor(v):
+                v = v.detach()
+                if v.numel() != 1:
+                    continue
+                v = float(v.item())
+            if not isinstance(v, (int, float)):
+                continue
+            if not math.isfinite(v):
+                warned.append((k, v, 'nonfinite'))
+                continue
+            prev = self._loss_ema.get(k)
+            if prev is None:
+                self._loss_ema[k] = v
+                continue
+            # Jump detection that works for negative-valued losses too (e.g.
+            # REPA / MoS-REPA loss = -cos_sim lives in [-1, 0]). A naive
+            # `v > ratio * prev` check fails for prev < 0. Instead:
+            #   * Same-sign magnitude blow-up -> jump alert.
+            #   * Sign flip with non-trivial magnitude -> distinct alert
+            #     (a negative-cosine loss crossing 0 to positive is an
+            #     unambiguous divergence signal).
+            ratio = self.thresholds['loss_jump_ratio']
+            abs_prev, abs_v = abs(prev), abs(v)
+            if prev * v < 0 and abs_v > 1e-3:
+                warned.append((k, v, f'sign flip from {prev:.4g}'))
+            elif abs_prev > 1e-6 and abs_v > ratio * abs_prev:
+                warned.append((k, v, f'jump x{abs_v/abs_prev:.1f} (ema={prev:.4g})'))
+            # EMA update — alpha=0.05 inherently smooths a single spike
+            # (one step contributes only 5% to the running mean).
+            self._loss_ema[k] = (1 - self._ema_alpha) * prev + self._ema_alpha * v
+        return warned
+
+    # ----- public API ------------------------------------------------------
+    def on_step(self, step, losses=None):
+        """Capture gradient stats + optionally log a summary for this step.
+
+        Call this after `scaler.unscale_(optimizer)` / `clip_grad_norm_` and
+        before `optimizer.zero_grad()` — that window is when gradients are
+        fully assembled and unscaled.
+        """
+        if not self.enabled:
+            return
+        try:
+            self._on_step_impl(step, losses)
+        except Exception as exc:
+            self.logger.warning(
+                "[TrainingMonitor] on_step(%s) failed: %r", step, exc)
+
+    def _on_step_impl(self, step, losses):
+        alerts = []
+
+        # Gradient stats
+        grad_info = self._collect_grad_stats() if self.capture_grads else None
+        if grad_info is not None:
+            if grad_info['__nan_params__'] > 0:
+                alerts.append(
+                    f"NaN grads in {grad_info['__nan_params__']} params")
+            if grad_info['__inf_params__'] > 0:
+                alerts.append(
+                    f"Inf grads in {grad_info['__inf_params__']} params")
+            for g, v in grad_info.items():
+                if g.startswith('__'):
+                    continue
+                if v > self.thresholds['grad_norm_warn']:
+                    alerts.append(f"grad[{g}]={v:.3g} > {self.thresholds['grad_norm_warn']}")
+
+        # Feature alerts
+        for name, s in self._attn_stats.items():
+            if 'error' in s:
+                continue
+            if s['nan'] > 0 or s['inf'] > 0:
+                alerts.append(f"attn[{name}] NaN={s['nan']} Inf={s['inf']}")
+            # Only check row_sum bounds when at least one active row exists —
+            # a batch of entirely-uncond tokens (rare) would otherwise report
+            # 0 and trip a false alert.
+            if s.get('num_active', 0) > 0:
+                if s['row_sum_min'] < self.thresholds['attn_row_sum_min']:
+                    alerts.append(
+                        f"attn[{name}] row_sum_min={s['row_sum_min']:.3g} "
+                        f"(empty_frac={s['row_empty_frac']:.2%}, "
+                        f"inactive={s['inactive_frac']:.2%})")
+                if s['row_sum_max'] > self.thresholds['attn_row_sum_max']:
+                    alerts.append(
+                        f"attn[{name}] row_sum_max={s['row_sum_max']:.3g}")
+        for name, s in self._projector_stats.items():
+            if 'error' in s:
+                continue
+            if s['nan'] > 0 or s['inf'] > 0:
+                alerts.append(f"proj[{name}] NaN={s['nan']} Inf={s['inf']}")
+            if s['abs_max'] > self.thresholds['feature_norm_warn']:
+                alerts.append(
+                    f"proj[{name}] abs_max={s['abs_max']:.3g} "
+                    f">{self.thresholds['feature_norm_warn']}")
+        for name, s in self._coeff_stats.items():
+            if 'error' in s:
+                continue
+            if s['nan'] > 0 or s['inf'] > 0:
+                alerts.append(f"coeff[{name}] NaN={s['nan']} Inf={s['inf']}")
+        for name, s in self._router_stats.items():
+            if 'error' in s:
+                continue
+            if s['nan'] > 0 or s['inf'] > 0:
+                alerts.append(f"router[{name}] NaN={s['nan']} Inf={s['inf']}")
+
+        # Loss tracking
+        loss_warned = self._update_loss_ema(losses) if self.track_losses else []
+        for k, v, reason in loss_warned:
+            alerts.append(f"loss[{k}]={v:.4g} {reason}")
+
+        # Emit alerts immediately
+        for msg in alerts:
+            self.logger.warning("[TrainingMonitor][step=%s] ALERT %s", step, msg)
+
+        # Periodic summary
+        if step % self.log_every != 0 or step == self._last_step_logged:
+            return
+        self._last_step_logged = step
+
+        # cluster_centers params change slowly and _collect_cluster_center_stats
+        # walks every named_parameter — sample only at log cadence, not every step.
+        cc_stats = self._collect_cluster_center_stats()
+
+        parts = [f"step={step}"]
+        if grad_info is not None:
+            grad_strs = [
+                f"{g}={v:.3g}" for g, v in grad_info.items()
+                if not g.startswith('__')
+            ]
+            parts.append("grad[" + ' '.join(grad_strs) + "]")
+        if self._attn_stats:
+            attn_strs = []
+            for name, s in self._attn_stats.items():
+                if 'error' in s:
+                    continue
+                inactive = s.get('inactive_frac', 0.0)
+                piece = (f"{name}: W=[{s['min']:.2g},{s['max']:.2g}] "
+                         f"rs=[{s['row_sum_min']:.2g},{s['row_sum_max']:.2g}]")
+                if inactive > 0.0:
+                    piece += f" inact={inactive:.1%}"
+                attn_strs.append(piece)
+            if attn_strs:
+                parts.append("attn[" + ' | '.join(attn_strs) + "]")
+        if self._projector_stats:
+            proj_strs = []
+            for name, s in self._projector_stats.items():
+                if 'error' in s:
+                    continue
+                proj_strs.append(
+                    f"{name}: |z|=[{s['norm_min']:.2g},{s['norm_max']:.2g}]"
+                    f" |max|={s['abs_max']:.2g}")
+            if proj_strs:
+                parts.append("proj[" + ' | '.join(proj_strs) + "]")
+        if self._coeff_stats:
+            coeff_strs = []
+            for name, s in self._coeff_stats.items():
+                if 'error' in s:
+                    continue
+                coeff_strs.append(
+                    f"{name}: [{s['min']:.2g},{s['max']:.2g}]"
+                    f" mean={s['mean']:.2g}")
+            if coeff_strs:
+                parts.append("coeff[" + ' | '.join(coeff_strs) + "]")
+        if self._router_stats:
+            r_strs = []
+            for name, s in self._router_stats.items():
+                if 'error' in s:
+                    continue
+                r_strs.append(
+                    f"{name}: p_max={s['p_max']:.2g} "
+                    f"raw=[{s['raw_min']:.2g},{s['raw_max']:.2g}] "
+                    f"H=[{s['entropy_min']:.2g},{s['entropy_mean']:.2g}]")
+            if r_strs:
+                parts.append("router[" + ' | '.join(r_strs) + "]")
+        if cc_stats is not None:
+            parts.append(
+                f"cc[|w|=({cc_stats['norm_min']:.2g},"
+                f"{cc_stats['norm_mean']:.2g},{cc_stats['norm_max']:.2g})]")
+        if self._loss_ema:
+            loss_strs = [f"{k}={v:.3g}" for k, v in self._loss_ema.items()]
+            parts.append("loss_ema[" + ' '.join(loss_strs) + "]")
+
+        self.logger.info("[TrainingMonitor] " + ' '.join(parts))

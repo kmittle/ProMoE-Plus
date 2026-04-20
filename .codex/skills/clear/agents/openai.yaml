@@ -1,0 +1,6 @@
+interface:
+  display_name: "/clear"
+  short_description: "Reset working context for a fresh task"
+  default_prompt: "Use $clear to drop the current task context, stop relying on prior assumptions, and wait for a fresh request."
+policy:
+  allow_implicit_invocation: false
