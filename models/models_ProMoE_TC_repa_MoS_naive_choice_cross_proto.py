@@ -668,6 +668,19 @@ class DiT(nn.Module):
         cond_mask = (labels != 1000).unsqueeze(1).expand(-1, T)  # (N, T)
         pair_cond = cond_mask.unsqueeze(2) & cond_mask.unsqueeze(1)  # (N, T, T)
 
+        # Capture pre-clamp proto_sim stats for monitoring (worst-case across aligned blocks)
+        with torch.no_grad():
+            _ps = proto_sim.detach()
+            stats = getattr(self, '_cross_align_stats', None) or {}
+            neg_frac = float((_ps < 0).float().mean().item())
+            ps_min = float(_ps.min().item())
+            stats.update({
+                'proto_sim_neg_frac': max(neg_frac, stats.get('proto_sim_neg_frac', 0)),
+                'proto_sim_min': min(ps_min, stats.get('proto_sim_min', float('inf'))),
+                'proto_sim_mean': float(_ps.mean().item()),
+            })
+            self._cross_align_stats = stats
+
         # Clamp proto_sim to non-negative before computing cross-weights.
         # Negative proto_sim (token anti-correlated with all prototypes) would
         # produce negative off-diagonal entries, which can make the row_sum
@@ -686,6 +699,18 @@ class DiT(nn.Module):
         diag_mask = torch.eye(T, device=W.device).unsqueeze(0).expand(N, -1, -1)
         cond_diag = diag_mask * cond_mask.unsqueeze(2).float()  # (N, T, T)
         W = W * (1 - diag_mask) + cond_diag  # off-diagonal: outer product; diagonal: 1 for cond
+
+        with torch.no_grad():
+            _W = W.detach()
+            _row_sums = _W.sum(dim=-1)  # (N, T)
+            _cond_rows = cond_mask[:, :T]  # (N, T)
+            _cond_sums = _row_sums[_cond_rows] if _cond_rows.any() else _row_sums
+            w_min = float(_cond_sums.min().item())
+            prev_w_min = self._cross_align_stats.get('W_row_sum_min', float('inf'))
+            self._cross_align_stats.update({
+                'W_row_sum_min': min(w_min, prev_w_min),
+                'W_nonzero_frac': float((_W > 0).float().mean().item()),
+            })
 
         return W
 
@@ -742,6 +767,9 @@ class DiT(nn.Module):
         # 4. Cross-alignment cos_sim for each selected teacher block
         z_proj_norm = F.normalize(z_proj, dim=-1)  # (N, T, D_z)
         total_loss = torch.tensor(0.0, device=x.device)
+        _cs_absmax_list = []
+        _cs_exceed_list = []
+        _cs_numel_total = 0
 
         for k_idx in range(top_k):
             # BlockRouter weight for the k-th selected teacher block
@@ -762,7 +790,14 @@ class DiT(nn.Module):
                 # Clamp to [-1, 1] to enforce the mathematical range of cosine similarity;
                 # under bf16 autocast, F.normalize + bmm can slip outside this range due
                 # to rsqrt/matmul precision, which previously triggered loss spikes.
-                cos_sim_matrix = torch.bmm(z_proj_norm, teacher_norm.transpose(1, 2)).clamp(-1.0, 1.0)
+                cos_sim_raw = torch.bmm(z_proj_norm, teacher_norm.transpose(1, 2))
+                cos_sim_matrix = cos_sim_raw.clamp(-1.0, 1.0)
+
+                with torch.no_grad():
+                    _r = cos_sim_raw.detach()
+                    _cs_absmax_list.append(_r.abs().max())
+                    _cs_exceed_list.append((_r.abs() > 1.0).sum())
+                    _cs_numel_total += _r.numel()
 
                 # Weighted cross-alignment similarity per token, normalized by
                 # W row sum so cross_sim is a proper weighted average (bounded [-1,1]).
@@ -775,6 +810,18 @@ class DiT(nn.Module):
 
         num_cond = (labels != 1000).sum() * T
         block_loss = total_loss / num_cond.clamp(min=1)
+
+        with torch.no_grad():
+            stats = getattr(self, '_cross_align_stats', None) or {}
+            absmax = float(torch.stack(_cs_absmax_list).max().item())
+            clamp_ct = int(torch.stack(_cs_exceed_list).sum().item())
+            stats.update({
+                'cos_sim_absmax': max(absmax, stats.get('cos_sim_absmax', 0)),
+                'cos_sim_clamp_count': clamp_ct + stats.get('cos_sim_clamp_count', 0),
+                'cos_sim_numel': _cs_numel_total + stats.get('cos_sim_numel', 0),
+            })
+            self._cross_align_stats = stats
+
         return block_loss
 
     def forward(self, x, timestep, context, teacher_all_z=None, **kwargs):

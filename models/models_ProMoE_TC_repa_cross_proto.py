@@ -492,6 +492,17 @@ class DiT(nn.Module):
         cond_mask = (labels != 1000).unsqueeze(1).expand(-1, T)  # (N, T)
         pair_cond = cond_mask.unsqueeze(2) & cond_mask.unsqueeze(1)  # (N, T, T)
 
+        # Capture pre-clamp proto_sim stats for monitoring
+        with torch.no_grad():
+            _ps = proto_sim.detach()
+            stats = getattr(self, '_cross_align_stats', None) or {}
+            stats.update({
+                'proto_sim_neg_frac': float((_ps < 0).float().mean().item()),
+                'proto_sim_min': float(_ps.min().item()),
+                'proto_sim_mean': float(_ps.mean().item()),
+            })
+            self._cross_align_stats = stats
+
         # Clamp proto_sim to non-negative before computing cross-weights.
         # Negative proto_sim (token anti-correlated with all prototypes) would
         # produce negative off-diagonal entries, which can make the row_sum
@@ -510,6 +521,16 @@ class DiT(nn.Module):
         diag_mask = torch.eye(T, device=W.device).unsqueeze(0).expand(N, -1, -1)
         cond_diag = diag_mask * cond_mask.unsqueeze(2).float()  # (N, T, T)
         W = W * (1 - diag_mask) + cond_diag  # off-diagonal: outer product; diagonal: 1 for cond
+
+        with torch.no_grad():
+            _W = W.detach()
+            _row_sums = _W.sum(dim=-1)  # (N, T)
+            _cond_rows = cond_mask[:, :T]  # (N, T)
+            _cond_sums = _row_sums[_cond_rows] if _cond_rows.any() else _row_sums
+            self._cross_align_stats.update({
+                'W_row_sum_min': float(_cond_sums.min().item()),
+                'W_nonzero_frac': float((_W > 0).float().mean().item()),
+            })
 
         return W
 
@@ -537,7 +558,8 @@ class DiT(nn.Module):
         # Clamp to [-1, 1] to enforce the mathematical range of cosine similarity;
         # under bf16 autocast, F.normalize + bmm can slip outside this range due
         # to rsqrt/matmul precision, which previously triggered loss spikes.
-        cos_sim = torch.bmm(z_proj_norm, teacher_norm.transpose(1, 2)).clamp(-1.0, 1.0)
+        cos_sim_raw = torch.bmm(z_proj_norm, teacher_norm.transpose(1, 2))
+        cos_sim = cos_sim_raw.clamp(-1.0, 1.0)
 
         top1_experts = expert_indices[:, :, 0]
         expert_mask = (top1_experts.unsqueeze(2) == top1_experts.unsqueeze(1))
@@ -551,6 +573,16 @@ class DiT(nn.Module):
         # Normalize by total weight (not token count) so the loss is a proper
         # weighted average of cosine similarities, bounded in [-1, 1].
         loss = -(W * cos_sim).sum() / W.sum().clamp(min=1)
+
+        with torch.no_grad():
+            _r = cos_sim_raw.detach()
+            stats = getattr(self, '_cross_align_stats', None) or {}
+            stats.update({
+                'cos_sim_absmax': float(_r.abs().max().item()),
+                'cos_sim_clamp_count': int((_r.abs() > 1.0).sum().item()),
+                'cos_sim_numel': _r.numel(),
+            })
+            self._cross_align_stats = stats
 
         return loss
 

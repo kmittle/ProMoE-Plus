@@ -578,7 +578,8 @@ class DiT(nn.Module):
         # Clamp to [-1, 1] to enforce the mathematical range of cosine similarity;
         # under bf16 autocast, F.normalize + bmm can slip outside this range due
         # to rsqrt/matmul precision, which previously triggered loss spikes.
-        cos_sim = torch.bmm(z_proj_norm, teacher_norm.transpose(1, 2)).clamp(-1.0, 1.0)
+        cos_sim_raw = torch.bmm(z_proj_norm, teacher_norm.transpose(1, 2))
+        cos_sim = cos_sim_raw.clamp(-1.0, 1.0)
 
         # Same-expert mask: (N, T, T)
         top1_experts = expert_indices[:, :, 0]  # (N, T)
@@ -599,6 +600,14 @@ class DiT(nn.Module):
         # Weighted negative cosine similarity
         num_cond_tokens = token_cond.sum()
         loss = -(W * cos_sim).sum() / num_cond_tokens.clamp(min=1)
+
+        with torch.no_grad():
+            _r = cos_sim_raw.detach()
+            self._cross_align_stats = {
+                'cos_sim_absmax': float(_r.abs().max().item()),
+                'cos_sim_clamp_count': int((_r.abs() > 1.0).sum().item()),
+                'cos_sim_numel': _r.numel(),
+            }
 
         return loss
 

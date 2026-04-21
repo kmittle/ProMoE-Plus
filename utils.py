@@ -446,6 +446,14 @@ class TrainingMonitor:
         * BlockRouter outputs — routing-weight max/mean and per-token entropy
           (detects collapse onto a single teacher block).
         * `cluster_centers` parameter norm min/max/mean (one per step).
+        * Cross-alignment internals (model-cached, no extra hooks):
+            - cos_sim_absmax: pre-clamp cosine similarity max absolute value
+              (detects bf16 overflow beyond [-1,1]).
+            - cos_sim_clamp_count / cos_sim_numel: fraction of values clamped.
+            - proto_sim_neg_frac / proto_sim_min: prototype similarity before
+              clamp(min=0) — detects routing pathology in proto variants.
+            - W_row_sum_min / W_nonzero_frac: cross-weight matrix health
+              (detects near-zero denominator in proto normalization).
         * Gradient statistics grouped by parameter-name substring:
             attn_modules, projectors, block_router, cluster_centers,
             coeff_predictor, moe_experts, backbone.
@@ -461,14 +469,25 @@ class TrainingMonitor:
         ...     log_every=cfg.log_interval,
         ...     enabled=(cfg.rank == 0),
         ... )
-        >>> # inside the training loop, after backward(), before optimizer.step():
+        >>> # inside the training loop, AFTER scaler.unscale_(optimizer)
+        >>> # but BEFORE clip_grad_norm_() — this is the only window where
+        >>> # gradients are unscaled AND unclipped, so per-group norms
+        >>> # reflect the true gradient magnitude:
         >>> monitor.on_step(step, losses=logged_loss_dict)
-        >>> # ... (optional at end)
+        >>> grad_norm = clip_grad_norm_(model.parameters(), cfg.max_grad_norm)
+        >>> # ... (at shutdown)
         >>> monitor.close()
 
     The monitor logs a compact one-line summary every `log_every` steps and
     always emits a warning line the moment an anomaly threshold is tripped
     (regardless of `log_every`).
+
+    Note on gradient accumulation (``grad_mix > 1``): forward-hook stats
+    and ``_cross_align_stats`` are overwritten each micro-batch, so only
+    the last micro-batch's activation statistics are captured. Loss values
+    passed via ``on_step(losses=...)`` should already be averaged across
+    micro-batches by the caller. This is a known design trade-off; for the
+    typical ``grad_mix=1`` case there is no discrepancy.
     """
 
     # -------- class-name-based hook targets (leaf modules) --------
@@ -520,6 +539,9 @@ class TrainingMonitor:
         'attn_row_sum_min': 0.5,       # active softmax rows that sum below this are suspect
         'attn_row_sum_max': 1.5,       # or above this (shouldn't happen post-softmax)
         'loss_jump_ratio': 3.0,        # total_loss > ratio * EMA => warn
+        'cos_sim_absmax_warn': 1.01,   # pre-clamp cos_sim outside [-1,1] (bf16 overflow)
+        'proto_neg_frac_warn': 0.5,    # >50% negative proto_sim before clamp
+        'W_row_sum_min_warn': 0.01,    # near-zero W row sum (normalization risk)
     }
     # Rows whose sum <= this are treated as "inactive" (masked out by design).
     # Kept well below any legitimate softmax normalisation to avoid mistaking
@@ -530,10 +552,11 @@ class TrainingMonitor:
                  capture_attn=True, capture_projector=True,
                  capture_coeff=True, capture_router=True,
                  capture_grads=True, track_losses=True,
-                 thresholds=None):
+                 thresholds=None, writer=None):
         self.logger = logger if logger is not None else logging.getLogger()
         self.log_every = max(int(log_every), 1)
         self.enabled = bool(enabled)
+        self._writer = writer
         self.capture_attn = capture_attn
         self.capture_projector = capture_projector
         self.capture_coeff = capture_coeff
@@ -581,6 +604,11 @@ class TrainingMonitor:
             except Exception:
                 pass
         self._hooks = []
+        if self._writer is not None:
+            try:
+                self._writer.flush()
+            except Exception:
+                pass
 
     def __del__(self):
         try:
@@ -894,6 +922,27 @@ class TrainingMonitor:
             'num_blocks': num_blocks,
         }
 
+    # ----- cross-alignment stats (model-cached) ----------------------------
+    def _collect_cross_align_stats(self):
+        """Read ``_cross_align_stats`` cached on model during forward().
+
+        Cross-alignment models (cross_global_block, cross_expert_local,
+        cross_proto, and their MoS variants) store a dict of monitoring
+        statistics during the loss computation:
+          * cos_sim_absmax / cos_sim_clamp_count / cos_sim_numel —
+            pre-clamp cosine similarity range; detects bf16 overflow.
+          * proto_sim_neg_frac / proto_sim_min / proto_sim_mean —
+            prototype similarity before clamp(min=0); detects routing
+            pathology in proto variants.
+          * W_row_sum_min / W_nonzero_frac — cross-alignment weight
+            matrix health; detects near-zero denominator risk in proto
+            normalization.
+        """
+        stats = getattr(self._real, '_cross_align_stats', None)
+        if stats is not None:
+            self._real._cross_align_stats = None
+        return stats
+
     # ----- loss tracking ---------------------------------------------------
     def _update_loss_ema(self, losses):
         warned = []
@@ -936,9 +985,10 @@ class TrainingMonitor:
     def on_step(self, step, losses=None):
         """Capture gradient stats + optionally log a summary for this step.
 
-        Call this after `scaler.unscale_(optimizer)` / `clip_grad_norm_` and
-        before `optimizer.zero_grad()` — that window is when gradients are
-        fully assembled and unscaled.
+        Call this after ``scaler.unscale_(optimizer)`` but **before**
+        ``clip_grad_norm_()`` — this is the only window where gradients
+        are fully assembled, unscaled, and unclipped, so per-group norms
+        reflect the true gradient magnitude.
         """
         if not self.enabled:
             return
@@ -1009,6 +1059,25 @@ class TrainingMonitor:
         for k, v, reason in loss_warned:
             alerts.append(f"loss[{k}]={v:.4g} {reason}")
 
+        # Cross-alignment stats (cached on model during forward)
+        ca_stats = self._collect_cross_align_stats()
+        if ca_stats:
+            cs_absmax = ca_stats.get('cos_sim_absmax', 0)
+            if cs_absmax > self.thresholds['cos_sim_absmax_warn']:
+                numel = max(ca_stats.get('cos_sim_numel', 1), 1)
+                clamp_frac = ca_stats.get('cos_sim_clamp_count', 0) / numel
+                alerts.append(
+                    f"cos_sim absmax={cs_absmax:.4g} "
+                    f"(clamp_frac={clamp_frac:.2%})")
+            neg_frac = ca_stats.get('proto_sim_neg_frac')
+            if neg_frac is not None and neg_frac > self.thresholds['proto_neg_frac_warn']:
+                alerts.append(
+                    f"proto_sim neg_frac={neg_frac:.2%} "
+                    f"(min={ca_stats.get('proto_sim_min', 0):.4g})")
+            w_min = ca_stats.get('W_row_sum_min')
+            if w_min is not None and w_min < self.thresholds['W_row_sum_min_warn']:
+                alerts.append(f"W row_sum_min={w_min:.4g}")
+
         # Emit alerts immediately
         for msg in alerts:
             self.logger.warning("[TrainingMonitor][step=%s] ALERT %s", step, msg)
@@ -1077,8 +1146,88 @@ class TrainingMonitor:
             parts.append(
                 f"cc[|w|=({cc_stats['norm_min']:.2g},"
                 f"{cc_stats['norm_mean']:.2g},{cc_stats['norm_max']:.2g})]")
+        if ca_stats:
+            ca_parts = []
+            if 'cos_sim_absmax' in ca_stats:
+                numel = max(ca_stats.get('cos_sim_numel', 1), 1)
+                clamp_frac = ca_stats.get('cos_sim_clamp_count', 0) / numel
+                ca_parts.append(
+                    f"|cos|={ca_stats['cos_sim_absmax']:.4g} "
+                    f"clamp={clamp_frac:.1%}")
+            if 'proto_sim_neg_frac' in ca_stats:
+                ca_parts.append(
+                    f"proto_neg={ca_stats['proto_sim_neg_frac']:.1%} "
+                    f"min={ca_stats.get('proto_sim_min', 0):.3g}")
+            if 'W_row_sum_min' in ca_stats:
+                ca_parts.append(
+                    f"W_rs_min={ca_stats['W_row_sum_min']:.3g} "
+                    f"W_nz={ca_stats.get('W_nonzero_frac', 0):.1%}")
+            if ca_parts:
+                parts.append("cross[" + ' '.join(ca_parts) + "]")
         if self._loss_ema:
             loss_strs = [f"{k}={v:.3g}" for k, v in self._loss_ema.items()]
             parts.append("loss_ema[" + ' '.join(loss_strs) + "]")
 
         self.logger.info("[TrainingMonitor] " + ' '.join(parts))
+
+        self._write_tensorboard(step, grad_info, ca_stats, cc_stats)
+
+    def _write_tensorboard(self, step, grad_info, ca_stats, cc_stats):
+        w = self._writer
+        if w is None:
+            return
+        try:
+            if grad_info is not None:
+                for g, v in grad_info.items():
+                    if g.startswith('__'):
+                        continue
+                    w.add_scalar(f'monitor/grad/{g}', v, step)
+            for name, s in self._attn_stats.items():
+                if 'error' in s:
+                    continue
+                w.add_scalar(f'monitor/attn/{name}/row_sum_min', s['row_sum_min'], step)
+                w.add_scalar(f'monitor/attn/{name}/row_sum_max', s['row_sum_max'], step)
+                if 'inactive_frac' in s:
+                    w.add_scalar(f'monitor/attn/{name}/inactive_frac', s['inactive_frac'], step)
+                for k in ('min', 'max', 'mean', 'row_empty_frac'):
+                    if k in s:
+                        w.add_scalar(f'monitor/attn/{name}/{k}', s[k], step)
+            for name, s in self._projector_stats.items():
+                if 'error' in s:
+                    continue
+                for k in ('norm_min', 'norm_max', 'norm_mean', 'abs_max'):
+                    if k in s:
+                        w.add_scalar(f'monitor/proj/{name}/{k}', s[k], step)
+            for name, s in self._coeff_stats.items():
+                if 'error' in s:
+                    continue
+                w.add_scalar(f'monitor/coeff/{name}/min', s['min'], step)
+                w.add_scalar(f'monitor/coeff/{name}/max', s['max'], step)
+                w.add_scalar(f'monitor/coeff/{name}/mean', s['mean'], step)
+            for name, s in self._router_stats.items():
+                if 'error' in s:
+                    continue
+                for k in ('p_max', 'entropy_mean', 'entropy_min',
+                          'raw_min', 'raw_max'):
+                    if k in s:
+                        w.add_scalar(f'monitor/router/{name}/{k}', s[k], step)
+            if cc_stats is not None:
+                for k in ('norm_min', 'norm_max', 'norm_mean'):
+                    if k in cc_stats:
+                        w.add_scalar(f'monitor/cc/{k}', cc_stats[k], step)
+            if ca_stats:
+                if 'cos_sim_absmax' in ca_stats:
+                    w.add_scalar('monitor/cross/cos_sim_absmax', ca_stats['cos_sim_absmax'], step)
+                    numel = max(ca_stats.get('cos_sim_numel', 1), 1)
+                    clamp_frac = ca_stats.get('cos_sim_clamp_count', 0) / numel
+                    w.add_scalar('monitor/cross/cos_sim_clamp_frac', clamp_frac, step)
+                if 'proto_sim_neg_frac' in ca_stats:
+                    w.add_scalar('monitor/cross/proto_sim_neg_frac', ca_stats['proto_sim_neg_frac'], step)
+                    w.add_scalar('monitor/cross/proto_sim_min', ca_stats.get('proto_sim_min', 0), step)
+                if 'W_row_sum_min' in ca_stats:
+                    w.add_scalar('monitor/cross/W_row_sum_min', ca_stats['W_row_sum_min'], step)
+                    w.add_scalar('monitor/cross/W_nonzero_frac', ca_stats.get('W_nonzero_frac', 0), step)
+            for name, v in self._loss_ema.items():
+                w.add_scalar(f'monitor/loss_ema/{name}', v, step)
+        except Exception as e:
+            self.logger.warning("[TrainingMonitor] TensorBoard write failed: %s", e)

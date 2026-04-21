@@ -26,7 +26,7 @@ from torch.utils.tensorboard import SummaryWriter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from torch.nn.parallel import DistributedDataParallel
 from collections import OrderedDict
-from utils import deep_update, find_free_port, load_vae
+from utils import deep_update, find_free_port, load_vae, TrainingMonitor
 from torch.nn.utils import clip_grad_norm_
 
 os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
@@ -445,6 +445,7 @@ def worker(gpu, cfg):
     else:
         use_amp = False
 
+    writer = None
     if cfg.rank == 0:
         writer = SummaryWriter(log_dir=osp.join(cfg.output_dir, "tensorboard"))
 
@@ -583,6 +584,13 @@ def worker(gpu, cfg):
     model_ema.eval()
     optimizer.zero_grad(set_to_none=True)
 
+    monitor = TrainingMonitor(
+        model, logger=logging.getLogger(),
+        log_every=cfg.log_interval,
+        enabled=(cfg.rank == 0),
+        writer=writer,
+    )
+
     logging.info('Start the training loop')
 
     epoch = 0
@@ -710,6 +718,7 @@ def worker(gpu, cfg):
             write_loss_dict_to_tensorboard(writer, logged_loss_dict, step)
 
         scaler.unscale_(optimizer)
+        monitor.on_step(step, losses=logged_loss_dict)
         grad_norm = clip_grad_norm_(model.parameters(), cfg.max_grad_norm)
         scaler.step(optimizer)
         scaler.update()
@@ -722,6 +731,8 @@ def worker(gpu, cfg):
         accum_steps = 0
         accum_loss_dict = None
         step += 1
+
+    monitor.close()
 
     if cfg.rank == 0:
         logging.info('Congratulations! The training is completed!')

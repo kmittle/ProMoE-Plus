@@ -14,3 +14,9 @@ image_paths_cache.txt
 ######################
 /pretrained_ckpt/
 
+# Local smoke-test artifacts
+/collapse_smoking_test/
+/collapse_smoking_test_10k/
+/tb_smoke_200/
+/tb_smoke_500/
+/training_logs/

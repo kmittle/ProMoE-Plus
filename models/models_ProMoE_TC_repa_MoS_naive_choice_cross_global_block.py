@@ -735,6 +735,9 @@ class DiT(nn.Module):
         # 4. Cross-alignment cos_sim for each selected teacher block
         z_proj_norm = F.normalize(z_proj, dim=-1)  # (N, T, D_z)
         total_loss = torch.tensor(0.0, device=x.device)
+        _cs_absmax_list = []
+        _cs_exceed_list = []
+        _cs_numel_total = 0
 
         for k_idx in range(top_k):
             # BlockRouter weight for the k-th selected teacher block
@@ -755,7 +758,14 @@ class DiT(nn.Module):
                 # Clamp to [-1, 1] to enforce the mathematical range of cosine similarity;
                 # under bf16 autocast, F.normalize + bmm can slip outside this range due
                 # to rsqrt/matmul precision, which previously triggered loss spikes.
-                cos_sim_matrix = torch.bmm(z_proj_norm, teacher_norm.transpose(1, 2)).clamp(-1.0, 1.0)
+                cos_sim_raw = torch.bmm(z_proj_norm, teacher_norm.transpose(1, 2))
+                cos_sim_matrix = cos_sim_raw.clamp(-1.0, 1.0)
+
+                with torch.no_grad():
+                    _r = cos_sim_raw.detach()
+                    _cs_absmax_list.append(_r.abs().max())
+                    _cs_exceed_list.append((_r.abs() > 1.0).sum())
+                    _cs_numel_total += _r.numel()
 
                 # Weighted cross-alignment similarity per token
                 cross_sim = (W * cos_sim_matrix).sum(dim=-1)  # (N, T)
@@ -766,6 +776,19 @@ class DiT(nn.Module):
 
         num_cond = (labels != 1000).sum() * T
         block_loss = total_loss / num_cond.clamp(min=1)
+
+        with torch.no_grad():
+            prev = getattr(self, '_cross_align_stats', None) or {}
+            self._cross_align_stats = {
+                'cos_sim_absmax': max(
+                    float(torch.stack(_cs_absmax_list).max().item()),
+                    prev.get('cos_sim_absmax', 0)),
+                'cos_sim_clamp_count': (
+                    int(torch.stack(_cs_exceed_list).sum().item())
+                    + prev.get('cos_sim_clamp_count', 0)),
+                'cos_sim_numel': _cs_numel_total + prev.get('cos_sim_numel', 0),
+            }
+
         return block_loss
 
     def forward(self, x, timestep, context, teacher_all_z=None, **kwargs):
