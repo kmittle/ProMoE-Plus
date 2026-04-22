@@ -3,15 +3,16 @@
 ## Project Structure & Module Organization
 Core entrypoints are at repository root:
 
-- `train.py`: baseline and non-REPA training (DiT, TCDiT, ECDiT, DiffMoE, ProMoE, hierarchical and expert variants).
+- `train.py`: baseline and non-REPA training (DiT, TCDiT, ECDiT, DiffMoE, ProMoE, hierarchical, noise-expert, and expert-contrastive variants).
 - `train_with_repa.py`: REPA-enabled training (REPA / REPA-Shared / REPA-Cond / REPA-DYNA / REPA-DYNA-SELECT / REPA-DYNA-SCALE / REPA-DYNA-ONLY / REPA-Router / REPA-Router-Contra / REPA-Routed / REPA-Double-Share), including teacher-feature alignment loss.
-- `train_with_MoS_repa.py`: MoS-REPA and MoS-REPA-Naive training with teacher-block routing and per-block REPA projectors.
-- `sample.py`: sampling/inference entrypoint. It merges model registries from `train.py`, `train_with_repa.py`, and `train_with_MoS_repa.py`, so one script can sample all registered families.
+- `train_with_MoS_repa.py`: MoS-REPA, MoS-Naive / Naive-Choice, per-block / blockwise / fused / multi-align, and both standard-REPA + MoS cross-alignment training with teacher-block routing and per-block REPA projectors.
+- `train_with_mae.py`: MAE/group-alignment training for `group_align` and `group_align_proj` variants.
+- `sample.py`: sampling/inference entrypoint. It merges model registries from `train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, and `train_with_mae.py`, so one script can sample all registered families.
 
 Shared defaults and helpers:
 
 - `config.py`: global defaults (`cfg`) and model templates (`DiT_*_config`, `DiffMoE_*`, etc.).
-- `utils.py`: `deep_update`, `find_free_port`, VAE caching/loading (`load_vae`), CLI list parsers, and Inception utilities.
+- `utils.py`: `deep_update`, `find_free_port`, VAE caching/loading (`load_vae`), `TrainingMonitor`, CLI list parsers, and Inception utilities.
 - `ProMoE-REPA.md`: repo-level guide for current REPA / MoS-REPA workflows and variants.
 
 Main code layout:
@@ -20,11 +21,16 @@ Main code layout:
 - `repa/`: REPA helper package used by `train_with_repa.py` and `train_with_MoS_repa.py` (`encoder.py`, `loss.py`).
 - `preprocess/`: VAE latent preprocessing and shared cache file `preprocess/image_paths_cache.txt`.
 - `evaluation/`: OpenAI-style evaluation pipeline (`run_eval.py`, `evaluator.py`, `download_ref_batches.py`).
-- `analyses/`: analysis entry scripts live directly under this directory. Current entrypoints include `run_tokenwise_tsne.py`, `run_samplewise_pooled_tsne.py`, `run_imagewise_tsne.py`, `run_repa_dyna_heatmap.py`, and `run_compute_flops.py`. Reusable helpers live under subdirectories such as `analyses/t_SNE/`, `analyses/heatmap/`, and `analyses/flops/`; `analyses/README.md` should remain a brief directory-level overview only, while detailed usage belongs in per-entry Markdown files that share the same basename as each entry `.py`.
-- `scripts/repa/`: REPA-B / REPA-Shared-B / REPA-Cond-B helpers plus router / routed / double-share train + sample + eval wrappers.
-- `scripts/MoS_repa/`: MoS-REPA and MoS-REPA-Naive train + sample + eval wrappers following `scripts/template.sh`.
+- `analyses/`: analysis entry scripts live directly under this directory. Current entrypoints include `run_tokenwise_tsne.py`, `run_samplewise_pooled_tsne.py`, `run_imagewise_tsne.py`, `run_repa_dyna_heatmap.py`, `run_token_choice_expert_heatmap.py`, `run_compute_flops.py`, and `run_mos_routing_analysis.py`. Reusable helpers live under `analyses/t_SNE/`, `analyses/heatmap/`, `analyses/flops/`, and `analyses/mos_routing/`; `analyses/README.md` should remain a brief directory-level overview only, while detailed usage belongs in per-entry Markdown files that share the same basename as each entry `.py`.
+- `scripts/repa/`: REPA-B / REPA-Shared-B / REPA-Cond-B helpers plus router / routed / double-share, cross-alignment, and L/XL scale-up train + sample + eval wrappers.
+- `scripts/MoS_repa/`: MoS-REPA, naive / naive-choice, per-block / blockwise / fused, multi-align, cross-alignment, and B/L/XL block-range sweep wrappers following `scripts/template.sh`.
 - `scripts/hierar/`: B-scale hierarchical/expert train + infer/eval wrappers.
 - `scripts/dynamic_repa/`: REPA-DYNA-B, REPA-DYNA-SELECT-B, REPA-DYNA-SCALE-B, and REPA-DYNA-ONLY-B train + sample + eval pipelines (including select-ratio variants r25/r75).
+- `scripts/mae_align/`: group-align and group-align-proj train + sample + eval wrappers.
+- `scripts/noise_expert/`: noise-expert, proj, and EMA train + sample + eval wrappers.
+- `scripts/expert_contra/`: expert-contrastive output/param train + sample + eval wrappers.
+- `collapse_smoking_test/`, `collapse_smoking_test_10k/`: crash-diagnosis smoke configs, logs, summaries, and rerun helpers for cross-alignment stability work.
+- `tb_smoke_200/`, `tb_smoke_500/`: TensorBoard/`TrainingMonitor` smoke harnesses for selected cross-alignment configs.
 - `REPA/` (uppercase): separate upstream-style subproject with its own docs and `AGENTS.md`.
 
 Top-level wrappers:
@@ -75,12 +81,19 @@ python train_with_MoS_repa.py \
   --repa-enc-path /path/to/state_dict.pth
 ```
 
+Run MAE/group-alignment training:
+
+```bash
+python train_with_mae.py --config configs/004_ProMoE_B_mae_align.yaml
+```
+
 Optional local VAE path (skips auto-download/cache in train/sample):
 
 ```bash
 python train.py --config configs/004_ProMoE_B.yaml --vae-path /path/to/sd-vae-ft-mse
 python train_with_repa.py --config configs/004_ProMoE_B_repa.yaml --vae-path /path/to/sd-vae-ft-mse
 python train_with_MoS_repa.py --config configs/004_ProMoE_B_repa_MoS.yaml --vae-path /path/to/sd-vae-ft-mse
+python train_with_mae.py --config configs/004_ProMoE_B_mae_align.yaml --vae-path /path/to/sd-vae-ft-mse
 python sample.py --config configs/004_ProMoE_B_repa.yaml --vae-path /path/to/sd-vae-ft-mse
 ```
 
@@ -111,6 +124,13 @@ python analyses/run_compute_flops.py \
   --save-every-steps 50
 ```
 
+Run MoS routing analysis:
+
+```bash
+python analyses/run_mos_routing_analysis.py \
+  --ckpt outputs/ProMoE_TC_REPA_MoS_Naive_Choice_B/004_ProMoE_B_repa_MoS_naive_choice_b3_5/checkpoints/ckpt_step_500000.pth
+```
+
 Common wrappers:
 
 ```bash
@@ -121,6 +141,8 @@ bash scripts/repa/train_repa_cond_B.sh
 bash scripts/repa/sample_and_eval_repa_B.sh
 bash scripts/repa/sample_and_eval_repa_shared_B.sh
 bash scripts/repa/sample_and_eval_repa_cond_B.sh
+bash scripts/repa/run_B_repa_cross_global_pre_train_sample_eval.sh
+bash scripts/repa/run_B_repa_cross_proto_train_sample_eval.sh
 bash scripts/repa/run_B_repa_router_train_sample_eval.sh
 bash scripts/repa/run_B_repa_router_contra_train_sample_eval.sh
 bash scripts/repa/run_B_repa_routed_train_sample_eval.sh
@@ -128,6 +150,9 @@ bash scripts/repa/run_B_repa_double_share_train_sample_eval.sh
 
 bash scripts/MoS_repa/run_B_repa_mos_train_sample_eval.sh
 bash scripts/MoS_repa/run_B_repa_mos_naive_train_sample_eval.sh
+bash scripts/MoS_repa/run_B_repa_mos_naive_choice_b3_5_train_sample_eval.sh
+bash scripts/MoS_repa/run_B_repa_multi_align_train_sample_eval.sh
+bash scripts/MoS_repa/run_B_repa_mos_cross_global_block_train_sample_eval.sh
 
 bash scripts/dynamic_repa/run_B_repa_dyna_train_sample_eval.sh
 bash scripts/dynamic_repa/run_B_repa_dyna_select_train_sample_eval.sh
@@ -144,6 +169,16 @@ bash scripts/hierar/run_B_hierar_expert_NoPenalty_train.sh
 bash scripts/hierar/run_B_hierar_expert_NoPenalty_infer_eval.sh
 bash scripts/hierar/run_B_hierar_expert_repa_dyna_train_sample_eval.sh
 
+bash scripts/mae_align/run_B_mae_align_train_sample_eval.sh
+bash scripts/mae_align/run_B_mae_align_proj_train_sample_eval.sh
+bash scripts/noise_expert/run_B_noise_expert_train_sample_eval.sh
+bash scripts/noise_expert/run_B_noise_expert_ema_on_shared_train_sample_eval.sh
+bash scripts/expert_contra/run_B_expert_contra_output_train_sample_eval.sh
+bash scripts/expert_contra/run_B_expert_contra_param_train_sample_eval.sh
+
+bash tb_smoke_200/run_all.sh
+bash tb_smoke_500/run_all.sh
+
 bash scripts/run_all_infer_eval_500K.sh
 ```
 
@@ -156,6 +191,7 @@ conda create -n promoe_eval python=3.9 -y
 conda activate promoe_eval
 cd evaluation
 pip install -r requirements.txt
+conda install -c conda-forge cudatoolkit=11.2 cudnn=8.1.0
 python run_eval.py /path/to/generated/images --count 50000
 ```
 
@@ -169,20 +205,22 @@ python run_eval.py /path/to/generated/images --count 50000 --no-eval
 - Follow existing style in touched files: 4-space indentation, `snake_case` functions/variables, `PascalCase` classes.
 - Preserve existing import grouping and logging-heavy style.
 - Keep config filenames in the numeric-prefixed style (for example `004_*.yaml`).
+- Wrapper/config names like `b3_5` are human-readable 1-indexed block ranges; YAML `align_blocks` stays 0-indexed Python-style (for example `b3_5` pairs with `align_blocks: [2, 3, 4]`).
 - Add overrides in YAML and rely on `deep_update` to only replace intended keys.
 
 ## Testing Guidelines
 No dedicated `tests/` directory. Use smoke checks aligned to your change surface:
 
-- Training changes: `python train.py --config ...`, `python train_with_repa.py --config ...`, or `python train_with_MoS_repa.py --config ...`.
+- Training changes: `python train.py --config ...`, `python train_with_repa.py --config ...`, `python train_with_MoS_repa.py --config ...`, or `python train_with_mae.py --config ...`.
 - Sampling changes: `python sample.py --config ...` (with `--step_list_for_sample` / `--guide_scale_list` as needed).
 - Evaluation changes: run from inside `evaluation/`: `python run_eval.py ...`.
 - Analysis changes: run the relevant entry script under `analyses/`; for FLOPs/statistics, use `python analyses/run_compute_flops.py --help` for import/CLI validation or a checkpoint-backed smoke run with `--ckpt ...`.
 - Syntax checks: `python -m py_compile <modified_python_files>`.
 - End-to-end REPA-DYNA smoke check: run one wrapper in `scripts/dynamic_repa/` and verify train/sample/eval logs are produced.
 - End-to-end MoS-REPA smoke check: run `bash scripts/MoS_repa/run_B_repa_mos_train_sample_eval.sh` and verify train/sample/eval logs are produced.
+- Cross-alignment / monitoring changes: run `bash tb_smoke_200/run_all.sh` or `bash tb_smoke_500/run_all.sh` and verify `monitor/` TensorBoard scalars are emitted.
 - One-click experimental wrappers should keep the hard-coded interpreter launch style from `scripts/template.sh`: `/mnt/workspace/yujie/.conda/envs/promoe/bin/python` for training/sampling and `/mnt/workspace/yujie/.conda/envs/fid_eval/bin/python` for evaluation.
-- When writing a new training + sampling + evaluation three-in-one shell script, start from `scripts/template.sh`, preserve its interpreter-launch pattern, and do not replace it with `conda activate`; otherwise the script may fail on the experiment server.
+- When writing a new training + sampling + evaluation three-in-one shell script, start from `scripts/template.sh`, preserve its interpreter-launch pattern, swap the training entrypoint as needed (`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, or `train_with_mae.py`), and do not replace it with `conda activate`; otherwise the script may fail on the experiment server.
 - For new analysis entrypoints, add a matching `analyses/<basename>.md` usage guide and keep shared logic in a subpackage under `analyses/` rather than embedding everything in the root script.
 
 If you touch dataset traversal, latent mapping, or preprocessing logic, clear/regenerate `preprocess/image_paths_cache.txt` before re-running checks.
@@ -191,7 +229,7 @@ If you touch dataset traversal, latent mapping, or preprocessing logic, clear/re
 Use concise, imperative, single-scope commit subjects. In PR descriptions, include:
 
 - Affected model family/config(s).
-- Whether the path is `train.py`, `train_with_repa.py`, or `train_with_MoS_repa.py`.
+- Whether the path is `train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, or `train_with_mae.py`.
 - Dataset layout assumptions (especially `train/` path and latent sibling path).
 - GPU assumptions (`gpu_ids`, world size, sampling GPUs).
 - Evidence of behavior change (logs, sample folders, metric outputs).
@@ -231,6 +269,7 @@ Analysis notes:
 - `analyses/run_compute_flops.py` resolves the YAML config from the checkpoint path, reads `gpu_ids` from that YAML, and sets `CUDA_VISIBLE_DEVICES` before spawning workers.
 - The FLOPs analysis entrypoint accepts both `--ckpt` and the legacy positional checkpoint argument; hyphenated and underscore flag spellings are both supported for its sampling/reporting options.
 - FLOPs/statistics outputs are written under `outputs/<model_name>/<config_stem>/sample/step<ckpt_step>/flops_eval/`, including `flops_result.txt`, expert-frequency plots, and optional per-step reports.
+- `analyses/run_mos_routing_analysis.py` infers the YAML config from `--ckpt`, does not require a teacher encoder, and writes plots plus `metadata.yaml` under `outputs/<model_name>/<config_stem>/sample/step<ckpt_step>/mos_routing/`.
 
 Evaluation notes:
 

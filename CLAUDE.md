@@ -159,10 +159,12 @@ See `crash_diagnosis_report.md` for the full investigation.
 ```python
 from utils import TrainingMonitor
 monitor = TrainingMonitor(model, logger=logger, log_every=cfg.log_interval,
-                          enabled=(rank == 0))
+                          enabled=(rank == 0), writer=tb_writer)
 # inside the training loop, AFTER backward() + clip_grad_norm_, BEFORE zero_grad():
 monitor.on_step(step, losses=logged_loss_dict)
 ```
+
+Pass the existing `SummaryWriter` as `writer=` to mirror every stat to TensorBoard under the `monitor/{grad,attn,proj,coeff,router,cc,cross}/...` namespaces alongside the periodic text log. Omit it to log only to the logger.
 
 Mechanics — all non-invasive, no model code changes required:
 - Installs `forward_hook`s by **class name** on `ExpertLocalAttention` / `BlockAlignAttention` / `GlobalPreAttention` (attention maps), `CoeffPredictor` / `AlignCoefficientPredictor` (per-token sigmoid coefficients), and `BlockRouter` / `PerBlockRouter` / `AdaLNRouter` (router outputs — dispatched per class because the three have different output shapes and softmax conventions).
