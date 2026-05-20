@@ -42,6 +42,7 @@ from models.models_ProMoE_TC_sigmoid import DiT as ProMoE_TC_sigmoid
 from models.models_ProMoE_TC_hierar import DiT as ProMoE_TC_hierar
 from models.models_ProMoE_TC_hierar_expert import DiT as ProMoE_TC_hierar_expert
 from models.models_ProMoE_EC import DiT as ProMoE_EC
+from models.models_ProMoE_EC_batch_choice import DiT as ProMoE_EC_BC
 from models.models_ProMoE_TC_noise_expert import DiT as ProMoE_TC_noise_expert
 from models.models_ProMoE_TC_noise_expert_proj import DiT as ProMoE_TC_noise_expert_proj
 from models.models_ProMoE_TC_noise_expert_ema import DiT as ProMoE_TC_noise_expert_ema
@@ -67,6 +68,7 @@ model_dict = {
     "ProMoE_TC_L": (ProMoE_TC, "DiT_L_config"),
     "ProMoE_TC_XL": (ProMoE_TC, "DiT_XL_config"),
     "ProMoE_EC_L": (ProMoE_EC, "DiT_L_config"),
+    "ProMoE_EC_BC_B": (ProMoE_EC_BC, "DiT_B_config"),
     "ProMoE_TC_B_noise_expert": (ProMoE_TC_noise_expert, "DiT_B_config"),
     "ProMoE_TC_L_noise_expert": (ProMoE_TC_noise_expert, "DiT_L_config"),
     "ProMoE_TC_B_noise_expert_proj": (ProMoE_TC_noise_expert_proj, "DiT_B_config"),
