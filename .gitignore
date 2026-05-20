@@ -20,3 +20,6 @@ image_paths_cache.txt
 /tb_smoke_200/
 /tb_smoke_500/
 /training_logs/
+
+# Local Claude Code harness settings (per-user permission allowlists)
+/.claude/settings.local.json

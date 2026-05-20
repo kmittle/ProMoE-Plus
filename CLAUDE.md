@@ -151,7 +151,7 @@ Cross-alignment variants (`cross_global_pre`, `cross_global_block`, `cross_exper
 
 2. **Detach the block output before feeding it to a block-wise weight-prediction module.** For `cross_global_block` and `cross_expert_local` variants (both standard and MoS), the attention module that predicts cross-alignment weights consumes the aligned DiT block's output `x`. Without `x.detach()`, two gradient paths leak into the same block: the projection path (which pushes features toward teacher) and the attention path (which pushes features to differentiate same-expert tokens for sharp attention). This creates gradient conflict and manifests as early MSE spikes (plan 03: step ~9890) or late MSE divergence (plan 02: step ~371k). The fix: call the attention module with `x.detach()` (e.g. `self.expert_local_attn(x.detach(), mask)`), keep the projection call on the original `x`. The attention module's internal parameters still receive gradient via `cross_align_loss`; only the gradient flow back into the DiT block is cut. `cross_global_pre` variants are exempt because they apply attention to the initial patch embedding (before any DiT block), and `cross_proto` variants are exempt because their weights come from MoE routing (`_proto_sim`) rather than a dedicated weight-prediction module.
 
-See `crash_diagnosis_report.md` for the full investigation.
+See `collapse_smoking_test/crash_diagnosis_report.md` for the full investigation.
 
 ### TrainingMonitor (Crash Diagnosis Utility)
 `utils.py` exposes a `TrainingMonitor` class that captures the precursor signals relevant to the cross-alignment crashes above (attention-row collapse, exploding projector features, runaway per-group grad norms, routing collapse, loss jumps). It is designed to be wired into a crashed model's re-run with minimal changes:
@@ -253,9 +253,28 @@ If the ablation is controlled by an existing config flag (e.g., `router_norm_typ
 - Offline/air-gapped training: all training scripts and `sample.py` accept `--vae-path`; `train_with_repa.py` and `train_with_MoS_repa.py` also accept `--repa-enc-path`. See `ProMoE-REPA.md` for details.
 - `preprocess/image_paths_cache.txt` caches the dataset file list; delete and rebuild it after switching datasets or reorganizing files.
 - When `use_pre_latents=True`, the latent directory must be a sibling of `train/` named `sd-vae-ft-mse_Latents_256img_npz` — the code derives latent paths by replacing `train` in image paths.
+- `model.py` at the repo root is an unrelated reference file (not imported anywhere in the project). Ignore it when navigating the codebase — the project's models live in `models/`.
+
+## Workflow Rules
+- **Clean up smoke-test artifacts immediately.** After a smoke test or sanity run finishes (success or failure), delete the temporary scripts, generated configs, output directories (e.g., `tb_smoke_*/`, `collapse_smoking_test*/`, `outputs/<model>/<smoke_cfg>/`), and any caches that exist only because of the smoke test. Do not let debug-only artifacts accumulate in the working tree. Long-lived artifacts — real training outputs under `outputs/`, `pretrained_ckpt/`, `training_logs/`, and project-level `__pycache__/` — are out of scope and must not be touched.
+- **Run all background processes in a new tmux window of the current session.** Never use `command &`, `nohup`, or `Bash`'s `run_in_background=true` for anything that doesn't return promptly (training, sampling, long evals, watch loops, dev servers). Use:
+  ```
+  test -n "${TMUX:-}" || { echo "not inside tmux — attach first"; exit 1; }
+  tmux new-window -t "$(tmux display-message -p '#S')" -n <name> '<command>'
+  ```
+  If `$TMUX` is unset, **abort and ask the user to attach to a tmux session first** — do not silently fall back to backgrounding. Short synchronous commands (`ls`, `grep`, `py_compile`, `git status`, …) continue to run in the foreground.
 
 ## Companion Documentation
 - `ProMoE-REPA.md` — Detailed guide for all REPA variant workflows, configuration reference, and FAQ.
 - `AGENTS.md` — Full project structure reference, output layout, testing guidelines, and commit conventions.
 - `analyses/README.md` — Overview of analysis entrypoints; per-script usage in `analyses/<basename>.md` files.
 - `plans/` — Implementation plans for Cross-Attention variants (`plan_01` through `plan_08`), covering both standard REPA and MoS cross-alignment designs.
+- `implementation-plan.md` — Draft plan (Chinese) for a future "attention-weighted same-expert same-image alignment" experiment family. Not yet implemented; reference for forthcoming work, not current code.
+
+## Project-Local Skills (`.claude/skills/`)
+Two project-specific slash commands live under `.claude/skills/`. They encode the project-aware checks (model_dict ↔ models/ ↔ configs/ ↔ scripts/ four-way consistency, cross-alignment stability invariants, TrainingMonitor hook integrity) so future Claude instances don't have to re-derive them.
+
+- `/check` — Carpet-style code-quality loop on **the entire codebase**: scan → fix → commit (per iteration) → smoke test. Terminates after 5 consecutive iterations with zero findings, or hard caps at 20 iterations. Smoke test is `py_compile` + import check only — never starts real training/sampling. Each iteration produces its own commit (`chore(check): iter N — ...`); never amends, force-pushes, or pushes.
+- `/debug` — Same loop shape as `/check`, but the scan is **scoped to the current uncommitted diff** (modified + staged + untracked relative to HEAD). Does **not** commit during the loop — leaves the validated WIP dirty for the user to commit themselves. Stops immediately if the working tree is already clean.
+
+Both skills explicitly refuse to: push/force-push/amend, run real training/sampling, edit runtime artifact dirs (`outputs/`, `pretrained_ckpt/`, `training_logs/`, `tb_smoke_*/`, `collapse_smoking_test*/`), or touch the vendored `REPA/` (uppercase) subproject.
