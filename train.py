@@ -450,23 +450,48 @@ def worker(gpu, cfg):
         ])
         img_dataset = ImageFolder(data_path, transform=transform)
 
-    distributed_sampler = DistributedSampler(
-        img_dataset,
-        num_replicas=cfg.world_size,
-        rank=cfg.rank
-    )
     cfg.total_train_batch_size = getattr(cfg, 'total_train_batch_size', 256)
     cfg.train_batch_size = cfg.total_train_batch_size // cfg.world_size
-    image_dataloader = DataLoader(
-        img_dataset,
-        batch_size=cfg.train_batch_size,
-        sampler=distributed_sampler,
-        shuffle=False,
-        num_workers=cfg.img_num_workers,
-        pin_memory=True,
-        prefetch_factor=cfg.prefetch_factor,
-        persistent_workers=True
-    )
+    use_structured = bool(getattr(cfg, 'structured_batch_sampling', False))
+    if use_structured:
+        from utils import StructuredDistributedBatchSampler
+        struct_batch_sampler = StructuredDistributedBatchSampler(
+            dataset=img_dataset,
+            batch_size=cfg.train_batch_size,
+            num_replicas=cfg.world_size,
+            rank=cfg.rank,
+            case1_prob=float(getattr(cfg, 'structured_batch_case1_prob', 0.5)),
+            seed=int(getattr(cfg, 'seed', 0)),
+        )
+        logging.info(
+            f"Structured batch sampling ENABLED (case1_prob="
+            f"{struct_batch_sampler.case1_prob}); per-rank batches per epoch="
+            f"{len(struct_batch_sampler)}"
+        )
+        image_dataloader = DataLoader(
+            img_dataset,
+            batch_sampler=struct_batch_sampler,
+            num_workers=cfg.img_num_workers,
+            pin_memory=True,
+            prefetch_factor=cfg.prefetch_factor,
+            persistent_workers=True
+        )
+    else:
+        distributed_sampler = DistributedSampler(
+            img_dataset,
+            num_replicas=cfg.world_size,
+            rank=cfg.rank
+        )
+        image_dataloader = DataLoader(
+            img_dataset,
+            batch_size=cfg.train_batch_size,
+            sampler=distributed_sampler,
+            shuffle=False,
+            num_workers=cfg.img_num_workers,
+            pin_memory=True,
+            prefetch_factor=cfg.prefetch_factor,
+            persistent_workers=True
+        )
     image_rank_iter = iter(image_dataloader)
 
     total_images = len(img_dataset)
@@ -540,6 +565,10 @@ def worker(gpu, cfg):
         except StopIteration:
             epoch += 1
             logging.info("!!!!!!!!!!!!! reload image_dataloader")
+            # StructuredDistributedBatchSampler seeds its RNG from self.epoch;
+            # advance it so the next epoch yields a different batch sequence.
+            if hasattr(image_dataloader.batch_sampler, 'set_epoch'):
+                image_dataloader.batch_sampler.set_epoch(epoch)
             image_rank_iter = iter(image_dataloader)
             img_batch = next(image_rank_iter)
 
@@ -565,6 +594,13 @@ def worker(gpu, cfg):
         )
 
         rank_img_t, rank_img_sigma = get_sigmas_timesteps(rank_img_u, cfg.shift, cfg.num_train_timesteps, n_dim=4)
+
+        # Structured batch sampling: in case 1 (random batch — labels differ),
+        # broadcast a single timestep across the batch so it varies in class
+        # but is fixed in t. Case 2 (all labels equal) keeps per-sample t.
+        if use_structured and not torch.all(rank_img_y == rank_img_y[0]):
+            rank_img_t = rank_img_t[:1].expand_as(rank_img_t).clone()
+            rank_img_sigma = rank_img_sigma[:1].expand_as(rank_img_sigma).clone()
 
         ################################# VAE preprocess
         if cfg.use_pre_latents:

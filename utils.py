@@ -1231,3 +1231,111 @@ class TrainingMonitor:
                 w.add_scalar(f'monitor/loss_ema/{name}', v, step)
         except Exception as e:
             self.logger.warning("[TrainingMonitor] TensorBoard write failed: %s", e)
+
+
+class StructuredDistributedBatchSampler(torch.utils.data.Sampler):
+    """
+    Per-rank batch sampler for structured diffusion-MoE training.
+
+    Each batch is one of two structured cases:
+      - case 1 (prob = case1_prob): B unique indices drawn uniformly from the
+        whole dataset. The training loop then broadcasts a single timestep
+        across all B samples so the batch varies in class but is fixed in t.
+      - case 2 (prob = 1 - case1_prob): pick one random class, then draw B
+        unique indices from that class. The training loop keeps per-sample
+        timesteps so the batch is fixed in class but varies in t.
+
+    Detection in the training loop is implicit: case 2 batches have all labels
+    equal, case 1 batches almost surely do not.
+
+    Each DDP rank samples independently (no cross-rank coordination). Two ranks
+    can land on the same class in case 2 — overlap is rare and harmless
+    (ImageNet train classes have >= 732 images each).
+
+    `__len__` matches the per-rank batch count of `DistributedSampler` so the
+    training loop's epoch behavior is unchanged.
+    """
+
+    def __init__(
+        self,
+        dataset,
+        batch_size,
+        num_replicas,
+        rank,
+        case1_prob=0.5,
+        seed=0,
+    ):
+        super().__init__(dataset)
+        if not (0.0 <= case1_prob <= 1.0):
+            raise ValueError(f"case1_prob must be in [0, 1], got {case1_prob}")
+        self.dataset = dataset
+        self.batch_size = int(batch_size)
+        self.num_replicas = int(num_replicas)
+        self.rank = int(rank)
+        self.case1_prob = float(case1_prob)
+        self.seed = int(seed)
+        self.epoch = 0
+
+        # Build class_idx -> [global_index] map.
+        # Prefer dataset.image_paths + class_to_idx (CustomImageFolder); fall
+        # back to dataset.samples (torchvision ImageFolder).
+        class_to_indices = {}
+        if hasattr(dataset, "image_paths") and hasattr(dataset, "class_to_idx"):
+            cls_map = dataset.class_to_idx
+            for i, p in enumerate(dataset.image_paths):
+                cname = os.path.basename(os.path.dirname(p))
+                c = cls_map[cname]
+                class_to_indices.setdefault(c, []).append(i)
+        elif hasattr(dataset, "samples"):
+            for i, (_, c) in enumerate(dataset.samples):
+                class_to_indices.setdefault(c, []).append(i)
+        else:
+            raise ValueError(
+                "StructuredDistributedBatchSampler needs the dataset to expose "
+                "either (image_paths + class_to_idx) or (samples)."
+            )
+
+        # Sanity check: every class must have >= batch_size images, else
+        # without-replacement sampling in case 2 cannot form a full batch.
+        smallest = min(len(v) for v in class_to_indices.values())
+        if smallest < self.batch_size:
+            raise ValueError(
+                f"Smallest class has {smallest} images < batch_size {self.batch_size}; "
+                "case 2 sampling without replacement is infeasible."
+            )
+
+        # Convert lists to numpy arrays for fast rng.choice.
+        import numpy as np
+        self._np = np
+        self.class_to_indices = {
+            c: np.asarray(idxs, dtype=np.int64) for c, idxs in class_to_indices.items()
+        }
+        self.classes = np.asarray(sorted(self.class_to_indices.keys()), dtype=np.int64)
+        self.all_indices = np.arange(len(dataset), dtype=np.int64)
+
+        global_batch_size = self.batch_size * self.num_replicas
+        self.num_batches_per_epoch = len(dataset) // global_batch_size
+
+    def set_epoch(self, epoch):
+        self.epoch = int(epoch)
+
+    def __iter__(self):
+        np = self._np
+        # Distinct deterministic stream per (seed, rank, epoch).
+        rng = np.random.default_rng(
+            self.seed * 10007 + self.rank * 1009 + self.epoch * 17 + 1
+        )
+        for _ in range(self.num_batches_per_epoch):
+            if rng.random() < self.case1_prob:
+                # case 1: B unique indices from the whole dataset.
+                idx = rng.choice(self.all_indices, size=self.batch_size, replace=False)
+            else:
+                # case 2: random class, B unique indices from that class.
+                c = int(rng.choice(self.classes))
+                idx = rng.choice(
+                    self.class_to_indices[c], size=self.batch_size, replace=False
+                )
+            yield idx.tolist()
+
+    def __len__(self):
+        return self.num_batches_per_epoch
