@@ -1,11 +1,11 @@
 ---
 name: debug
-description: Like /check, but the carpet scan is scoped to the current uncommitted diff only (modified + staged + untracked relative to HEAD). Iterate (scan → fix → smoke test) until 5 consecutive iterations on the dirty working tree find zero issues. Use when the user invokes /debug or wants to validate WIP before committing.
+description: Like /inspect, but the carpet scan is scoped to the current uncommitted diff only (modified + staged + untracked relative to HEAD). Iterate (scan → fix → smoke test) until 5 consecutive iterations on the dirty working tree find zero issues. Use when the user invokes /debug or wants to validate WIP before committing.
 ---
 
 # /debug — Iterative carpet check on uncommitted changes
 
-Same loop shape as `/check`, but **scoped to uncommitted changes** and **does not commit during the loop**. The deliverable is a clean working tree that the user can then commit themselves.
+Same loop shape as `/inspect`, but **scoped to uncommitted changes** and **does not commit during the loop**. The deliverable is a clean working tree that the user can then commit themselves.
 
 Hard cap: **20 iterations total** — if hit, stop and report what remains.
 
@@ -80,7 +80,7 @@ Do NOT start real training, sampling, or evaluation — out of scope.
 
 - **Success:** `consecutive_clean == 5`. Print final summary: total iterations, total findings fixed, current dirty set (`git status --short`), and one line suggesting the user commit when ready. **Do not commit on the user's behalf** — leave that to them.
 - **Cap hit:** `iter == 20` without reaching 5/5. Print final summary, outstanding findings, and the current dirty set.
-- **Clean tree at start of an iteration:** stop with "nothing to debug — working tree is clean. Did you mean /check?"
+- **Clean tree at start of an iteration:** stop with "nothing to debug — working tree is clean. Did you mean /inspect?"
 - **Ambiguity pause:** halt with the question and the current state (`iter`, `consecutive_clean`, dirty set, pending finding). Resume on user input.
 
 ## Workflow rules (project-wide, see CLAUDE.md)
@@ -90,7 +90,7 @@ Do NOT start real training, sampling, or evaluation — out of scope.
 ## What this skill must NOT do
 - **No git commits.** Not per-iteration, not at the end, not even "just one for the fixes." Committing is the user's call.
 - No `git stash`, `git reset`, `git checkout --`, or any operation that drops/hides the user's WIP.
-- No push, force-push, or amend (irrelevant here, but stated for symmetry with /check).
+- No push, force-push, or amend (irrelevant here, but stated for symmetry with /inspect).
 - No real training / sampling / evaluation runs.
 - No edits to `outputs/`, `pretrained_ckpt/`, `training_logs/`, `tb_smoke_*/`, `collapse_smoking_test*/`, or `REPA/` (uppercase vendored subproject).
 - No edits to clean (non-dirty) files unless required to fix a finding caused by the dirty set — and in that case, mention it explicitly in the iteration summary so the user knows their commit-to-be will grow.

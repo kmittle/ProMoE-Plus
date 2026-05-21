@@ -1,9 +1,9 @@
 ---
-name: check
-description: Run a project-wide carpet-style code-quality loop on ProMoE-Plus — for each iteration do (scan → fix → commit → smoke test), repeating until 5 consecutive iterations find zero issues. Use when the user invokes /check or asks for a thorough sweep before a milestone.
+name: inspect
+description: Run a project-wide carpet-style code-quality loop on ProMoE-Plus — for each iteration do (scan → fix → commit → smoke test), repeating until 5 consecutive iterations find zero issues. Use when the user invokes /inspect or asks for a thorough sweep before a milestone.
 ---
 
-# /check — Iterative carpet check loop
+# /inspect — Iterative carpet check loop
 
 Sweep the ProMoE-Plus codebase for issues, fix them, commit the fixes, then run a smoke test. Repeat until **5 consecutive iterations** produce zero findings AND a passing smoke test. Hard cap: **20 iterations total** — if hit, stop and report what remains.
 
@@ -50,7 +50,7 @@ If a finding is ambiguous (e.g., "is this dead code, or staged for a future vari
 If anything was fixed in step 2, create one commit per iteration. Use:
 
 ```
-chore(check): iter N — <one-line summary>
+chore(inspect): iter N — <one-line summary>
 
 <bulleted list of fixes if more than one>
 
@@ -69,7 +69,7 @@ Run, in order. Any failure resets `consecutive_clean` to 0 and becomes a finding
 a. **Full py_compile sweep** of all source listed in step 1.
 b. **Import check for touched modules.** For each `models/models_<X>.py` touched this iteration, run `python -c "from models.models_<X> import *"` to catch import-time regressions. Skip for non-model files.
 
-Do NOT start a real training run, sample run, or anything that occupies a GPU — that is out of scope for /check.
+Do NOT start a real training run, sample run, or anything that occupies a GPU — that is out of scope for /inspect.
 
 ### 5. Bookkeeping
 - If `findings.count == 0` AND smoke test passed: `consecutive_clean += 1`.
