@@ -263,6 +263,7 @@ If the ablation is controlled by an existing config flag (e.g., `router_norm_typ
   tmux new-window -t "$(tmux display-message -p '#S')" -n <name> '<command>'
   ```
   If `$TMUX` is unset, **abort and ask the user to attach to a tmux session first** — do not silently fall back to backgrounding. Short synchronous commands (`ls`, `grep`, `py_compile`, `git status`, …) continue to run in the foreground.
+- **A push request implicitly authorizes a commit of the current WIP.** When the user asks to push (any phrasing — `push`, `推送`, `最后 push 所有改动`, etc.), treat it as one combined instruction: commit any uncommitted WIP relevant to the conversation first, then push. Do not ask for a separate commit confirmation. All other git-safety rules still apply: no `--no-verify`, no force-push to `main`/`master`, never stage secrets or `*.local.json` files, never `git add -A`/`.` (stage explicit paths only).
 
 ## Companion Documentation
 - `ProMoE-REPA.md` — Detailed guide for all REPA variant workflows, configuration reference, and FAQ.
