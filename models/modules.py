@@ -318,3 +318,92 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
     emb = np.concatenate([emb_sin, emb_cos], axis=1)  # (M, D)
     return emb
 
+
+class PrototypeMLP(nn.Module):
+    """
+    Timestep-conditioned prototype transformer for proto_t variants.
+
+    Given the static cluster_centers (E, D_proto) and a per-sample timestep
+    embedding (B, D_t), produce per-sample prototypes (B, E, D_out) that live in
+    the same feature space as the tokens at that timestep — so that routing
+    similarity can be computed within the same noise level on both sides.
+
+    Topology: Linear(D_proto + D_t -> D_inter) -> GELU -> Linear(D_inter -> D_out)
+              with D_inter = 2 * D_out (2x expansion).
+
+    Two update modes:
+      - "residual":   prototype_t = cluster_centers + MLP(concat(cc, t_emb))
+                      fc2 is zero-initialized so at step 0 the MLP delta is 0
+                      and prototype_t == cluster_centers exactly (matches base
+                      ProMoE step 0 behavior bit-identical).
+      - "direct":     prototype_t = proto_proj(cc) + MLP(concat(cc, t_emb))
+                      proto_proj is a trainable Linear(D_proto -> D_out)
+                      initialized as the identity matrix; fc2 still zero-init.
+                      Step 0 -> I @ cc + 0 == cc. Adds D_proto * D_out params
+                      per block compared to residual mode.
+    """
+
+    def __init__(self, prototype_dim, time_dim, output_dim, intermediate_dim=None,
+                 update_mode="residual"):
+        super().__init__()
+        if update_mode not in ("residual", "direct"):
+            raise ValueError(
+                f"PrototypeMLP update_mode must be 'residual' or 'direct', "
+                f"got {update_mode!r}"
+            )
+        if intermediate_dim is None:
+            intermediate_dim = 2 * output_dim
+        if update_mode == "direct" and prototype_dim != output_dim:
+            raise ValueError(
+                f"direct mode identity-init requires prototype_dim == output_dim, "
+                f"got prototype_dim={prototype_dim}, output_dim={output_dim}"
+            )
+
+        self.prototype_dim = prototype_dim
+        self.time_dim = time_dim
+        self.output_dim = output_dim
+        self.update_mode = update_mode
+
+        # MLP delta path (same for both modes)
+        self.fc1 = nn.Linear(prototype_dim + time_dim, intermediate_dim, bias=True)
+        self.act = nn.GELU(approximate="tanh")
+        self.fc2 = nn.Linear(intermediate_dim, output_dim, bias=True)
+
+        # Direct mode: trainable identity-init projection on the cc skip path.
+        if update_mode == "direct":
+            self.proto_proj = nn.Linear(prototype_dim, output_dim, bias=False)
+        else:
+            self.proto_proj = None
+
+        self._init_weights()
+
+    def _init_weights(self):
+        # fc1: default Kaiming uniform (PyTorch Linear default).
+        # fc2: zero-init so the delta path contributes 0 at step 0.
+        nn.init.zeros_(self.fc2.weight)
+        nn.init.zeros_(self.fc2.bias)
+        # proto_proj: identity-init (direct mode only).
+        if self.proto_proj is not None:
+            nn.init.eye_(self.proto_proj.weight)
+
+    def forward(self, cluster_centers, t_emb):
+        """
+        Args:
+            cluster_centers: (E, D_proto)
+            t_emb:           (B, D_t)
+        Returns:
+            prototype_t:     (B, E, D_out)
+        """
+        B = t_emb.shape[0]
+        E = cluster_centers.shape[0]
+        cc_exp = cluster_centers.unsqueeze(0).expand(B, E, -1)   # (B, E, D_proto)
+        t_exp = t_emb.unsqueeze(1).expand(B, E, -1)              # (B, E, D_t)
+        combined = torch.cat([cc_exp, t_exp], dim=-1)            # (B, E, D_proto + D_t)
+
+        delta = self.fc2(self.act(self.fc1(combined)))           # (B, E, D_out)
+
+        if self.update_mode == "residual":
+            return cc_exp + delta
+        else:  # direct
+            return self.proto_proj(cc_exp) + delta
+
