@@ -56,6 +56,9 @@ Scripts under `scripts/` run train + sample + eval in one go. Organized by exper
 | `scripts/mae_align/` | MAE alignment, MAE alignment with projection |
 | `scripts/noise_expert/` | Noise expert, Noise expert proj, EMA on noise/shared |
 | `scripts/expert_contra/` | Expert contrastive output/param |
+| `scripts/expert_choice/` | EC-BC batch-flatten Expert-Choice routing (Base) |
+| `scripts/proto_t/` | Proto-T timestep-conditioned prototype: TC and EC-BC, each in residual / direct mode |
+| `scripts/structured_batch/` | Structured batch sampling routing ablation: TC and EC-BC |
 
 ```bash
 # Example: run a MoS experiment end-to-end
@@ -70,7 +73,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python preprocess/preprocess_vae.py \
 
 ### Evaluation (separate conda env with TensorFlow)
 ```bash
-conda create -n promoe_eval python=3.9 -y && conda activate promoe_eval
+conda create -n fid_eval python=3.9 -y && conda activate fid_eval
 cd evaluation && pip install -r requirements.txt
 conda install -c conda-forge cudatoolkit=11.2 cudnn=8.1.0
 
@@ -89,12 +92,12 @@ python run_eval.py /path/to/generated/images --count 50000 --no-eval
 - The YAML filename (minus extension) becomes `custom_cfg_name`, which determines the output subdirectory: `outputs/{model_name}/{custom_cfg_name}/` containing `checkpoints/`, `training.log`, `sample.log`, `tensorboard/`, and `sample/step{N}/`.
 
 ### Model Registry
-`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, and `train_with_mae.py` each define a `model_dict` mapping `model_name` strings to `(ModelClass, config_key)` pairs. `sample.py` merges all four dicts so it can sample from any model variant. Adding a new model requires an entry in the appropriate training script's `model_dict`. Note: `train.py` hosts most model families (base DiT, baselines, ProMoE-TC/EC, noise expert variants, expert contrastive); `train_with_MoS_repa.py` hosts MoS, MoS Naive, MoS Naive Choice (B/L/XL), MoS Naive Choice Sep, MoS Naive Choice Fused, MoS Naive Choice Blockwise, MoS Choice PerBlock, Multi-Align, and Cross-Attention variants (both standard REPA and MoS); `train_with_mae.py` only hosts group_align models.
+`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, and `train_with_mae.py` each define a `model_dict` mapping `model_name` strings to `(ModelClass, config_key)` pairs. `sample.py` merges all four dicts so it can sample from any model variant. Adding a new model requires an entry in the appropriate training script's `model_dict`. Note: `train.py` hosts most model families (base DiT, baselines, ProMoE-TC/EC, ProMoE_EC_BC batch-choice, proto_t timestep-conditioned-prototype (TC + EC-BC), noise expert variants, expert contrastive); `train_with_MoS_repa.py` hosts MoS, MoS Naive, MoS Naive Choice (B/L/XL), MoS Naive Choice Sep, MoS Naive Choice Fused, MoS Naive Choice Blockwise, MoS Choice PerBlock, Multi-Align, and Cross-Attention variants (both standard REPA and MoS); `train_with_mae.py` only hosts group_align models.
 
 ### Model Hierarchy (in `models/`)
 All model files follow the `models_*.py` naming convention. Key layers:
 
-- **`modules.py`** — Shared building blocks: `Attention`, `PatchEmbed`, `TimestepEmbedder`, `LabelEmbedder`, `FinalLayer`, `MLP`/`Mlp`, `SwiGLU`, `MoeMLP`.
+- **`modules.py`** — Shared building blocks: `Attention`, `PatchEmbed`, `TimestepEmbedder`, `LabelEmbedder`, `FinalLayer`, `MLP`/`Mlp`, `SwiGLU`, `MoeMLP`, `PrototypeMLP` (timestep-conditioned prototype generator for proto_t variants).
 - **`models_DiT.py`** — Dense DiT baseline. `DiTBlock` uses AdaLN-Zero modulation (6-param per-sample conditioning from timestep+class). All ProMoE variants inherit this block structure.
 - **Baselines**: `models_TCDiT.py` (Token-Choice MoE), `models_ECDiT.py` (Expert-Choice MoE), `models_DiffMoE.py` (capacity prediction).
 - **`models_ProMoE_TC.py`** — Main proposed model. `SparseMoeBlock` implements two-step routing: (1) conditional routing separates uncond tokens (class=1000) to a dedicated expert, (2) prototypical routing assigns cond tokens via cosine similarity to learnable `cluster_centers`. Includes routing contrastive loss via `AddAuxiliaryLoss` autograd trick. `models_ProMoE_EC.py` is the Expert-Choice variant (recommended for DDPM).
@@ -104,7 +107,7 @@ All model files follow the `models_*.py` naming convention. Key layers:
 | Family | Files | Training script | Key difference |
 |--------|-------|----------------|----------------|
 | REPA | `_repa.py`, `_repa_shared.py`, `_repa_cond.py` | `train_with_repa.py` | MLP projectors align DiT features with frozen DINOv2 teacher |
-| Dynamic REPA | `_repa_dyna.py`, `_dyna_scale.py`, `_dyna_select.py`, `_dyna_only.py` | `train_with_repa.py` | Timestep-dependent REPA loss weighting/selection |
+| Dynamic REPA | `_repa_dyna.py`, `_repa_dyna_scale.py`, `_repa_dyna_select.py`, `_repa_dyna_only.py` | `train_with_repa.py` | Timestep-dependent REPA loss weighting/selection |
 | Router REPA | `_repa_router.py`, `_repa_router_contra.py`, `_repa_routed.py`, `_repa_double_share.py` | `train_with_repa.py` | Alignment at router/prototype level instead of block output |
 | MoS REPA | `_repa_MoS.py`, `_MoS_naive.py`, `_MoS_naive_choice.py`, `_MoS_naive_choice_.py` (sep), `_MoS_naive_choice_blockwise.py`, `_MoS_choice_per_block.py` | `train_with_MoS_repa.py` | `BlockRouter` selects which teacher blocks to align with per-token. Config ablation flags: `router_norm_type` (`"layernorm"` default / `"rmsnorm"`), `align_target` (`"block_output"` default / `"shared_expert"` — falls back to block output for dense blocks) |
 | Fused MoS | `_MoS_naive_choice_fused.py` | `train_with_MoS_repa.py` | Fuses top-k teacher blocks via routing weights before alignment; shared Transformer+sigmoid `CoeffPredictor` (input: projected student features `z_proj` + conditioning) predicts per-token loss weight |
@@ -115,6 +118,8 @@ All model files follow the `models_*.py` naming convention. Key layers:
 | Group Align | `_group_align.py`, `_group_align_proj.py` | `train_with_mae.py` | Group alignment without REPA |
 | Cross-Attention | `_repa_cross_global_pre.py`, `_repa_cross_global_block.py`, `_repa_cross_expert_local.py`, `_repa_cross_proto.py` | `train_with_MoS_repa.py` | Inter-token attention-weighted REPA alignment at different positions (pre-MoE, block, expert-local, prototype) |
 | Cross-Attention MoS | `_repa_MoS_naive_choice_cross_global_pre.py`, `..._block.py`, `..._expert_local.py`, `..._proto.py` | `train_with_MoS_repa.py` | MoS + cross-attention alignment (combines block router teacher selection with cross-alignment) |
+| Batch-Choice EC | `_EC_batch_choice.py`, `_EC_batch_choice_proto_t.py` | `train.py` | Expert-Choice over the batch-flattened cond-token pool: each expert picks top-k from `B_cond*S` tokens (capacity `k = B_cond*S/E * top_k`) rather than per-image (cf. `models_ProMoE_EC.py`). Dispatch via `torch.gather`/`index_add_`. Keys `ProMoE_EC_BC_B` / `ProMoE_EC_BC_B_proto_t`; forward() returns a plain tensor (`AddAuxiliaryLoss`). EC-family variants follow `models_ProMoE_EC_*.py` and inherit from `ProMoE_EC`, not `ProMoE_TC`. |
+| Proto-T (timestep prototype) | `_proto_t.py` (TC), `_EC_batch_choice_proto_t.py` (EC-BC) | `train.py` | Replaces static `cluster_centers` with a per-sample timestep-conditioned prototype from `PrototypeMLP` (one per MoE block); the MoE block forward gains a `t_emb` arg so cos-sim routing runs in a noise-level-aligned space. Config flag `proto_t_update_mode` (default `"residual"` / `"direct"`). Keys `ProMoE_TC_B_proto_t` / `ProMoE_EC_BC_B_proto_t`; forward() returns a plain tensor. |
 | Ablations | `_sigmoid.py`, `_symmetric.py` | `train.py` | Routing gating variants |
 
 **REPA model forward() behavior**: Returns `(pred, zs_proj)` during training (eval returns only `pred`). The `_repa_shared.py` variant aligns shared expert output specifically — requires `encoder_depth` to point to a MoE block.
@@ -128,6 +133,7 @@ Model `forward()` returns either a plain tensor (DiT) or a tuple for models with
 - **ProMoE-Multi-Align**: Returns `(pred, repa_loss)` during training. Similar to MoS-REPA but aligns with teacher last layer only; `AlignCoefficientPredictor` produces per-token sigmoid coefficients that weight the alignment loss. When `use_dynamic_coeff=False`, the predictor is removed and alignment uses uniform weighting (plain mean of negative cosine similarity). Also trained via `train_with_MoS_repa.py`.
 - **ProMoE-Fused-MoS-REPA**: Returns `(pred, mos_repa_loss)` during training. Like MoS-REPA but fuses top-k teacher block features (weighted sum using routing weights, no re-normalization) before computing cosine similarity. A shared `CoeffPredictor` (Transformer + sigmoid, input = projected student features `z_proj` + conditioning `c`) predicts per-token loss weight. Trained via `train_with_MoS_repa.py`.
 - **ProMoE-Cross-Attention**: Returns `(pred, cross_align_loss)` during training. The cross-alignment loss uses attention weights (global, block-level, expert-local, or prototype-based) to weight the cosine similarity between student projections and teacher features. Computed inside the model via `compute_cross_align_loss()`. Trained via `train_with_MoS_repa.py` with same `proj_coeff` weighting.
+- **ProMoE-EC-BC / proto_t**: Both keep the `AddAuxiliaryLoss` plain-tensor return convention. proto_t additionally threads the timestep embedding through every block (`block(x, c, labels, t)` → MoE `forward(..., t_emb)`) so prototypes are regenerated per-timestep; preserve this `t_emb` arg in any proto_t-derived variant.
 
 ### REPA Module (`repa/` vs `REPA/`)
 - `repa/` (lowercase) — ProMoE's REPA integration: encoder loading, loss computation, used by `train_with_repa.py`.
@@ -169,7 +175,7 @@ Pass the existing `SummaryWriter` as `writer=` to mirror every stat to TensorBoa
 Mechanics — all non-invasive, no model code changes required:
 - Installs `forward_hook`s by **class name** on `ExpertLocalAttention` / `BlockAlignAttention` / `GlobalPreAttention` (attention maps), `CoeffPredictor` / `AlignCoefficientPredictor` (per-token sigmoid coefficients), and `BlockRouter` / `PerBlockRouter` / `AdaLNRouter` (router outputs — dispatched per class because the three have different output shapes and softmax conventions).
 - Auto-detects any top-level `nn.ModuleList` whose attribute name ends in `projectors` — covers `projectors`, `mos_projectors`, `align_projectors`, `router_projectors`.
-- Iterates `named_parameters()` each step for grad-norm stats grouped by param-name substring (attn_modules / projectors / block_router / coeff_predictor / cluster_centers / shared_expert / moe_experts / backbone). Frozen params (`requires_grad=False`, e.g. `pos_embed`, `noise_expert_ema` params) are skipped.
+- Iterates `named_parameters()` each step for grad-norm stats grouped by param-name substring (attn_modules / projectors / block_router / coeff_predictor / capacity_predictor / cluster_centers / shared_expert / moe_experts / backbone). Frozen params (`requires_grad=False`, e.g. `pos_embed`, `noise_expert_ema` params) are skipped.
 - `cluster_centers` is a parameter inside each `SparseMoeBlock` (NOT on the top-level DiT), so stats are aggregated via `named_parameters()` traversal, not a top-level attribute lookup.
 - `ExpertLocalAttention` uses masked softmax + `nan_to_num(0)`, which produces fully-zero rows for uncond tokens (labels==1000) by design (~10% under CFG). The attention hook filters to "active rows" (`row_sum > 1e-4`) before computing min/max, and reports `inactive_frac` as a benign diagnostic instead of an alert.
 - Dense DiT / non-MoE / non-REPA models degrade gracefully — no hooks are installed, only backbone grad norms are reported.
@@ -178,8 +184,10 @@ Mechanics — all non-invasive, no model code changes required:
 ### Key MoE Parameters (in YAML `MoE_config`)
 Core parameters: `num_routed_experts` (typically 12), `top_k` (experts per token, default 1), `use_shared_expert`/`use_uncond_expert`, `interleave` (alternate MoE/dense layers).
 
+- `proto_t_update_mode` (proto_t variants only): `"residual"` (default; `prototype_t = cc + MLP(concat(cc, t_emb))`, fc2 zero-init so step 0 == base ProMoE) or `"direct"` (`proto_proj(cc) + MLP(...)`, identity-init `proto_proj`, adds ~3.5M params). Both are step-0-identical to base ProMoE.
+
 Constraints to know:
-- `routing_contrastive_lam` must be **0** for `repa_router` model. For `repa_router_contra`, it is the total budget shared between REPA alignment and contrastive via linear handoff over `router_loss_decay_steps`.
+- For the `repa_router` model, `routing_contrastive_lam` defaults to **0** (a default kwarg, not an assert) — the model expects the contrastive term off since alignment happens at the router level. For `repa_router_contra`, it is the total budget shared between REPA alignment and contrastive via linear handoff over `router_loss_decay_steps`.
 - `expert_contrastive_blocks` must all be MoE blocks (asserted at init).
 - `noise_expert_ema` model: noise expert params are `requires_grad=False` and updated via EMA — excluded from optimizer.
 
@@ -190,6 +198,7 @@ Constraints to know:
 - Mixed precision with bfloat16; gradient clipping at `max_grad_norm=0.5`
 - EMA model maintained for stable generation
 - Supports both raw image loading and pre-computed VAE latents (`use_pre_latents=True`)
+- Optional structured batch sampling (opt-in, default off, `train.py` only): top-level `structured_batch_sampling: True` swaps `DistributedSampler` for `StructuredDistributedBatchSampler` (utils.py). Each batch is one of two cases, mixed by `structured_batch_case1_prob` (default 0.5): case 1 = random classes + a single broadcast timestep (varies class, fixed t); case 2 = a single random class + per-sample timesteps (fixed class, varies t). The loop detects case 1 via labels-not-all-equal and broadcasts the per-image t/sigma. Reuses the `ProMoE_TC_B` / `ProMoE_EC_BC_B` models (no new model class); default False keeps training bit-identical. Configs `004_ProMoE_B{,_EC_BC}_structbatch.yaml`, scripts under `scripts/structured_batch/`.
 - Loss = MSE reconstruction + auxiliary losses (routing contrastive for ProMoE, capacity prediction for DiffMoE, expert contrastive for expert_contra)
 - After each optimizer step, `train.py` calls `model.module.update_noise_expert_ema()` if the model exposes it (noise_expert_ema models). Noise expert parameters are excluded from the optimizer (`requires_grad=False`).
 - Checkpoints saved every `save_ckpt_interval` steps to `outputs/{model_name}/{custom_cfg_name}/checkpoints/`
@@ -204,7 +213,7 @@ Constraints to know:
 - Output: `outputs/{model_name}/{custom_cfg_name}/sample/step{N}/`
 
 ### Pretrained Weights
-- VAE loading uses `load_vae()` from `utils.py`: checks `pretrained_ckpt/vae/{repo_id}/` for a local copy first; if absent, downloads from HuggingFace and saves locally for future use.
+- VAE loading uses `load_vae()` from `utils.py`: if `--vae-path`/`vae_path` is given it loads directly from that path; otherwise it checks `pretrained_ckpt/vae/{repo_id-with-/-replaced-by---}/` (e.g. `stabilityai/sd-vae-ft-mse` → `pretrained_ckpt/vae/stabilityai--sd-vae-ft-mse/`) for a local copy first, and if absent downloads from HuggingFace and `save_pretrained()`s it there for reuse.
 - All training entry points (`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, `train_with_mae.py`, `sample.py`, `preprocess/preprocess_vae.py`) use this cached loading path.
 - REPA teacher encoders (DINOv2) are cached to `pretrained_ckpt/encoder/` after first download via torch.hub.
 
@@ -237,7 +246,7 @@ Constraints to know:
 If the ablation is controlled by an existing config flag (e.g., `router_norm_type`, `align_target`, `use_dynamic_coeff`), only a new YAML config and shell script are needed — the `model_name` stays the same. Add the flag with a default that preserves backward compatibility.
 
 ### New model variant
-1. **Model**: Create `models/models_ProMoE_TC_<variant>.py`. Inherit from the closest existing variant. Follow `forward()` return conventions (see Auxiliary Loss Convention above).
+1. **Model**: Create `models/models_ProMoE_TC_<variant>.py` (EC-family variants follow `models_ProMoE_EC_<variant>.py` and inherit from `ProMoE_EC` instead). Inherit from the closest existing variant. Follow `forward()` return conventions (see Auxiliary Loss Convention above).
 2. **Register**: Add a `(ModelClass, config_key)` entry to `model_dict` in the appropriate training script (`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, or `train_with_mae.py`). `sample.py` merges all dicts automatically.
 3. **Config**: Create `configs/004_ProMoE_<size>_<variant>.yaml`. Set `model_name` to match the registered key. Add `MoE_config` and/or `repa_config` under the model config key as needed.
 4. **Shell script**: Copy `scripts/template.sh` to `scripts/<family>/run_<size>_<variant>_train_sample_eval.sh`. Update `CONFIG` and `LOG` variables. Choose the correct training entrypoint in the train step.
@@ -245,7 +254,7 @@ If the ablation is controlled by an existing config flag (e.g., `router_norm_typ
 
 ## Important Notes
 - All paper results use `qk_norm=False`. Enable `qk_norm=True` for training beyond 2M steps.
-- Token-Choice routing is default; use Expert-Choice (`models_ProMoE_EC.py`) for DDPM training.
+- Token-Choice routing is default; use Expert-Choice for DDPM training. Two EC variants exist: per-image (`models_ProMoE_EC.py`) and batch-flatten (`models_ProMoE_EC_batch_choice.py`, key `ProMoE_EC_BC_B`).
 - Evaluation requires a separate TensorFlow environment and the reference batch `VIRTUAL_imagenet256_labeled.npz` from OpenAI's guided-diffusion. `evaluation/download_ref_batches.py` can auto-download these.
 - `cfg.data_path` in `config.py` must be set to your ImageNet train directory.
 - Multi-GPU sampling produces different random sequences than single-GPU (different class label ordering).
@@ -273,9 +282,11 @@ If the ablation is controlled by an existing config flag (e.g., `router_norm_typ
 - `implementation-plan.md` — Draft plan (Chinese) for a future "attention-weighted same-expert same-image alignment" experiment family. Not yet implemented; reference for forthcoming work, not current code.
 
 ## Project-Local Skills (`.claude/skills/`)
-Two project-specific slash commands live under `.claude/skills/`. They encode the project-aware checks (model_dict ↔ models/ ↔ configs/ ↔ scripts/ four-way consistency, cross-alignment stability invariants, TrainingMonitor hook integrity) so future Claude instances don't have to re-derive them.
+Four project-specific slash commands live under `.claude/skills/`. They encode the project-aware checks (model_dict ↔ models/ ↔ configs/ ↔ scripts/ four-way consistency, cross-alignment stability invariants, TrainingMonitor hook integrity) so future Claude instances don't have to re-derive them.
 
 - `/inspect` — Carpet-style code-quality loop on **the entire codebase**: scan → fix → commit (per iteration) → smoke test. Terminates after 5 consecutive iterations with zero findings, or hard caps at 20 iterations. Smoke test is `py_compile` + import check only — never starts real training/sampling. Each iteration produces its own commit (`chore(inspect): iter N — ...`); never amends, force-pushes, or pushes.
-- `/debug` — Same loop shape as `/inspect`, but the scan is **scoped to the current uncommitted diff** (modified + staged + untracked relative to HEAD). Does **not** commit during the loop — leaves the validated WIP dirty for the user to commit themselves. Stops immediately if the working tree is already clean.
+- `/check` — Same loop shape as `/inspect`, but the scan is **scoped to the current uncommitted diff** (modified + staged + untracked relative to HEAD). Does **not** commit during the loop — leaves the validated WIP dirty for the user to commit themselves. Stops immediately if the working tree is already clean.
+- `/inspect-codex` — Codex-augmented `/inspect`: each iteration also briefs an **independent Codex reviewer** (`codex exec`, xhigh reasoning, `-s read-only` sandbox) run in a tmux window **in parallel** with Claude's own scan, then aggregates both finding sets, adjudicates the real problems, fixes them, smoke-tests, and commits. Codex only reviews — Claude is the sole fixer. Same 5-consecutive-clean / 20-iteration termination. Billed (Codex xhigh quota); requires being inside tmux.
+- `/check-codex` — Codex-augmented `/check`: the same diff-scoped loop with the parallel read-only Codex reviewer, but **never commits** (leaves the vetted WIP dirty). Stops immediately if the working tree is clean.
 
-Both skills explicitly refuse to: push/force-push/amend, run real training/sampling, edit runtime artifact dirs (`outputs/`, `pretrained_ckpt/`, `training_logs/`, `tb_smoke_*/`, `collapse_smoking_test*/`), or touch the vendored `REPA/` (uppercase) subproject.
+All four skills explicitly refuse to: push/force-push/amend, run real training/sampling, edit runtime artifact dirs (`outputs/`, `pretrained_ckpt/`, `training_logs/`, `tb_smoke_*/`, `collapse_smoking_test*/`), or touch the vendored `REPA/` (uppercase) subproject. The two `-codex` variants additionally run Codex in a read-only sandbox, review-only, inside a tmux window — Claude remains the sole writer.
