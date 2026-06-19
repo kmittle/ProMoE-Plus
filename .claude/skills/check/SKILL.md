@@ -1,9 +1,9 @@
 ---
-name: debug
-description: Like /inspect, but the carpet scan is scoped to the current uncommitted diff only (modified + staged + untracked relative to HEAD). Iterate (scan → fix → smoke test) until 5 consecutive iterations on the dirty working tree find zero issues. Use when the user invokes /debug or wants to validate WIP before committing.
+name: check
+description: Like /inspect, but the carpet scan is scoped to the current uncommitted diff only (modified + staged + untracked relative to HEAD). Iterate (scan → fix → smoke test) until 5 consecutive iterations on the dirty working tree find zero issues. Use when the user invokes /check or wants to validate WIP before committing.
 ---
 
-# /debug — Iterative carpet check on uncommitted changes
+# /check — Iterative carpet check on uncommitted changes
 
 Same loop shape as `/inspect`, but **scoped to uncommitted changes** and **does not commit during the loop**. The deliverable is a clean working tree that the user can then commit themselves.
 
