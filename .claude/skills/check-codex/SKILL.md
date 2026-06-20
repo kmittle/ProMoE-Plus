@@ -1,6 +1,6 @@
 ---
 name: check-codex
-description: Codex-augmented carpet check scoped to the uncommitted diff (modified + staged + untracked vs HEAD). Each iteration briefs an independent Codex reviewer (xhigh reasoning, read-only sandbox) that runs in a tmux window in parallel with Claude's own diff-scoped scan; Claude aggregates both finding sets, adjudicates the real problems, and fixes them, then smoke-tests — but never commits (leaves validated WIP dirty for the user). Repeats until 5 consecutive iterations find zero real problems. Use when the user invokes /check-codex or wants a Codex second opinion on WIP before committing.
+description: Codex-augmented carpet check scoped to the uncommitted diff (modified + staged + untracked vs HEAD). Each iteration briefs an independent Codex reviewer (xhigh reasoning, launched yolo / no sandbox via the headless equivalent of cx-yolo, kept review-only by instruction + a checksum-revert guard) that runs in a tmux window in parallel with Claude's own diff-scoped scan; Claude aggregates both finding sets, adjudicates the real problems, and fixes them, then smoke-tests — but never commits (leaves validated WIP dirty for the user). Repeats until 5 consecutive iterations find zero real problems. Use when the user invokes /check-codex or wants a Codex second opinion on WIP before committing.
 ---
 
 # /check-codex — Codex-augmented check on uncommitted changes
@@ -30,15 +30,22 @@ Dirty set = anything reported `M` / `A` / `??` / `R` / `C`. Track both the **pat
 - The cross-reference / cross-alignment / TrainingMonitor checks apply **only when a relevant file is in the dirty set** (check cross-alignment invariants only if a cross-alignment model file is dirty; `model_dict` consistency only if a `model_dict` or a `models_*.py` is dirty; etc.).
 - Keep the **same HARD PROHIBITIONS** and the **same `### FINDING` OUTPUT FORMAT** as `/inspect-codex`.
 
-### 2. Launch Codex headless, in parallel (tmux)
-Identical mechanics to `/inspect-codex` step 2 — runner script + tmux window (`-s read-only -c model_reasoning_effort=xhigh`, `-o` capture, `.done` sentinel) — only the window name changes to `codex-check`.
+### 2. Snapshot the dirty set, then launch Codex headless (yolo), in parallel (tmux)
+Same mechanics as `/inspect-codex` step 2 — headless **yolo** launch (`codex exec --dangerously-bypass-approvals-and-sandbox -c model_reasoning_effort=xhigh`, the headless equivalent of `cx-yolo`; `codex exec` has no `--yolo`), prompt via stdin, `-o` capture, `.done` sentinel — only the window name changes to `codex-check`. Because Codex now runs **unsandboxed**, first back up the **dirty set** so any write it makes can be reverted in step 5. Diff scope makes this precise and cheap — copy each dirty file's content:
+```
+git status --porcelain > "$CODEX_TMP/tree_before_${iter}.txt"
+mkdir -p "$CODEX_TMP/snap_${iter}"
+git status --porcelain | sed -E 's/^...//' | while IFS= read -r f; do
+  [ -e "$f" ] && { mkdir -p "$CODEX_TMP/snap_${iter}/$(dirname "$f")"; cp -a "$f" "$CODEX_TMP/snap_${iter}/$f"; }
+done
+```
 
 **Purpose-built alternative for the diff:** `codex exec review --uncommitted` reviews exactly the staged + unstaged + untracked changes. If you prefer it, feed the project-specific instructions via stdin and capture via stdout redirect:
 ```
-codex exec review --uncommitted -c model_reasoning_effort=xhigh \
+codex exec review --uncommitted --dangerously-bypass-approvals-and-sandbox -c model_reasoning_effort=xhigh \
   < "$CODEX_TMP/prompt_${iter}.txt" > "$CODEX_TMP/codex_${iter}.log" 2>&1
 ```
-(`review` does not expose `-o` / `-s`, but it is non-mutating; parse the log.) Prefer plain `codex exec -s read-only` for the guaranteed read-only sandbox + clean `-o` capture and uniformity with `/inspect-codex`.
+(`review` does not expose `-o`, but parse the log.) Prefer plain `codex exec --dangerously-bypass-approvals-and-sandbox` for clean `-o` capture and uniformity with `/inspect-codex`; with the dirty-set backup + step-5 checksum-revert guard you don't rely on a sandbox to keep Codex review-only.
 
 ### 3. Claude's own scan (diff-scoped, in parallel)
 While Codex runs, run the diff-scoped scan exactly as `/check` does: `py_compile` each dirty `.py`; `import_module` each dirty `models/models_*.py`; py_compile the still-clean importers of any dirty module; the cross-reference / cross-alignment / monitor / hygiene checks **only as triggered by the dirty set**. Findings count only if they involve dirty files or are caused by them.
@@ -46,8 +53,8 @@ While Codex runs, run the diff-scoped scan exactly as `/check` does: `py_compile
 ### 4. Wait for Codex, then collect its findings
 Same as `/inspect-codex` step 4 (Monitor until `$CODEX_TMP/codex_${iter}.done`; read `findings_${iter}.md`, fall back to the log; on Codex error, proceed Claude-only and don't count clean unless Claude was clean too).
 
-### 5. Aggregate + adjudicate the real problems
-Same as `/inspect-codex` step 5 — merge, dedupe by (file, line, issue), **verify each finding against the actual code** (no blind trust), mark TP/FP, optional single focused `codex exec resume --last -s read-only` follow-up for ambiguous Codex findings. Only true positives proceed.
+### 5. Verify-revert Codex's writes, then aggregate + adjudicate
+First the **checksum-revert guard** (Codex ran unsandboxed): re-run `git status --porcelain` and `sha256sum` the dirty set; if Codex created / modified / deleted anything, restore each changed file from its pre-Codex copy in `$CODEX_TMP/snap_${iter}/` and `rm` any untracked file Codex created — so the tree exactly matches the pre-Codex snapshot (this restores **pre-Codex WIP content, never HEAD**). Record any reverted Codex writes in `findings_history`. Then as in `/inspect-codex` step 5 — merge, dedupe by (file, line, issue), **verify each finding against the actual code** (no blind trust), mark TP/FP, optional single focused `codex exec resume --last --dangerously-bypass-approvals-and-sandbox` follow-up (re-snapshot + re-verify the tree after). Only true positives proceed.
 
 ### 6. Fix (Claude only — Codex never fixes)
 Smallest correction per true positive. **Confine fixes to the dirty set when possible** — if a fix must touch a previously clean file (e.g. an importer), that's allowed, but **call it out in the iteration summary** so the user knows their commit-to-be will grow. Ambiguity → surface to the user and pause.
@@ -73,7 +80,7 @@ Never run real training / sampling / evaluation.
 
 ## Workflow rules / What this skill must NOT do
 - **No git commits** — not per-iteration, not at the end, not "just one for the fixes." Committing is the user's call. No `git stash` / `reset` / `checkout --` that drops or hides WIP. No push / force-push / amend.
-- **Codex runs read-only, review-only, in a new tmux window** (abort if `$TMUX` unset). **Claude is the only writer.** Never `&` / `nohup` / `run_in_background`.
+- **Codex runs yolo / unsandboxed (headless `cx-yolo`), review-only, in a new tmux window** (abort if `$TMUX` unset) — kept review-only by instruction **plus** the step-2 dirty-set backup / step-5 checksum-revert guard that reverts any file it touches (restoring pre-Codex WIP, never HEAD). **Claude is the only writer.** Never `&` / `nohup` / `run_in_background`.
 - No real training / sampling / evaluation — smoke test is `py_compile` + import only.
 - No edits to `outputs/`, `pretrained_ckpt/`, `training_logs/`, `tb_smoke_*/`, `collapse_smoking_test*/`, or the vendored `REPA/` (uppercase).
 - Keep all Codex temp files in `$CODEX_TMP` **outside the repo** — a findings file inside the tree would contaminate the dirty set this skill is scoped to.
