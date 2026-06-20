@@ -400,6 +400,17 @@ class DiT(nn.Module):
                     init_MoeMLP(expert)
             print("init MoE related module with std 0.006 like DeepSeek-MoE")
 
+        # Re-assert PrototypeMLP init AFTER the blanket self.apply(_basic_init) above.
+        # _basic_init xavier-overwrites every nn.Linear, which would otherwise clobber
+        # each PrototypeMLP's zero-init fc2 (and identity-init proto_proj in "direct"
+        # mode) and break the step-0 == base-ProMoE prototype invariant for BOTH update
+        # modes (residual: prototype_t == cluster_centers; direct: proto_proj(cc) == cc
+        # with delta == 0). Both modes keep a cc-skip, so this only restores the intended
+        # init; it never zeroes the whole prototype.
+        for block in self.blocks:
+            if getattr(block, "use_moe", False):
+                block.mlp.prototype_mlp._init_weights()
+
     def unpatchify(self, x):
         """
         x: (N, T, patch_size**2 * C)
