@@ -455,7 +455,7 @@ class TrainingMonitor:
             - W_row_sum_min / W_nonzero_frac: cross-weight matrix health
               (detects near-zero denominator in proto normalization).
         * Gradient statistics grouped by parameter-name substring:
-            attn_modules, projectors, block_router, cluster_centers,
+            attn_modules, projectors, block_router, cluster_centers, anchor,
             coeff_predictor, moe_experts, backbone.
           Each group reports total L2 norm + NaN/Inf param count. `global`
           reports the same across all parameters.
@@ -527,6 +527,7 @@ class TrainingMonitor:
         ('coeff_predictor', ('coeff_predictor', 'align_coeff_predictor')),
         ('capacity_predictor', ('capacity_predictor',)),  # DiffMoE
         ('cluster_centers', ('cluster_centers',)),
+        ('anchor', ('.mlp.anchor',)),  # R3-VAE reference vector r (anchor variant)
         ('shared_expert', ('shared_expert',)),
         ('moe_experts', ('.experts.',)),
         # backbone: t_embedder, y_embedder, x_embedder, final_layer, DiT attention/ffn
