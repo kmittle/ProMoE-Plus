@@ -1,6 +1,6 @@
 ---
 name: inspect-codex
-description: Codex-augmented project-wide carpet check loop on ProMoE-Plus. Each iteration briefs an independent Codex reviewer (xhigh reasoning, launched yolo / no sandbox via the headless equivalent of cx-yolo, kept review-only by instruction + a checksum-revert guard) that runs in a tmux window in parallel with Claude's own scan; Claude then aggregates both finding sets, adjudicates the real problems, fixes them, smoke-tests, and commits — repeating until 5 consecutive iterations find zero real problems. Use when the user invokes /inspect-codex or wants a second-opinion review sweep before a milestone.
+description: Codex-augmented project-wide carpet check loop on ProMoE-Plus. Each iteration briefs an independent Codex reviewer (xhigh reasoning, launched as the interactive cx-yolo TUI (codex --yolo) in a new tmux window that is closed once the review finishes, kept review-only by instruction + a checksum-revert guard) that runs in parallel with Claude's own scan; Claude then aggregates both finding sets, adjudicates the real problems, fixes them, smoke-tests, and commits — repeating until 5 consecutive iterations find zero real problems. Use when the user invokes /inspect-codex or wants a second-opinion review sweep before a milestone.
 ---
 
 # /inspect-codex — Codex-augmented project-wide carpet check loop
@@ -82,42 +82,62 @@ OUTPUT — your FINAL message must be EXACTLY one of:
 Output nothing else outside these blocks.
 ```
 
-### 2. Snapshot the tree, then launch Codex headless (yolo), in parallel (tmux)
-Run Codex non-interactively in a new tmux window — the **headless equivalent of `cx-yolo`** (`cx-yolo` = `codex -c model_reasoning_effort=xhigh --yolo`, an interactive TUI we cannot drive). `codex exec` has no `--yolo`, so its yolo launch is `--dangerously-bypass-approvals-and-sandbox` (same effect: skip approvals + run without a sandbox — required here because `bwrap` cannot init the read-only sandbox in this environment).
+### 2. Snapshot the tree, then launch the interactive cx-yolo TUI (yolo), in parallel (tmux)
+Launch the **interactive `cx-yolo` TUI** in a new tmux window, seeded with the briefing as its initial prompt: top-level `codex [PROMPT]` forwards to the interactive CLI, so `codex -c model_reasoning_effort=xhigh --yolo "<prompt>"` *is* a cx-yolo session running the review. (`cx-yolo` is a shell **function** — `codex -c model_reasoning_effort=xhigh --yolo` — defined only in interactive shells, so call its body directly; do not rely on the alias inside tmux's non-interactive shell. `--yolo` skips approvals and the sandbox — required here because `bwrap` cannot init the read-only sandbox in this environment.)
 
-Because Codex now runs **unsandboxed**, the sandbox no longer enforces "review-only" — so first take an **integrity snapshot** (the checksum-revert guard), then verify + revert in step 5. Whole-repo scope, so snapshot via git:
+Because Codex runs **unsandboxed**, the sandbox no longer enforces "review-only" — so first take an **integrity snapshot** (the checksum-revert guard), verified + reverted in step 5. Whole-repo scope, so snapshot via git; also record the existing rollout transcripts so step 4 can identify the new one:
 
 ```
 git -C "$REPO_ROOT" status --porcelain > "$CODEX_TMP/tree_before_${iter}.txt"
 SNAP=$(git -C "$REPO_ROOT" stash create)   # snapshot commit of current WIP; tree untouched (do NOT apply)
 echo "${SNAP:-CLEAN}" > "$CODEX_TMP/snap_${iter}.txt"
+find ~/.codex/sessions -type f -name '*.jsonl' | sort > "$CODEX_TMP/rollouts_before_${iter}.txt"
 ```
 
-Then feed the prompt via stdin (avoids quoting), capture the final report with `-o`, and write a sentinel. Keep the tmux command quote-clean with a tiny runner:
+The interactive TUI does **not** auto-exit after a turn, so keep the launch quote-clean with a tiny runner (the prompt is read at runtime) and capture the window id so step 4 can close it:
 
 ```
 cat > "$CODEX_TMP/run_${iter}.sh" <<EOF
-codex exec -C "$REPO_ROOT" --dangerously-bypass-approvals-and-sandbox -c model_reasoning_effort=xhigh \\
-  -o "$CODEX_TMP/findings_${iter}.md" < "$CODEX_TMP/prompt_${iter}.txt" \\
-  > "$CODEX_TMP/codex_${iter}.log" 2>&1
-echo "EXIT:\$?" > "$CODEX_TMP/codex_${iter}.done"
+cd "$REPO_ROOT" && codex -c model_reasoning_effort=xhigh --yolo "\$(cat "$CODEX_TMP/prompt_${iter}.txt")"
 EOF
 test -n "${TMUX:-}" || { echo "abort: not inside tmux — ask the user to attach"; exit 1; }
-tmux new-window -t "$(tmux display-message -p '#S')" -n codex-inspect "bash '$CODEX_TMP/run_${iter}.sh'"
+WIN=$(tmux new-window -P -F '#{window_id}' -t "$(tmux display-message -p '#S')" -n codex-inspect "bash '$CODEX_TMP/run_${iter}.sh'")
+echo "$WIN" > "$CODEX_TMP/winid_${iter}.txt"
 ```
-Do NOT block on this — go straight to step 3. (`--dangerously-bypass-approvals-and-sandbox` also skips approval prompts, so `exec` stays fully non-interactive.)
+Do NOT block on this — go straight to step 3. `--yolo` skips approval prompts, so the review runs unattended.
 
 ### 3. Claude's own scan (in parallel, while Codex runs)
 Run the full shared checklist yourself, exactly as `/inspect` does — including actually running `py_compile` and the per-model `import_module` checks (Codex cannot, being read-only). Collect Claude's findings list.
 
-### 4. Wait for Codex, then collect its findings
-After finishing Claude's scan, block until `$CODEX_TMP/codex_${iter}.done` exists — use the **Monitor** tool's until-condition (`test -f "$CODEX_TMP/codex_${iter}.done"`); do **not** foreground-`sleep`-poll. Then read `$CODEX_TMP/findings_${iter}.md` (the captured final message); if empty/missing, fall back to `$CODEX_TMP/codex_${iter}.log`. Parse the `### FINDING` blocks. If Codex errored (non-zero `EXIT:`, auth/quota failure), log it in `findings_history`, proceed with Claude-only findings this iteration, and do **not** count the iteration as clean unless Claude's scan was also clean.
+### 4. Wait for the review to finish (rollout `task_complete`), read findings, close the window
+Do **not** foreground-`sleep`-poll. After finishing Claude's scan, use the **Monitor** tool's until-condition to block until the new rollout transcript shows the turn completed — i.e. a `*.jsonl` not in `rollouts_before_${iter}.txt` exists and contains an `event_msg` with `payload.type == "task_complete"`:
+
+```
+NEW=$(comm -13 "$CODEX_TMP/rollouts_before_${iter}.txt" <(find ~/.codex/sessions -type f -name '*.jsonl' | sort) | tail -1)
+[ -n "$NEW" ] && grep -q '"task_complete"' "$NEW"
+```
+Then extract Codex's final review from that event's `last_agent_message` (the canonical final message; fall back to the last non-empty `agent_message`):
+
+```
+python3 - "$NEW" > "$CODEX_TMP/findings_${iter}.md" <<'PY'
+import sys, json
+lines=[json.loads(l) for l in open(sys.argv[1],encoding='utf-8',errors='replace').read().splitlines() if l.strip()]
+tc=[d for d in lines if d.get('type')=='event_msg' and (d.get('payload') or {}).get('type')=='task_complete']
+msg=(tc[-1]['payload'].get('last_agent_message') or '').strip() if tc else ''
+if not msg:
+    am=[(d.get('payload') or {}).get('message','') for d in lines
+        if d.get('type')=='event_msg' and (d.get('payload') or {}).get('type')=='agent_message']
+    msg=next((m for m in reversed(am) if m.strip()), '')
+print(msg)
+PY
+```
+**Close the cx-yolo window now that the review is done:** `tmux kill-window -t "$(cat "$CODEX_TMP/winid_${iter}.txt")"`. Then parse the `### FINDING` blocks from `findings_${iter}.md`. If no new rollout appears, the window died, or there is no `task_complete` (Codex crashed / auth / quota), log it in `findings_history`, **kill the window anyway**, proceed with Claude-only findings this iteration, and do **not** count the iteration as clean unless Claude's scan was also clean.
 
 ### 5. Verify-revert Codex's writes, then aggregate + adjudicate
 - **Checksum-revert guard (do this FIRST — Codex ran unsandboxed):** re-run `git status --porcelain` and compare to `$CODEX_TMP/tree_before_${iter}.txt`. If Codex created / modified / deleted anything, revert the tree to the pre-Codex snapshot — restore each tracked file Codex touched from the snapshot commit (`git checkout $SNAP -- <paths>`, with `$SNAP` from `snap_${iter}.txt`; this restores the **pre-Codex WIP content, not HEAD**, so legitimate WIP is preserved) and `rm` only the untracked files Codex created — so the tree exactly matches the snapshot before you proceed. Record any reverted Codex writes in `findings_history`. **Claude remains the sole writer.**
 - Merge Claude's findings and Codex's findings; **dedupe** by (file, line, issue).
 - For EACH finding (whatever the source), **verify it against the actual code** — do not trust Codex (or yourself) blindly. Read the cited lines. Mark each **true positive** or **false positive** with one line of reasoning.
-- **Interactive discussion (optional, for ambiguous Codex findings):** if a Codex finding is plausible but you cannot confirm or refute it from the code, you MAY send ONE focused follow-up to continue the Codex session before deciding — `codex exec resume --last --dangerously-bypass-approvals-and-sandbox` fed a short question via stdin (same yolo launch, re-snapshot + re-verify the tree afterward, captured the same way). Keep follow-ups rare and targeted; they cost quota.
+- **Interactive discussion (optional, for ambiguous Codex findings):** if a Codex finding is plausible but you cannot confirm or refute it from the code, you MAY send ONE focused follow-up to the same Codex session before deciding — resume it headless with `codex exec resume --last --dangerously-bypass-approvals-and-sandbox` and a short question via stdin, capturing the reply with `-o` (re-snapshot + re-verify the tree afterward). Keep follow-ups rare and targeted; they cost quota.
 - Only **true positives** proceed to step 6. Record dismissed false positives in `findings_history`.
 
 ### 6. Fix (Claude only — Codex never fixes)
@@ -153,11 +173,11 @@ Never amend. Never `--no-verify`. Never push. If nothing was fixed, do not creat
 - **Ambiguity pause:** if step 6 surfaced something, halt with the question + current state (`iter`, `consecutive_clean`, pending finding). Resume on user input (do NOT remove `$CODEX_TMP` while paused — the run may resume).
 
 ## Workflow rules (project-wide, see CLAUDE.md)
-- **Codex runs only in a new tmux window of the current session.** Never `&` / `nohup` / `run_in_background`. If `$TMUX` is unset, abort and ask the user to attach.
+- **Codex runs only in a new tmux window of the current session** — the interactive `cx-yolo` TUI, killed (`tmux kill-window`) as soon as its review finishes (step 4). Never `&` / `nohup` / `run_in_background`. If `$TMUX` is unset, abort and ask the user to attach.
 - **Clean up smoke-test / Codex artifacts immediately** — the `$CODEX_TMP` dir and all sentinel / log / findings / runner files, as soon as each iteration (and the whole run) finishes.
 
 ## What this skill must NOT do
-- Do not let Codex's writes survive — it now runs **yolo / unsandboxed** (headless `cx-yolo`), so it is kept review-only by instruction **plus** the step-2 snapshot / step-5 checksum-revert guard that reverts anything it touches. **Claude is the only writer.**
+- Do not let Codex's writes survive — it runs **yolo / unsandboxed** (the interactive `cx-yolo` TUI), so it is kept review-only by instruction **plus** the step-2 snapshot / step-5 checksum-revert guard that reverts anything it touches. **Claude is the only writer.**
 - Do not push, force-push, or amend. Do not `--no-verify` or bypass pre-commit hooks.
 - Do not run real training / sampling / evaluation — smoke test is `py_compile` + import only.
 - Do not edit `outputs/`, `pretrained_ckpt/`, `training_logs/`, `tb_smoke_*/`, `collapse_smoking_test*/`, or the vendored `REPA/` (uppercase).
