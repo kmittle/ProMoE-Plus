@@ -328,8 +328,11 @@ class PrototypeMLP(nn.Module):
     the same feature space as the tokens at that timestep — so that routing
     similarity can be computed within the same noise level on both sides.
 
-    Topology: Linear(D_proto + D_t -> D_inter) -> GELU -> Linear(D_inter -> D_out)
-              with D_inter = 2 * D_out (2x expansion).
+    Inputs are LayerNorm'd per-source (prototype, timestep) BEFORE concatenation so
+    both enter the MLP at comparable scale (cluster_centers ~0.02 vs t_emb ~O(1)).
+    Topology: LN(cc) || LN(t) -> Linear(D_proto + D_t -> D_inter) -> GELU
+              -> Linear(D_inter -> D_out), with D_inter = 2 * D_out (2x expansion).
+              The skip path uses RAW (un-normed) cc, so step-0 == base ProMoE still holds.
 
     Two update modes:
       - "residual":   prototype_t = cluster_centers + MLP(concat(cc, t_emb))
@@ -364,6 +367,12 @@ class PrototypeMLP(nn.Module):
         self.output_dim = output_dim
         self.update_mode = update_mode
 
+        # Per-input LayerNorm applied BEFORE concatenation, so the prototype and the
+        # timestep embedding enter the MLP at comparable scale (cluster_centers ~0.02
+        # vs t_emb ~O(1)). Applied on the MLP-input path ONLY; the skip path keeps raw cc.
+        self.proto_norm = nn.LayerNorm(prototype_dim)
+        self.time_norm = nn.LayerNorm(time_dim)
+
         # MLP delta path (same for both modes)
         self.fc1 = nn.Linear(prototype_dim + time_dim, intermediate_dim, bias=True)
         self.act = nn.GELU(approximate="tanh")
@@ -396,12 +405,20 @@ class PrototypeMLP(nn.Module):
         """
         B = t_emb.shape[0]
         E = cluster_centers.shape[0]
-        cc_exp = cluster_centers.unsqueeze(0).expand(B, E, -1)   # (B, E, D_proto)
-        t_exp = t_emb.unsqueeze(1).expand(B, E, -1)              # (B, E, D_t)
-        combined = torch.cat([cc_exp, t_exp], dim=-1)            # (B, E, D_proto + D_t)
+        # MLP-input path: LayerNorm each input BEFORE concat so the prototype (~0.02)
+        # and the timestep embedding (~O(1)) enter fc1 at comparable scale.
+        cc_norm = self.proto_norm(cluster_centers)              # (E, D_proto)
+        t_norm = self.time_norm(t_emb)                          # (B, D_t)
+        cc_norm_exp = cc_norm.unsqueeze(0).expand(B, E, -1)     # (B, E, D_proto)
+        t_norm_exp = t_norm.unsqueeze(1).expand(B, E, -1)       # (B, E, D_t)
+        combined = torch.cat([cc_norm_exp, t_norm_exp], dim=-1)  # (B, E, D_proto + D_t)
 
         delta = self.fc2(self.act(self.fc1(combined)))           # (B, E, D_out)
 
+        # Skip/residual path uses RAW (un-normed) cluster_centers — preserves the
+        # prototype identity and the step-0 == base-ProMoE invariant (delta == 0 at init,
+        # so prototype_t == cc regardless of the input LayerNorm).
+        cc_exp = cluster_centers.unsqueeze(0).expand(B, E, -1)   # (B, E, D_proto)
         if self.update_mode == "residual":
             return cc_exp + delta
         else:  # direct
