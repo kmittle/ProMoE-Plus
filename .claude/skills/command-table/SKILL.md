@@ -34,24 +34,29 @@ Then map to the template's columns:
 - **实验描述** — a human-readable label combining slot, GPU range, and the variant. Derive the
   variant from the config/script name. Example: `Slot 1.1 · GPU 0-3 · ProMoE-B EC-BC proto_t (direct)`.
 - **git分支** — the current branch (`git rev-parse --abbrev-ref HEAD`) by default. If the user states
-  a per-experiment branch, use that. Either way, note in the report that the branch column reflects
-  the **current** checkout and should be verified if experiments target different branches.
-- **启动命令** — `bash scripts/_run_times/<date>/<wrapper>` (the wrapper is the entry point). Per
-  the project rule, runs launch in a tmux window — include a single note line above the table with
-  the tmux form rather than repeating it in every cell.
+  a per-experiment branch, use that. Either way, the branch caveat (the column reflects the
+  **current** checkout; verify if experiments target different branches) goes in the chat report
+  only — **never** written into the file.
+- **启动命令** — `bash scripts/_run_times/<date>/<wrapper>` (the wrapper is the entry point). The
+  project's tmux-window launch convention is conveyed in the chat report only — **never** written
+  into the file (see Step 2).
 - **输出位置** — the output dir from step 5, e.g. `outputs/ProMoE_EC_BC_B_proto_t/004_ProMoE_B_EC_BC_proto_t_direct/`.
 
 ## Step 2 — Render from the template
 - Use `command-tables/command-table-template.md` as the table skeleton (header row + separator:
   `实验描述 | git分支 | 启动命令 | 输出位置`). Keep exactly those four columns.
 - One row per wrapper, in sorted slot order.
-- Prepend a short note line: launch each command in a new tmux window of the current session,
-  e.g. `tmux new-window -t "$(tmux display-message -p '#S')" -n <name> '<启动命令>'`.
+- **Output the table ONLY.** `commands.md` must contain *just* the rendered template — the header
+  row, the separator, and the data rows, nothing else. Do **not** add a `# …` title, an intro/summary
+  line, any `>` blockquote notes (no tmux-launch note, no git-branch caveat), or any other surrounding
+  prose. The file's **first line is the template's header row**. Those notes belong in the chat report
+  (Step 3), never in the file.
 
 ## Step 3 — Write `commands.md`
-- Write the rendered table to `scripts/_run_times/<date>/commands.md` (overwrite if it exists —
-  this is a regenerated summary, not hand-maintained state).
-- Report: the date dir, how many wrappers were summarized, the output path, and the branch caveat.
+- Write the rendered **table only** to `scripts/_run_times/<date>/commands.md` (overwrite if it
+  exists — this is a regenerated summary, not hand-maintained state).
+- Report **in chat, not in the file**: the date dir, how many wrappers were summarized, the output
+  path, the tmux-launch convention, and the branch caveat.
 
 ## Edge cases
 - A wrapper that is **not** the auto-generated form (no `Slot:`/`exec bash` lines): fall back to
