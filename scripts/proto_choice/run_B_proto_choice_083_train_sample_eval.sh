@@ -20,8 +20,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "$REPO_ROOT"
 
-CONFIG="configs/004_ProMoE_B_proto_choice.yaml"
-LOG="log_ProMoE_B_proto_choice_train_sample_eval.log"
+CONFIG="configs/004_ProMoE_B_proto_choice_083.yaml"
+LOG="log_ProMoE_B_proto_choice_083_train_sample_eval.log"
 
 readarray -t YAML_INFO < <(python - "$CONFIG" <<'PY'
 import os
