@@ -59,6 +59,15 @@ and the **training entrypoint** in the train step to match the model family. Kee
 - **Four-way consistency**: the new `model_name` exists in exactly the intended `model_dict`; its
   `config_key` is defined in `config.py`; the config's `model_name` matches; the run script's
   `CONFIG=` resolves and its training entrypoint matches the family.
+- **Output-dir collision guard (mandatory):** run
+  `python scripts/check_output_dir.py --config configs/004_ProMoE_<size>_<variant>.yaml`.
+  It derives `outputs/{model_name}/{custom_cfg_name}` (train.py:434/723) and **fails (exit 1)** if
+  that dir already exists on local disk or is claimed by another config. On a hit, rename the config
+  to the suggested `_vN` name — keeping the run script + wrapper names in lock-step — before
+  continuing. **Never point a new experiment at an existing run's output dir.** The local-disk check
+  can't see the training server, so if this experiment was already launched there (or it re-uses a
+  name whose model code has since changed), bump to `_vN` regardless — that re-run case is exactly
+  what `/rerun-experiment` automates.
 - Do NOT start training/sampling/eval.
 
 ## Step 4 — Allocate the run-time slot (preview gate)
