@@ -1,6 +1,6 @@
 model_name: "ProMoE_TC_B_proto_choice"
 
-gpu_ids: [0, 1, 2, 3]
+gpu_ids: [6]
 
 ###### For train
 image_size: 256

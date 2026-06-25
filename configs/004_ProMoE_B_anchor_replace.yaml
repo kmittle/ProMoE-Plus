@@ -1,6 +1,6 @@
 model_name: "ProMoE_TC_B_anchor"
 
-gpu_ids: [4, 5, 6, 7]
+gpu_ids: [5]
 
 ###### For train
 image_size: 256
