@@ -1,11 +1,14 @@
 # Repository Guidelines
 
+## Project Overview
+ProMoE-Plus implements ProMoE, a Mixture-of-Experts framework for scaling Diffusion Transformers on ImageNet class-conditional generation. The core routing design combines conditional routing for cond/uncond token separation with prototypical routing through learnable cluster centers, plus routing contrastive guidance for expert specialization.
+
 ## Project Structure & Module Organization
 Core entrypoints are at repository root:
 
-- `train.py`: baseline and non-REPA training (DiT, TCDiT, ECDiT, DiffMoE, ProMoE, hierarchical, noise-expert, and expert-contrastive variants).
-- `train_with_repa.py`: REPA-enabled training (REPA / REPA-Shared / REPA-Cond / REPA-DYNA / REPA-DYNA-SELECT / REPA-DYNA-SCALE / REPA-DYNA-ONLY / REPA-Router / REPA-Router-Contra / REPA-Routed / REPA-Double-Share), including teacher-feature alignment loss.
-- `train_with_MoS_repa.py`: MoS-REPA, MoS-Naive / Naive-Choice, per-block / blockwise / fused / multi-align, and both standard-REPA + MoS cross-alignment training with teacher-block routing and per-block REPA projectors.
+- `train.py`: baseline and non-REPA training (DiT, TCDiT, ECDiT, DiffMoE, ProMoE, hierarchical, expert-choice/batch-choice, structured-batch, proto-t, anchor, proto-choice, noise-expert, and expert-contrastive variants).
+- `train_with_repa.py`: REPA-enabled training (REPA / REPA-Shared / REPA-Cond / REPA-DYNA / REPA-DYNA-SELECT / REPA-DYNA-SCALE / REPA-DYNA-ONLY / REPA-Router / REPA-Router-Contra / REPA-Routed / REPA-Double-Share / hierarchical-expert REPA-DYNA), including teacher-feature alignment loss.
+- `train_with_MoS_repa.py`: MoS-REPA, MoS-Naive / Naive-Choice, separate-projector / per-block / blockwise / fused / multi-align, and both standard-REPA + MoS cross-alignment training with teacher-block routing and per-block REPA projectors.
 - `train_with_mae.py`: MAE/group-alignment training for `group_align` and `group_align_proj` variants.
 - `sample.py`: sampling/inference entrypoint. It merges model registries from `train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, and `train_with_mae.py`, so one script can sample all registered families.
 
@@ -13,6 +16,8 @@ Shared defaults and helpers:
 
 - `config.py`: global defaults (`cfg`) and model templates (`DiT_*_config`, `DiffMoE_*`, etc.).
 - `utils.py`: `deep_update`, `find_free_port`, VAE caching/loading (`load_vae`), `TrainingMonitor`, CLI list parsers, and Inception utilities.
+- `scripts/check_output_dir.py`: output-directory collision guard for new or rerun experiments.
+- `scripts/template.sh`: required base pattern for new train + sample + eval experiment wrappers.
 - `ProMoE-REPA.md`: repo-level guide for current REPA / MoS-REPA workflows and variants.
 
 Main code layout:
@@ -27,8 +32,14 @@ Main code layout:
 - `scripts/hierar/`: B-scale hierarchical/expert train + infer/eval wrappers.
 - `scripts/dynamic_repa/`: REPA-DYNA-B, REPA-DYNA-SELECT-B, REPA-DYNA-SCALE-B, and REPA-DYNA-ONLY-B train + sample + eval pipelines (including select-ratio variants r25/r75).
 - `scripts/mae_align/`: group-align and group-align-proj train + sample + eval wrappers.
-- `scripts/noise_expert/`: noise-expert, proj, and EMA train + sample + eval wrappers.
-- `scripts/expert_contra/`: expert-contrastive output/param train + sample + eval wrappers.
+- `scripts/noise_expert/`: noise-expert, proj, EMA-on-shared, and EMA-on-noise train + sample + eval wrappers.
+- `scripts/expert_contra/`: expert-contrastive output/param train + sample + eval wrappers, including B4 ablations.
+- `scripts/expert_choice/`: expert-choice batch-choice (`EC_BC`) train + sample + eval wrappers.
+- `scripts/structured_batch/`: token-choice and expert-choice structured-batch train + sample + eval wrappers.
+- `scripts/proto_t/`: token-choice and expert-choice proto-t direct/residual train + sample + eval wrappers.
+- `scripts/anchor/`: anchor-routing and anchor-replace train + sample + eval wrappers.
+- `scripts/proto_choice/`: contrastive proto-choice ratio sweep train + sample + eval wrappers.
+- `scripts/_run_times/`: timestamped launch indirection for scheduled experiment batches.
 - `collapse_smoking_test/`, `collapse_smoking_test_10k/`: crash-diagnosis smoke configs, logs, summaries, and rerun helpers for cross-alignment stability work.
 - `tb_smoke_200/`, `tb_smoke_500/`: TensorBoard/`TrainingMonitor` smoke harnesses for selected cross-alignment configs.
 - `REPA/` (uppercase): separate upstream-style subproject with its own docs and `AGENTS.md`.
@@ -37,6 +48,13 @@ Top-level wrappers:
 
 - `scripts/run_all_infer_eval_500K.sh`: batch sample+eval for multiple configs at 500K.
 - `scripts/eval_B_hierar_expert.sh`, `scripts/eval_B_hierar_expert_NoPenalty.sh`: eval-only wrappers.
+
+Companion documentation:
+
+- `ProMoE-REPA.md`: detailed REPA / MoS-REPA workflow, configuration reference, and FAQ.
+- `analyses/README.md`: analysis entrypoint overview; keep per-script usage in matching `analyses/<basename>.md` files.
+- `plans/`: implementation plans for standard REPA and MoS cross-alignment variants.
+- `implementation-plan.md`: Chinese draft plan for a future attention-weighted same-expert same-image alignment family; reference only, not current code.
 
 Outputs follow:
 
@@ -142,6 +160,8 @@ bash scripts/repa/sample_and_eval_repa_B.sh
 bash scripts/repa/sample_and_eval_repa_shared_B.sh
 bash scripts/repa/sample_and_eval_repa_cond_B.sh
 bash scripts/repa/run_B_repa_cross_global_pre_train_sample_eval.sh
+bash scripts/repa/run_B_repa_cross_global_block_train_sample_eval.sh
+bash scripts/repa/run_B_repa_cross_expert_local_train_sample_eval.sh
 bash scripts/repa/run_B_repa_cross_proto_train_sample_eval.sh
 bash scripts/repa/run_B_repa_router_train_sample_eval.sh
 bash scripts/repa/run_B_repa_router_contra_train_sample_eval.sh
@@ -151,8 +171,16 @@ bash scripts/repa/run_B_repa_double_share_train_sample_eval.sh
 bash scripts/MoS_repa/run_B_repa_mos_train_sample_eval.sh
 bash scripts/MoS_repa/run_B_repa_mos_naive_train_sample_eval.sh
 bash scripts/MoS_repa/run_B_repa_mos_naive_choice_b3_5_train_sample_eval.sh
+bash scripts/MoS_repa/run_B_repa_mos_naive_choice_sep_b3_5_train_sample_eval.sh
+bash scripts/MoS_repa/run_B_repa_mos_choice_per_block_b3_5_train_sample_eval.sh
+bash scripts/MoS_repa/run_B_repa_mos_naive_choice_blockwise_b3_5_train_sample_eval.sh
+bash scripts/MoS_repa/run_B_repa_mos_naive_choice_b3_5_fused_train_sample_eval.sh
 bash scripts/MoS_repa/run_B_repa_multi_align_train_sample_eval.sh
+bash scripts/MoS_repa/run_B_repa_multi_align_no_dynamic_train_sample_eval.sh
+bash scripts/MoS_repa/run_B_repa_mos_cross_global_pre_train_sample_eval.sh
 bash scripts/MoS_repa/run_B_repa_mos_cross_global_block_train_sample_eval.sh
+bash scripts/MoS_repa/run_B_repa_mos_cross_expert_local_train_sample_eval.sh
+bash scripts/MoS_repa/run_B_repa_mos_cross_proto_train_sample_eval.sh
 
 bash scripts/dynamic_repa/run_B_repa_dyna_train_sample_eval.sh
 bash scripts/dynamic_repa/run_B_repa_dyna_select_train_sample_eval.sh
@@ -172,9 +200,24 @@ bash scripts/hierar/run_B_hierar_expert_repa_dyna_train_sample_eval.sh
 bash scripts/mae_align/run_B_mae_align_train_sample_eval.sh
 bash scripts/mae_align/run_B_mae_align_proj_train_sample_eval.sh
 bash scripts/noise_expert/run_B_noise_expert_train_sample_eval.sh
+bash scripts/noise_expert/run_B_noise_expert_proj_train_sample_eval.sh
 bash scripts/noise_expert/run_B_noise_expert_ema_on_shared_train_sample_eval.sh
+bash scripts/noise_expert/run_B_noise_expert_ema_on_noise_train_sample_eval.sh
+bash scripts/expert_choice/run_B_ec_bc_train_sample_eval.sh
 bash scripts/expert_contra/run_B_expert_contra_output_train_sample_eval.sh
+bash scripts/expert_contra/run_B_expert_contra_output_b4_train_sample_eval.sh
 bash scripts/expert_contra/run_B_expert_contra_param_train_sample_eval.sh
+bash scripts/expert_contra/run_B_expert_contra_param_b4_train_sample_eval.sh
+bash scripts/structured_batch/run_B_tc_structbatch_train_sample_eval.sh
+bash scripts/structured_batch/run_B_ec_bc_structbatch_train_sample_eval.sh
+bash scripts/proto_t/run_B_tc_proto_t_direct_v2_train_sample_eval.sh
+bash scripts/proto_t/run_B_tc_proto_t_residual_v2_train_sample_eval.sh
+bash scripts/proto_t/run_B_ec_bc_proto_t_direct_v2_train_sample_eval.sh
+bash scripts/proto_t/run_B_ec_bc_proto_t_residual_v2_train_sample_eval.sh
+bash scripts/anchor/run_B_anchor_routing_train_sample_eval.sh
+bash scripts/anchor/run_B_anchor_replace_train_sample_eval.sh
+bash scripts/proto_choice/run_B_proto_choice_083_train_sample_eval.sh
+bash scripts/proto_choice/run_B_proto_choice_125_train_sample_eval.sh
 
 bash tb_smoke_200/run_all.sh
 bash tb_smoke_500/run_all.sh
@@ -183,6 +226,21 @@ bash scripts/run_all_infer_eval_500K.sh
 ```
 
 When adding any new train + sample + eval all-in-one `.sh` wrapper, follow the structure and execution pattern of `scripts/template.sh` rather than inventing a new style; this is required for compatibility with another experiment server. All such experimental `.sh` wrappers must launch Python exactly in the template style: use `/mnt/workspace/yujie/.conda/envs/promoe/bin/python` for training/sampling and `/mnt/workspace/yujie/.conda/envs/fid_eval/bin/python` for evaluation, and do not rely on `conda activate` at runtime.
+
+Template-specific requirements:
+
+- `scripts/template.sh` uses a sequential train-stop-sample/eval-resume loop. For each `step_list_for_sample` item, it trains to that checkpoint, exits, frees GPUs for sample/eval, then resumes training for the next step.
+- New scripts should only change `CONFIG`, `LOG`, and the training entrypoint (`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, or `train_with_mae.py`) unless the experiment genuinely needs extra logic.
+- Preserve `set -euo pipefail`, repo-root discovery via `SCRIPT_DIR` / `REPO_ROOT`, inline Python YAML parsing, absolute Python interpreter paths, and `find ... -name images | sort -V` evaluation traversal.
+- Legacy split scripts such as `scripts/repa/train_repa_B.sh` and `scripts/repa/sample_and_eval_repa_B.sh` predate the template; do not introduce new split-purpose experiment scripts.
+
+Runtime GPU-slot grouping:
+
+- After creating a semantic experiment wrapper under `scripts/<family>/`, allocate its launch wrapper with `scripts/_run_times/new_run.sh --script scripts/<family>/run_<...>.sh [--date YYYY_MM_DD] [--gpus 4|8] [--dry-run]` rather than hand-editing `gpu_ids`.
+- `scripts/_run_times/new_run.sh` patches the experiment YAML `gpu_ids` and writes `scripts/_run_times/<date>/<slot>-<desc>.sh`; GPU assignment lives in YAML, not the wrapper.
+- Slot names map to one physical 8-GPU server: `X.1` means GPUs `0-3`, `X.2` means GPUs `4-7`, and full-slot `X` means GPUs `0-7`.
+- Allocation is scoped to one date directory only. Do not run jobs from different date directories on the same physical GPUs unless you have checked the assignments manually.
+- Use `--dry-run` first when scheduling a new run-time wrapper so the slot and YAML patch are visible before writing.
 
 Create evaluation env (TensorFlow-based):
 
@@ -208,6 +266,20 @@ python run_eval.py /path/to/generated/images --count 50000 --no-eval
 - Wrapper/config names like `b3_5` are human-readable 1-indexed block ranges; YAML `align_blocks` stays 0-indexed Python-style (for example `b3_5` pairs with `align_blocks: [2, 3, 4]`).
 - Add overrides in YAML and rely on `deep_update` to only replace intended keys.
 
+## Adding or Rerunning Experiments
+For config-only ablations, create a new YAML and a template-based shell wrapper while keeping `model_name` unchanged. Add config flags with defaults that preserve existing behavior, and allocate a run-time slot through `scripts/_run_times/new_run.sh`.
+
+For new model variants:
+
+1. Add the model under `models/models_ProMoE_TC_<variant>.py` or, for Expert-Choice family work, `models/models_ProMoE_EC_<variant>.py`.
+2. Register the `model_name` in the appropriate `model_dict` in `train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, or `train_with_mae.py`; `sample.py` merges all registries automatically.
+3. Add `configs/004_ProMoE_<size>_<variant>.yaml`, keeping `model_name`, config filename, and wrapper name aligned.
+4. Create a `scripts/<family>/run_<size>_<variant>_train_sample_eval.sh` wrapper from `scripts/template.sh`.
+5. Validate with `python -m py_compile <modified_python_files>` and `python scripts/check_output_dir.py --config <config>`.
+6. Allocate the launch wrapper with `scripts/_run_times/new_run.sh --script <wrapper> [--gpus 4|8]`.
+
+Before rerunning an experiment after model-code changes, do not reuse the old config name if an output directory already exists. Use `python scripts/check_output_dir.py --config <config> --suggest-version` and move the config, semantic script, and run-time wrapper together to a fresh `_vN` name so the new run writes to a clean `outputs/<model_name>/<custom_cfg_name>/` directory.
+
 ## Testing Guidelines
 No dedicated `tests/` directory. Use smoke checks aligned to your change surface:
 
@@ -225,6 +297,19 @@ No dedicated `tests/` directory. Use smoke checks aligned to your change surface
 
 If you touch dataset traversal, latent mapping, or preprocessing logic, clear/regenerate `preprocess/image_paths_cache.txt` before re-running checks.
 
+## Workflow Rules
+- Clean up smoke-test artifacts immediately after a smoke or sanity run finishes, whether it succeeds or fails. Remove temporary configs, temporary scripts, and smoke-only output directories such as `outputs/<model>/<smoke_cfg>/`; do not delete long-lived real outputs, `pretrained_ckpt/`, `training_logs/`, or project-level caches unless explicitly requested.
+- Run long-lived background processes in a new tmux window of the current session. Do not use `command &`, `nohup`, or detached shell backgrounding for training, sampling, long evals, watch loops, or dev servers.
+- Before launching a long-lived tmux command, require an attached tmux session:
+
+```bash
+test -n "${TMUX:-}" || { echo "not inside tmux - attach first"; exit 1; }
+tmux new-window -t "$(tmux display-message -p '#S')" -n <name> '<command>'
+```
+
+- If `$TMUX` is unset, abort and ask the user to attach to tmux first. Short synchronous commands such as `ls`, `rg`, `py_compile`, and `git status` should still run in the foreground.
+- Treat the vendored `REPA/` uppercase subproject as separate scope. Do not edit it unless the user explicitly asks for that subproject.
+
 ## Commit & Pull Request Guidelines
 Use concise, imperative, single-scope commit subjects. In PR descriptions, include:
 
@@ -233,6 +318,8 @@ Use concise, imperative, single-scope commit subjects. In PR descriptions, inclu
 - Dataset layout assumptions (especially `train/` path and latent sibling path).
 - GPU assumptions (`gpu_ids`, world size, sampling GPUs).
 - Evidence of behavior change (logs, sample folders, metric outputs).
+
+When the user asks to push, treat that as permission to commit relevant current WIP first, then push. Still stage explicit paths only; do not use `git add -A` or `git add .`, do not stage secrets or `*.local.json`, do not bypass hooks with `--no-verify`, and do not force-push to `main` or `master`.
 
 ## Configuration Notes
 - Set `cfg.data_path` (or YAML override) to ImageNet `train/` root before preprocess/train.
@@ -244,11 +331,46 @@ Use concise, imperative, single-scope commit subjects. In PR descriptions, inclu
 - Dynamic-select configs (`004_ProMoE_B_repa_dyna_select*.yaml`) control token selection via `DiT_B_config.repa_config.repa_select_ratio`.
 - Router configs use model-level REPA knobs such as `router_repa_coeff` (`004_ProMoE_B_repa_router.yaml`) or `router_loss_decay_steps` (`004_ProMoE_B_repa_router_contra.yaml`).
 - `004_ProMoE_B_repa_dyna_only.yaml` also carries a model-level `DiT_B_config.repa_config.proj_coeff` for the capped dynamic-weight ablation.
+- Cross-alignment configs use model names such as `ProMoE_TC_REPA_CROSS_GLOBAL_PRE_B`, `ProMoE_TC_REPA_CROSS_GLOBAL_BLOCK_B`, `ProMoE_TC_REPA_CROSS_EXPERT_LOCAL_B`, `ProMoE_TC_REPA_CROSS_PROTO_B`, and their `ProMoE_TC_REPA_MoS_*` counterparts.
+- MoS-REPA block-range configs may vary `align_blocks`, projector sharing, router norm, fused routing, dynamic coefficients, or `proj_coeff`; keep wrapper names and YAML values aligned.
+- `proto_t` configs choose `proto_t_update_mode` (`direct` or `residual`) under `DiT_B_config`; the `EC_BC` proto-t configs use the expert-choice batch-choice model registry key.
+- Anchor configs set `anchor_apply_mode` (`routing` or `replace`) under `DiT_B_config`.
+- Proto-choice ratio configs set `contrastive_proto_choice_ratio`; wrapper/config suffixes such as `083` and `125` refer to the ratio sweep values.
 - Most provided YAMLs set `resume_checkpoint: True`; when no checkpoint exists the loader logs an error and training starts from step 0.
 - `sample.py` behavior:
   - if `step_list_for_sample` is set, it loads only those checkpoints;
   - otherwise it scans `checkpoints/` and loads steps divisible by `sample_every_step`;
   - `--num_fid_samples` also updates `save_img_num`.
+
+Model registry and forward conventions:
+
+- `train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, and `train_with_mae.py` each define a `model_dict` from `model_name` to `(ModelClass, config_key)`. Add new registrations in the training script that owns the family.
+- `train.py` hosts base DiT/baselines, ProMoE TC/EC, EC batch-choice, proto-t, anchor, proto-choice, structured-batch, noise-expert, and expert-contrastive families.
+- `train_with_repa.py` hosts standard REPA, REPA shared/cond, dynamic REPA, router/routed/double-share REPA, and hierarchical-expert REPA-DYNA families.
+- `train_with_MoS_repa.py` hosts MoS, naive/choice/separate/blockwise/per-block/fused variants, multi-align, and standard REPA + MoS cross-alignment families.
+- `train_with_mae.py` hosts `group_align` and `group_align_proj` families.
+- Plain DiT and most ProMoE variants return a tensor. REPA variants return `(pred, zs_proj)` during training. MoS-REPA, multi-align, fused MoS, and cross-alignment variants return `(pred, alignment_loss)` during training.
+- ProMoE routing contrastive loss generally flows through the `AddAuxiliaryLoss` autograd wrapper even when `forward()` returns a plain tensor.
+
+REPA config scope:
+
+- Top-level `repa_config` belongs to the training loop and controls teacher loading, such as `enc_type`, and global alignment weighting such as `proj_coeff`.
+- Nested `DiT_*_config.repa_config` belongs to the model and controls projectors, `encoder_depth`, `z_dims`, `align_blocks`, `num_teacher_blocks`, router REPA knobs, and dynamic/select behavior.
+- Keep `enc_type` and teacher block depth consistent across both scopes for REPA and MoS-REPA configs.
+
+Cross-alignment stability notes:
+
+- In cross-alignment loss code, clamp cosine-similarity matrices to `[-1, 1]` after normalization and `torch.bmm`; bf16 precision can otherwise create values slightly outside the valid range and trigger loss spikes.
+- For block-wise cross-alignment weight predictors (`cross_global_block` and `cross_expert_local`, including MoS counterparts), feed detached block outputs into the attention/weight module while keeping the projection path on the original tensor. This prevents competing gradient paths into the same DiT block.
+- `cross_global_pre` is exempt because attention is applied before DiT blocks; `cross_proto` is exempt because weights come from MoE routing rather than a dedicated weight predictor.
+- Use `TrainingMonitor` from `utils.py` for cross-alignment crash diagnosis. Wire it after `backward()` and gradient clipping, before `zero_grad()`, and pass the existing TensorBoard writer when available so `monitor/*` scalars are emitted.
+
+Variant-specific notes:
+
+- `anchor_apply_mode` is `routing` or `replace`; anchor variants are not step-0-identical to base ProMoE because anchors are randomly initialized, so train them fresh.
+- `contrastive_proto_choice_ratio` controls proto-choice positive-set size; suffixes such as `083` and `125` map to ratios such as `0.083` and `0.125`.
+- `proto_t_update_mode` supports `direct` and `residual`; script/config names remain human-readable and 1-indexed while YAML `align_blocks` remains 0-indexed.
+- `noise_expert_ema` parameters are frozen and updated through EMA after optimizer steps; they should stay excluded from the optimizer.
 
 Latent mode and cache behavior:
 
