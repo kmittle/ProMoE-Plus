@@ -1,0 +1,8 @@
+实验 / Experiment: 4.2-B_proto_choice_125
+model_name: ProMoE_TC_B_proto_choice  |  config: configs/004_ProMoE_B_proto_choice_125.yaml
+基线 / Baseline: 基础 ProMoE-TC（静态可学习 cluster_centers 原型 + 两步路由 + token-choice 路由对比损失）；直接父变体 / Parent: proto_choice 同模型（prototype-choice InfoNCE 损失），仅 contrastive_proto_choice_ratio 取值不同（sweep sibling 083=0.083 / 默认 0.1）
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 原型选择对比损失 / prototype-choice InfoNCE：把 routing-contrastive loss 从 token-choice 改成 prototype-choice。每个 prototype（`cluster_centers`）按余弦相似度选自己最相似的 top-K 个 cond token，POSITIVE = 这 top-K 的均值、NEGATIVES = 其余 cond tokens；逐 prototype 做 InfoNCE 后对 P 个 prototype 取平均，无 prototype-prototype 项、不跳过空簇。相对基础 ProMoE-TC（簇正样本 = 路由到该簇 token 的均值、负样本 = 其它簇均值），仅此损失公式改变——routing / moe_experts / shared_expert / forward dispatch 全部保持不变。
+2. ratio=0.125（本实验消融轴）：`contrastive_proto_choice_ratio: 0.125` 决定每个 prototype 的正集规模 `K = max(1, min(N_cond-1, ceil(0.125 · N_cond)))`。相对 sweep sibling 083（0.083）与默认 0.1，本档取更大的正集比例（每个 prototype 的正样本均值纳入更多 cond token）。`routing_contrastive_temperature=0.07`、`routing_contrastive_lam=1` 不变。
+3. 其余结构与 step-0 行为不变：模型 `models_ProMoE_TC_proto_choice.py` 是 base ProMoE_TC 的自包含拷贝，结构与初始化（`cluster_centers` 仍 std=0.02 随机初始化）均不变 → CLAUDE.md 标注 step-0 与基础 ProMoE 数值等价；forward() 仍返回普通张量，prototype-choice 对比损失经 `AddAuxiliaryLoss` autograd 注入梯度。MoE 仍为 B 档 12 routed experts、top_k=1、use_shared_expert=True、interleave=True。

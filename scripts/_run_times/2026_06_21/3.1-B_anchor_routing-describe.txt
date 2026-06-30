@@ -1,0 +1,8 @@
+实验 / Experiment: 3.1-B_anchor_routing
+model_name: ProMoE_TC_B_anchor  |  config: configs/004_ProMoE_B_anchor_routing.yaml
+基线 / Baseline: 基础 ProMoE-TC（条件路由分流 uncond 专家 + 静态可学习 cluster_centers 余弦相似度 top-1 token-choice + 共享专家 + routing contrastive loss）；直接父变体 / Parent: 即“基础 ProMoE-TC 之上仅加 anchor 机制”——本模型为 ProMoE_TC 的自包含副本，路由/专家/派发不变（anchor_apply_mode 的另一取值 "replace" 为消融兄弟）。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. Anchor / R3-VAE 参考向量移除（核心机制）：每个 MoE block 新增一个可学习 `anchor` 向量 r，对 cond token 先做正交投影去除 `alpha = (x·r)/(‖r‖²+anchor_eps); x_new = x - alpha·r`（R3-VAE Eq 1-2），再进入原型余弦相似度路由。相对基础 ProMoE 直接用原始 cond token 与静态 `cluster_centers` 算 cos-sim，这里在路由前先剥离 anchor 方向。
+2. `anchor_apply_mode: "routing"`（默认模式 / 消融轴）：仅路由器看到 anchor-removed 的 `x_new`，routed experts 与 shared_expert 仍消费原始 `x`，uncond token（class==1000）完全不动。相对兄弟变体 "replace"（router + routed + shared 全部消费 `x_new`），本实验把 anchor 移除限定在“只影响路由决策”这一最小侵入面。
+3. 非 step-0 等价、需从头训练：`anchor` 为随机初始化（`std=0.02`，无 zero-gate），从第 0 步即扰动路由，因此 base-ProMoE checkpoint 非严格可加载（`anchor_eps=1e-6` 稳定 ‖r‖² 分母）。除此之外路由权重模式 identity、top_k=1、12 routed experts + shared expert、`routing_contrastive_lam=1` 等均与基础 ProMoE 一致；forward() 返回普通张量，contrastive 辅助损失仍经 `AddAuxiliaryLoss` 注入。

@@ -85,8 +85,15 @@ and the **training entrypoint** in the train step to match the model family. Kee
 Slot/`gpu_ids` semantics are owned by `new_run.sh` (4-GPU `X.1`→`[0,1,2,3]` / `X.2`→`[4,5,6,7]`,
 8-GPU `X`→`[0..7]`, scoped to one date dir). Do not re-implement that math here.
 
-## Step 5 — Report
-List every file created or modified (model, config, run script, wrapper), the assigned slot, and
+## Step 5 — Auto-write the experiment description
+Immediately after the wrapper is written, invoke **`/describe-experiment`** on it. That skill traces
+the wrapper → semantic script → config → model/CLAUDE.md and writes
+`scripts/_run_times/<date>/<slot>-<desc>-describe.txt` — a numbered list of this experiment's core
+changes vs the baseline (base ProMoE **and** the immediate parent variant), most-important change
+first, bilingual. It is read-only tracing + one `.txt` write; it launches nothing and never commits.
+
+## Step 6 — Report
+List every file created or modified (model, config, run script, wrapper, `*-describe.txt`), the assigned slot, and
 the `gpu_ids`. Give the launch command but **do not run it** — per the project rule, the user (or a
 later request) starts it in a new tmux window:
 ```

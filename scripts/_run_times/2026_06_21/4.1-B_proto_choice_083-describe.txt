@@ -1,0 +1,8 @@
+实验 / Experiment: 4.1-B_proto_choice_083
+model_name: ProMoE_TC_B_proto_choice  |  config: configs/004_ProMoE_B_proto_choice_083.yaml
+基线 / Baseline: 基础 ProMoE-TC（静态 cluster_centers 原型 + 两步路由 + token-choice 路由对比损失）；直接父变体 / Parent: proto_choice 模型本身（仅路由对比损失公式改变，默认 ratio=0.1；sweep 兄弟 _125 用 0.125）
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. Prototype-choice InfoNCE 路由对比损失（变体定义性改动）：把基础 ProMoE-TC 的 token-choice 对比（每个 token 路由到一个簇，簇的正样本=路由到它的 token 均值，负样本=其它簇均值）换成 prototype-choice InfoNCE —— 每个 prototype（`cluster_centers`）按 cos-sim 选取自己最相似的 top-K cond tokens，正样本=这 top-K 的均值，负样本=剩余 cond tokens；逐 prototype 计算后按 prototype 平均，无 prototype-prototype 项、无空簇跳过（`compute_proto_choice_contrastive_loss`）。路由 / experts / shared_expert / dispatch 与 base 完全一致，仅对比损失改变。
+2. `contrastive_proto_choice_ratio: 0.083`（sweep 轴）：每个 prototype 认领为正集的 cond-token 比例，`K = ceil(0.083 · N_cond)`（代码 clamp 到 `[1, N-1]`）。相对 sweep 兄弟 _125（0.125）与默认 0.1，083 让每个原型的正集更小、更聚焦于最相似的极少数 token，对比信号更尖锐。
+3. step-0 与基础 ProMoE 等价：cluster_centers / 两步路由 / dispatch 均不变，只有对比损失公式不同（`routing_contrastive_lam=1`、`routing_contrastive_temperature=0.07`、`router_weight_mode=identity`、`top_k=1`）；forward() 仍返回普通 tensor，对比损失梯度经 `AddAuxiliaryLoss` 注入。

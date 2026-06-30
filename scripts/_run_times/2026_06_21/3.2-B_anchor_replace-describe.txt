@@ -1,0 +1,8 @@
+实验 / Experiment: 3.2-B_anchor_replace
+model_name: ProMoE_TC_B_anchor  |  config: configs/004_ProMoE_B_anchor_replace.yaml
+基线 / Baseline: 基础 ProMoE-TC（静态可学习 cluster_centers 原型 + 两步路由：条件路由分离 uncond → 原型 cos-sim 逐 token top-1 路由，无 anchor）；直接父变体 / Parent: ProMoE_TC_B_anchor 默认 anchor_apply_mode="routing"（同一 anchor 模型，但 anchor 仅作用于 router）
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. anchor 参考向量去除 / R3-VAE reference-vector removal（变体定义性改动，相对基础 ProMoE-TC）：每个 MoE block 新增一个可学习 `anchor` 向量 `r`，cond token 在做原型 cos-sim 之前先正交投影掉 `r`：`alpha = (x·r)/(‖r‖²+anchor_eps)`，`x_new = x - alpha·r`（R3-VAE Eq 1-2），使路由发生在去除参考方向后的子空间。`anchor` 随机初始化（std 0.02）且无 zero-gate，因此 **step-0 与基础 ProMoE 不等价**，需从头训练，base ProMoE checkpoint 不可 strict 加载。
+2. `anchor_apply_mode: "replace"` 模式（相对父变体 routing 的消融轴）：replace 模式下 cond token 被 `x_new` 直接替换并喂给 router + routed experts + shared_expert 三者（uncond token，label==1000，保持不变，不做去除），且不再把 `alpha·r` 加回——原始 `x` 由 DiTBlock 的残差 skip 携带；而父变体 routing 模式只有 router 的 cos-sim 看到 `x_new`，experts/shared 仍看原始 `x`。
+3. 其余结构与路由完全沿用基础 ProMoE-TC：12 个 routed experts + uncond expert + shared expert，`top_k=1`、`router_weight_mode=identity`、routing contrastive loss 仍经 `AddAuxiliaryLoss` 注入（`routing_contrastive_lam=1`、温度 0.07、`use_top_k_for_routing_contrastive=True`），`anchor_eps=1e-6` 仅用于稳定 `‖r‖²` 分母；forward() 返回普通 tensor。

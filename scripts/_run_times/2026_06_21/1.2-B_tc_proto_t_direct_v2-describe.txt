@@ -1,0 +1,8 @@
+实验 / Experiment: 1.2-B_tc_proto_t_direct_v2
+model_name: ProMoE_TC_B_proto_t  |  config: configs/004_ProMoE_B_proto_t_direct_v2.yaml
+基线 / Baseline: 基础 ProMoE-TC（静态可学习 cluster_centers 原型 + 两步路由 + 逐 token top-1 token-choice）；直接父变体 / Parent: ProMoE_TC_B_proto_t（residual 模式，proto_t_update_mode="residual"）
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 时间步条件原型 / timestep-conditioned prototypes（proto_t）：把固定可学习的 `cluster_centers` 换成由 `PrototypeMLP(concat(cluster_centers, t_emb))` 逐样本生成的 `prototype_t`（形状 (B, E, D)），使余弦相似度路由在与噪声水平对齐的特征空间中进行；为此 MoE block forward 多接收一个 `t_emb` 参数，`t` 被 plumb 到每个 DiTBlock（`block(x, c, labels, t)` → MoE `forward(..., t_emb)`）。相对基础 ProMoE-TC，这是定义该变体的头部改动。
+2. `direct` 原型更新模式 / update mode（`proto_t_update_mode: "direct"`）：`prototype_t = proto_proj(cluster_centers) + MLP(...)`，其中 `proto_proj` 为恒等初始化的可训练 `Linear(D→D)`、`fc2` 零初始化 → step 0 时 `I·cc + 0 == cc`，与基础 ProMoE 等价（step-0-identical）；但 cc→原型映射可训练（非硬编码 I），每个 MoE block 额外 +D·D 参数（B 模型 6 个 MoE block 合计约 +3.5M）。相对父变体 residual 模式（`prototype_t = cc + MLP(...)`，无 proto_proj）这正是本实验的消融轴。
+3. 路由/专家/派发沿用基础 ProMoE-TC 不变：仍为逐 token top-1 token-choice、class==1000 走 uncond expert 的条件路由、shared expert、InfoNCE 路由对比损失（且对比损失锚点仍用静态 `cluster_centers` 而非 `prototype_t`）；forward() 返回普通张量，对比损失梯度经 `AddAuxiliaryLoss` 注入。

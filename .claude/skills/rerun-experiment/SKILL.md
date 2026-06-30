@@ -57,6 +57,9 @@ fixed prefixes/suffixes:
 - `scripts/<fam>/run_<size>_<variant>_train_sample_eval.sh` → `..._<variant>_vN_train_sample_eval.sh`
 - `scripts/_run_times/<date>/<slot>-<desc>.sh` → `<slot>-<desc>_vN.sh` (**keep the `<slot>` prefix** —
   same GPU assignment; only the desc gains `_vN`)
+- `scripts/_run_times/<date>/<slot>-<desc>-describe.txt` (the companion experiment description, if it
+  exists) → `<slot>-<desc>_vN-describe.txt` — `git mv` it too so it doesn't dangle under the old name
+  (its content is regenerated in Step 5)
 
 Then update every **in-file reference** (this is the step that's easy to half-do):
 - semantic script: `CONFIG="configs/..._vN.yaml"` **and** `LOG="log_..._vN_..._train_sample_eval.log"`
@@ -77,8 +80,15 @@ Then update every **in-file reference** (this is the step that's easy to half-do
   `grep -rnE '<old-stem>(\.yaml|\.sh|")' scripts configs | grep -v '_v[0-9]'` → expect no hits.
 - Do NOT start training/sampling/eval, and do NOT touch `outputs/`.
 
-## Step 5 — Report
-List, per experiment, the three `git mv` renames (config / script / wrapper) and the in-file edits,
+## Step 5 — Regenerate the experiment description
+After the renames validate, invoke **`/describe-experiment`** on the `_vN` wrapper to (re)write
+`<slot>-<desc>_vN-describe.txt`. The change list is about the *variant*, so it matches the old name —
+but regenerate it freshly (the model code changed, which is why the experiment was re-bucketed). If a
+`<old-stem>-describe.txt` was `git mv`'d in Step 3, this overwrites the moved file's contents; if none
+existed, it creates the description for the `_vN` stem. Read-only tracing + one `.txt` write.
+
+## Step 6 — Report
+List, per experiment, the `git mv` renames (config / script / wrapper / `*-describe.txt`) and the in-file edits,
 the **unchanged** slot + `gpu_ids`, and the new output dir `outputs/{model_name}/{cfg}_vN/`. Give the
 launch command but **do not run it**:
 ```
