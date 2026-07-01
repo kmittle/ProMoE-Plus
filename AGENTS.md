@@ -322,7 +322,8 @@ Use concise, imperative, single-scope commit subjects. In PR descriptions, inclu
 When the user asks to push, treat that as permission to commit relevant current WIP first, then push. Still stage explicit paths only; do not use `git add -A` or `git add .`, do not stage secrets or `*.local.json`, do not bypass hooks with `--no-verify`, and do not force-push to `main` or `master`.
 
 ## Configuration Notes
-- Set `cfg.data_path` (or YAML override) to ImageNet `train/` root before preprocess/train.
+- Set `cfg.data_path` (or the `PROMOE_DATA_PATH` env var, or a YAML override) to the ImageNet `train/` root before preprocess/train; it defaults to the repo-relative `datasets/imagenet/train` (kept relative because train.py derives latent paths via `str.replace('train', ...)`, which needs `train` to appear exactly once).
+- On a fresh server, `preprocess/prepare_imagenet.sh` (invoked by every `run_*_train_sample_eval.sh` before training) auto-downloads full-resolution ImageNet-1K (HuggingFace→ModelScope), materialises it to `datasets/imagenet/train/<label:04d>/`, provisions the VAE, and VAE-encodes everything — idempotent, resume-safe, `flock`-locked (two 4-GPU slots on one server won't race), and it verifies every image has a latent before finishing. `datasets/` is git-ignored.
 - `custom_cfg_name` is auto-injected from `--config` filename stem and used in output path construction.
 - Training uses `gpu_ids` from YAML to set `CUDA_VISIBLE_DEVICES` when provided.
 - Sampling uses `sample_gpu_ids` only if provided; otherwise it uses all visible GPUs.
@@ -336,6 +337,10 @@ When the user asks to push, treat that as permission to commit relevant current 
 - `proto_t` configs choose `proto_t_update_mode` (`direct` or `residual`) under `DiT_B_config`; the `EC_BC` proto-t configs use the expert-choice batch-choice model registry key.
 - Anchor configs set `anchor_apply_mode` (`routing` or `replace`) under `DiT_B_config`.
 - Proto-choice ratio configs set `contrastive_proto_choice_ratio`; wrapper/config suffixes such as `083` and `125` refer to the ratio sweep values.
+- Load-balance-contrastive (lbcontra) configs set `lb_contra_mode` (`reweight`/`logit_adjust`/`balance_term`/`soft_only`) and the mode's scalar (`lb_reweight_beta` / `lb_logit_adj_tau` / `lb_balance_lambda`); only the routing-contrastive loss changes, so step-0-identical to base ProMoE.
+- DAG-Fuse (dagfuse) configs set `fusion_arm` (`cond_from_shared`/`shared_from_cond`/`bidirectional`) and `fusion_num_iter`; the fusion module's up_proj is zero-init, so step-0-identical (non-strict checkpoint load).
+- Adaptive-depth (adepth) configs set `alloc_mode=fixed_q`, `depth_q`, and `depth_warmup`; requires `top_k==1`, and zero-init gates keep it step-0-identical (non-strict).
+- Loss-free (lossfree) configs set `use_lossfree_bias` and `bias_update_rate` (`u`); the per-prototype bias is a non-trainable buffer added only to top-1 selection, step-0-identical (non-strict).
 - Most provided YAMLs set `resume_checkpoint: True`; when no checkpoint exists the loader logs an error and training starts from step 0.
 - `sample.py` behavior:
   - if `step_list_for_sample` is set, it loads only those checkpoints;
@@ -345,7 +350,7 @@ When the user asks to push, treat that as permission to commit relevant current 
 Model registry and forward conventions:
 
 - `train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, and `train_with_mae.py` each define a `model_dict` from `model_name` to `(ModelClass, config_key)`. Add new registrations in the training script that owns the family.
-- `train.py` hosts base DiT/baselines, ProMoE TC/EC, EC batch-choice, proto-t, anchor, proto-choice, structured-batch, noise-expert, and expert-contrastive families.
+- `train.py` hosts base DiT/baselines, ProMoE TC/EC, EC batch-choice, proto-t, anchor, proto-choice, lbcontra (load-balance-aware routing contrastive), dagfuse (DAG-MoE shared↔cond fusion), adepth (adaptive routed-FFN depth), lossfree (loss-free balancing bias), structured-batch, noise-expert, and expert-contrastive families.
 - `train_with_repa.py` hosts standard REPA, REPA shared/cond, dynamic REPA, router/routed/double-share REPA, and hierarchical-expert REPA-DYNA families.
 - `train_with_MoS_repa.py` hosts MoS, naive/choice/separate/blockwise/per-block/fused variants, multi-align, and standard REPA + MoS cross-alignment families.
 - `train_with_mae.py` hosts `group_align` and `group_align_proj` families.
@@ -374,7 +379,7 @@ Variant-specific notes:
 
 Latent mode and cache behavior:
 
-- With `use_pre_latents=True`, both training and preprocessing rely on `preprocess/image_paths_cache.txt`.
+- With `use_pre_latents=True`, both training and preprocessing rely on `preprocess/image_paths_cache.txt`. `prepare_imagenet.py` rebuilds this cache deterministically (sorted, atomic write) before preprocessing so DDP ranks don't race to regenerate it; `preprocess_vae.py` also skips images whose `.latent.npz` already exists and writes latents atomically.
 - Latent path rule in training is string-based: image path replaces `train` with `sd-vae-ft-mse_Latents_256img_npz`, extension becomes `.latent.npz`.
 - Keep dataset naming aligned with this replacement rule, or update the code.
 - In REPA training with `use_pre_latents=True`, the dataset additionally loads raw images for teacher feature extraction.

@@ -50,6 +50,12 @@ pip install -r requirements.txt
 
 Download [ImageNet](http://image-net.org/download) dataset, and modify `cfg.data_path` in `config.py`.
 
+Alternatively, on a fresh server, let the automated preparer fetch and set everything up. It downloads full-resolution ImageNet-1K (HuggingFace first, ModelScope fallback), materialises it to `datasets/imagenet/train/`, and VAE-encodes it — idempotent, resume-safe, and cross-process locked:
+```bash
+bash preprocess/prepare_imagenet.sh --python "$(which python)" --gpus 0,1,2,3
+```
+Every `run_*_train_sample_eval.sh` under `scripts/` calls this automatically before training, so experiments run on servers that don't yet have ImageNet. Overridable via `PROMOE_DATA_PATH` / `PROMOE_HF_DATASET` / `PROMOE_MS_DATASET` (and `HF_TOKEN` for the gated HuggingFace path).
+
 ### 3. VAE Latent Preprocessing (Optional)
 
 For faster training and more efficient GPU usage, you can **precompute VAE latents** and train with `cfg.use_pre_latents=True`.
