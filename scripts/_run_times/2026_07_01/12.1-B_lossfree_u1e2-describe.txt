@@ -1,0 +1,8 @@
+实验 / Experiment: 12.1-B_lossfree_u1e2   (slot 12.1, GPU [0,1,2,3])
+model_name: ProMoE_TC_B_lossfree  |  config: configs/004_ProMoE_B_lossfree_u1e2.yaml
+基线 / Baseline: 基础 ProMoE-TC（两步路由 + 静态 cluster_centers + top-1 token-choice + shared expert + 路由 InfoNCE 对比损失）；直接父变体 / Parent: 即基础 ProMoE_TC_B（本变体只在 cond 路由的 top-1 选择处加一个偏置）；兄弟臂 / siblings: 其它 bias_update_rate。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 无损负载均衡 / Loss-Free Balancing（改进组四，`use_lossfree_bias=True`；DeepSeek arXiv 2408.15664）：给每个 prototype 一个偏置 `expert_bias`（**buffer、非 Parameter、不反传**）加到 cond token 的 cos-sim 上，**只用于 top-1 选择**；专家输出权重仍用**无偏置**的 cos-sim → **零干扰梯度**（区别于改进组二把均衡塞进辅助 loss）。每个训练 forward 后 no-grad 更新 `b_i += u·sign(mean_c − c_i)`（欠载抬/过载压），`c_i` 跨卡 all_reduce（全局负载）。
+2. 本臂偏置更新率 = `bias_update_rate=1e-2`（论文所扫 (0.0001, 0.001, 0.01) 之一，最佳约 1e-3；太大后期震荡/坍缩）。相对兄弟臂仅 `bias_update_rate` 不同（u 扫描）。
+3. **无新可训练参数**、step-0 前向与 base 逐比特一致（`expert_bias` 初始 0 → 带偏置==无偏置；已数值验证 max|Δ|=0.0、均衡有效 MaxVio 0.219→0.125、偏置无梯度），checkpoint 非严格加载。uncond 专家与对比损失 **完全不变**（均衡与准确度正交）。扩散非自回归，无"未来 token 泄漏"。

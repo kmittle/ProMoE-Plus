@@ -54,6 +54,7 @@ from models.models_ProMoE_TC_expert_contra import DiT as ProMoE_TC_expert_contra
 from models.models_ProMoE_TC_dagfuse import DiT as ProMoE_TC_dagfuse
 from models.models_ProMoE_TC_lbcontra import DiT as ProMoE_TC_lbcontra
 from models.models_ProMoE_TC_adepth import DiT as ProMoE_TC_adepth
+from models.models_ProMoE_TC_lossfree import DiT as ProMoE_TC_lossfree
 
 model_dict = {
     "DiT_B": (DiT, "DiT_B_config"),
@@ -91,6 +92,7 @@ model_dict = {
     "ProMoE_TC_B_dagfuse": (ProMoE_TC_dagfuse, "DiT_B_config"),
     "ProMoE_TC_B_lbcontra": (ProMoE_TC_lbcontra, "DiT_B_config"),
     "ProMoE_TC_B_adepth": (ProMoE_TC_adepth, "DiT_B_config"),
+    "ProMoE_TC_B_lossfree": (ProMoE_TC_lossfree, "DiT_B_config"),
 }
 
 class CustomImageFolder(Dataset):

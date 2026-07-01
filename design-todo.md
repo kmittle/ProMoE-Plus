@@ -3,9 +3,10 @@
 > **目录 / Index**（每组一个独立 `# 改进组X` 章节）：
 > 1. **改进组一 · DAG-fuse**（shared↔conditional 单向融合）—— ✅ 已实现 + 验证 + **已 push**（`ProMoE_TC_B_dagfuse`，3 臂）
 > 2. **改进组二 · lbcontra**（路由对比损失负载均衡）—— ✅ 已实现 + 验证 + **已 push**（`ProMoE_TC_B_lbcontra`，13 run）
-> 3. **改进组三 · adaptive-depth**（token 自适应跳过 / 加深 FFN，MoD 式）—— ✅ 已实现 + 验证（`ProMoE_TC_B_adepth`，fixed_q v1，扫 depth_q ×4）；未提交
+> 3. **改进组三 · adaptive-depth**（token 自适应跳过 / 加深 FFN，MoD 式）—— ✅ 已实现 + 验证 + **已 push**（`ProMoE_TC_B_adepth`，fixed_q，扫 depth_q ×4）
+> 4. **改进组四 · lossfree**（无损路由负载均衡，DeepSeek arXiv 2408.15664）—— ✅ 已实现 + 验证（`ProMoE_TC_B_lossfree`，扫 u ×3）；未提交（本次新增）
 >
-> **三组共用约定**：均在 base `ProMoE_TC`（`models/models_ProMoE_TC.py`：两步路由 + 静态 `cluster_centers` + top-1 token-choice + shared expert + 路由 InfoNCE 对比损失）上做**自包含变体**（`models_ProMoE_TC_<variant>.py` + config 开关）；**uncond token 一律不受影响**；尽量 **step-0 与 base 前向逐比特一致**；默认各自**独立消融**、不叠加。运行时 slot 现统一在 `scripts/_run_times/2026_07_01/`。
+> **四组共用约定**：均在 base `ProMoE_TC`（`models/models_ProMoE_TC.py`：两步路由 + 静态 `cluster_centers` + top-1 token-choice + shared expert + 路由 InfoNCE 对比损失）上做**自包含变体**（`models_ProMoE_TC_<variant>.py` + config 开关）；**uncond token 一律不受影响**；尽量 **step-0 与 base 前向逐比特一致**；默认各自**独立消融**、不叠加。运行时 slot 现统一在 `scripts/_run_times/2026_07_01/`。
 
 ---
 
@@ -249,4 +250,36 @@ return X[:,0], X[:,1]                                # C_new, S_new
 - deepen 第二次是"同一 expert 权重原样再走一遍"（纯加深、零新参数）还是带一个独立小投影（零初始化）；两者 step-0 都要求初始贡献=0。
 - 架构 = 自包含变体文件 `models/models_ProMoE_TC_<name>.py` + `alloc_mode`/`q`/`target_rate` 等开关（同前两组约定）；是否与组一/组二叠加 —— 默认先独立。
 - 可训练性 & 稳定性细节（软门控 vs straight-through、正则权重）留实现时定。
+
+
+---
+
+# 改进组四：无损路由负载均衡（Loss-Free Balancing，DeepSeek arXiv 2408.15664）
+
+> 本组**状态：已实现 + 验证；未提交、未训练**。实现 = 自包含 `models/models_ProMoE_TC_lossfree.py`（**无新可训练参数**，只改 `compute_router` + 一个 `expert_bias` buffer）+ 注册 `train.py:57/95` + 3 config（扫 `bias_update_rate u∈{1e-4,1e-3,1e-2}`）+ 3 script/slot（`2026_07_01/` 11.1/11.2/12.1）+ 3 describe.txt。
+
+## 1. 背景与思想
+- 论文核心：为均衡用**辅助损失**（Switch 式）会注入**干扰梯度**、伤性能（"小 α 不均衡 / 大 α 伤性能"两难）。**Loss-Free** 不用辅助损失：给每个专家一个**偏置 `b_i`**，加到门控分上、**只用于 top-K 选择**；输出权重用**无偏置分** → **零干扰梯度**。
+- `b_i` 每 batch 后按负载**非梯度更新**：`b_i += u·sign(c̄ − c_i)`（欠载抬、过载压）。论文消融：**sign > 幅度**、**加法 > 乘法**、`u=1e-3` 最佳、用历史负载避因果泄漏、sigmoid 门 > softmax。效果 MaxVio 0.5~0.72 → ~0.04，且 ppl 更低。
+
+## 2. 锁定决策（已与用户确认）
+| 项 | 决定 |
+|---|---|
+| 偏置作用 | 加在 cond 的 **identity cos-sim 选择分**上，**只影响 top-1 选择**；输出权重用无偏置 cos-sim |
+| 更新规则 | **仅 sign**（论文默认）；加法偏置 |
+| count 口径 | **全局 all_reduce**（跨卡一致 + 全局负载；无条件调用避 DDP 死锁） |
+| u 扫描 | `{1e-4, 1e-3, 1e-2}` ×3 run |
+| 对比损失 | **保留不变**（均衡与"路由准确"正交，这是相对改进组二的干净之处） |
+| uncond / step-0 | uncond 不受影响；`b_i` buffer 初始 0 ⇒ step-0 前向逐比特 = base，**零新可训练参数** |
+
+## 3. 验证（已过）
+- **step-0 前向 = base 逐比特一致**（`use_lossfree_bias` False/True，eval，max|Δ|=0.0）；额外 key 仅 `expert_bias`。
+- **零干扰梯度**：`expert_bias.requires_grad=False`、`.grad=None`；主梯度到 cluster_centers/experts/input 正常。
+- **偏置更新方向**：过载 → 降、欠载 → 升。
+- **均衡有效**：MaxVio 0.219 →（u=1e-3~1e-2）0.125，明显低于固定无偏置基线；u 过大（0.05/0.2）后期震荡/坍缩（复现论文结论）。
+
+## 4. 待定 / 后续
+- 若某个 u 明显更好，可细扫 u。
+- 与改进组二（lbcontra）**互斥/对比**：两者都解"负载均衡"——组二用辅助 loss（有干扰梯度），组四用无损偏置（零干扰）；跑完可直接对比谁的均衡/FID 更好。
+- 是否要"偏置作用在 softmax 分"的变体（论文说更难调）、或 EMA 平滑 count —— 暂不做。
 
