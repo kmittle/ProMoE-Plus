@@ -1,0 +1,8 @@
+实验 / Experiment: 9.2-B_adepth_q0p2   (slot 9.2, GPU [4,5,6,7])
+model_name: ProMoE_TC_B_adepth  |  config: configs/004_ProMoE_B_adepth_q0p2.yaml
+基线 / Baseline: 基础 ProMoE-TC（两步路由 + 静态 cluster_centers + top-1 token-choice + shared expert + 路由 InfoNCE 对比损失）；直接父变体 / Parent: 即基础 ProMoE_TC_B（本变体只在 routed-expert FFN 上加自适应深度）；兄弟臂 / siblings: 其它 depth_q 值。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 自适应 FFN 深度 / adaptive routed-FFN depth（改进组三，MoD 式，`alloc_mode=fixed_q`）：每 block 一个 `depth_gate=Linear(d,1)` 给每个 cond token 打难度分 s_t；**批展平**排序后按固定配额分三档——bottom-q **skip**（0 次 routed FFN，真跳过省算力）、中间 **normal**（1 次，=base）、top-q **deepen**（2 次，第二次对 `x+rw·E(x)` 再走**同一个 top-1 expert**）。`#skip==#deepen==k` ⇒ 总 routed passes = N_cond，**算力守恒**（易 token 省下的匀给难 token）。加深不加宽，shared expert 与 uncond token 不受影响。
+2. 本臂配额 = `depth_q=0.2`（0.2 跳过 + 0.2 加深 + 其余正常；从 0 退火，`depth_warmup=5000`）。相对兄弟臂仅 `depth_q` 不同（配额扫描）。
+3. **可导 + step-0**：跳过侧靠 STE keep-gate `tau=1+sigmoid(s)−sigmoid(s).detach()`（前向恒=1，反向有梯度），加深侧靠 `deepen_gain·sigmoid(s)`（零初始化）。`depth_gate` 零初始化（在 `initialize_weights` 的 xavier 后重置）+ `deepen_gain=0` + 初始 q=0 ⇒ **step-0 前向与 base 逐比特一致**（已数值验证 max|Δ|=0.0、守恒 256==256）；新增参数仅 `depth_gate`(d+1)+`deepen_gain`(1)/block，checkpoint 非严格加载。DDP 假梯度触碰防 unused-param 崩溃；`assert top_k==1`。
