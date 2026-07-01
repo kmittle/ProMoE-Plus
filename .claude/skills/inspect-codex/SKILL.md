@@ -1,18 +1,21 @@
 ---
 name: inspect-codex
-description: Codex-augmented project-wide carpet check loop on ProMoE-Plus. Each iteration briefs an independent Codex reviewer (xhigh reasoning, launched headless via codex exec --dangerously-bypass-approvals-and-sandbox in a new tmux window that closes itself when the review finishes, kept review-only by instruction + a checksum-revert guard) that runs in parallel with Claude's own scan; Claude then aggregates both finding sets, adjudicates the real problems, fixes them, smoke-tests, and commits — repeating until 5 consecutive iterations find zero real problems. Use when the user invokes /inspect-codex or wants a second-opinion review sweep before a milestone.
+description: Codex-augmented project-wide carpet check loop on ProMoE-Plus. Each iteration briefs an independent Codex reviewer (xhigh reasoning, launched headless via codex exec --dangerously-bypass-approvals-and-sandbox in a new tmux window that closes itself when the review finishes, kept review-only by instruction + a checksum-revert guard) that runs in parallel with Claude's own scan; Claude then aggregates both finding sets, adjudicates the real problems, fixes them, smoke-tests, and commits — repeating until 5 consecutive iterations find zero real problems. Runs FULLY HANDS-OFF: the Codex window auto-opens and auto-closes, findings are auto-collected and auto-fixed, and the required tmux/codex/git/mktemp commands are pre-allowlisted, so the loop never stops mid-run to ask the user to choose — the only stops are a missing tmux session (must abort) or a genuinely destructive/irreversible fix. Use when the user invokes /inspect-codex or wants a second-opinion review sweep before a milestone.
 ---
 
 # /inspect-codex — Codex-augmented project-wide carpet check loop
 
 Same goal as `/inspect` (sweep the whole ProMoE-Plus codebase, fix issues, smoke-test, commit, repeat), but every iteration cross-checks the codebase with an **independent Codex reviewer** running **in parallel** with Claude's own scan. Codex only reviews; **Claude is the sole adjudicator and fixer**. Repeat until **5 consecutive iterations** find zero real problems AND a passing smoke test. Hard cap: **20 iterations**.
 
+**Run this fully hands-off.** Once invoked, drive every iteration to completion on your own — auto-launch the self-closing Codex window, auto-collect its findings, auto-adjudicate, auto-fix, auto-smoke-test, auto-commit — and do **not** pause to ask the user to confirm or choose. The required `codex` / `tmux new-window` / `git stash` / `git checkout` / `mktemp` / `cp` / `rm` / `sha256sum` commands are pre-allowlisted in `.claude/settings.local.json`, so no per-command permission prompt should appear. There are exactly **two** legitimate stops: (a) `$TMUX` is unset at the start (must abort — you cannot open a tmux window; see Prerequisites), and (b) a specific fix would be genuinely destructive or irreversible (see step 6). Everything else proceeds automatically.
+
 Iteration shape (note the order — commit comes *after* a passing smoke test):
 **brief Codex → (Codex reviews ‖ Claude scans) → aggregate → adjudicate real problems → fix → smoke test → commit**
 
 ## Prerequisites (check before iteration 1)
-- **Must be inside tmux.** Codex runs as a long job in a new tmux window (project rule). If `$TMUX` is unset, **abort and ask the user to attach to a tmux session first** — never fall back to `&` / `nohup` / `run_in_background`.
+- **Must be inside tmux.** Codex runs as a long job in a new tmux window (project rule). If `$TMUX` is unset, **abort and ask the user to attach to a tmux session first** — never fall back to `&` / `nohup` / `run_in_background`. This is the *only* setup question the skill may ask; once inside tmux it never asks again.
 - `codex` CLI on PATH (`which codex`), `~/.codex/auth.json` present, this repo path marked `trust_level = "trusted"` in `~/.codex/config.toml` (it is). `model_reasoning_effort = "xhigh"` is the configured default; we also pass it explicitly.
+- **Zero-prompt automation:** the commands this skill runs directly (`codex`, `tmux new-window`, `tmux display-message`, `git stash`, `git checkout`, `mktemp`, `cat`, `cp`, `rm`, `sha256sum`, plus the already-present `git status` / `python3`) are pre-allowlisted in `.claude/settings.local.json`. Do not stop to confirm any of them — just run them. If a genuinely new command surfaces, run it directly rather than pausing to ask.
 - **Cost note:** each iteration spends Codex (xhigh) quota — this loop is billed. That is why the 20-iteration hard cap exists.
 
 ## State to maintain across iterations
@@ -134,11 +137,13 @@ Parse the `### FINDING` blocks. If the sentinel shows a non-zero `EXIT:` (auth /
 - **Checksum-revert guard (do this FIRST — Codex ran unsandboxed):** re-run `git status --porcelain` and compare to `$CODEX_TMP/tree_before_${iter}.txt`. If Codex created / modified / deleted anything, revert the tree to the pre-Codex snapshot — restore each tracked file Codex touched from the snapshot commit (`git checkout $SNAP -- <paths>`, with `$SNAP` from `snap_${iter}.txt`; this restores the **pre-Codex WIP content, not HEAD**, so legitimate WIP is preserved) and `rm` only the untracked files Codex created — so the tree exactly matches the snapshot before you proceed. Record any reverted Codex writes in `findings_history`. **Claude remains the sole writer.**
 - Merge Claude's findings and Codex's findings; **dedupe** by (file, line, issue).
 - For EACH finding (whatever the source), **verify it against the actual code** — do not trust Codex (or yourself) blindly. Read the cited lines. Mark each **true positive** or **false positive** with one line of reasoning.
-- **Interactive discussion (optional, for ambiguous Codex findings):** if a Codex finding is plausible but you cannot confirm or refute it from the code, you MAY send ONE focused follow-up to the same Codex session before deciding — resume it headless with `codex exec resume --last --dangerously-bypass-approvals-and-sandbox` and a short question via stdin, capturing the reply with `-o` (re-snapshot + re-verify the tree afterward). Keep follow-ups rare and targeted; they cost quota.
+- **Autonomous Codex follow-up (Claude's call, never the user's):** if a Codex finding is plausible but you cannot confirm or refute it from the code, you MAY *yourself* send ONE focused follow-up to the same Codex session before deciding — resume it headless with `codex exec resume --last --dangerously-bypass-approvals-and-sandbox` and a short question via stdin, capturing the reply with `-o` (re-snapshot + re-verify the tree afterward). This is an internal cross-check you decide on and run automatically — **do not surface it to the user or ask permission.** Keep follow-ups rare and targeted; they cost quota. If still unresolved after one follow-up, treat the finding as a false positive (record it) rather than pausing.
 - Only **true positives** proceed to step 6. Record dismissed false positives in `findings_history`.
 
 ### 6. Fix (Claude only — Codex never fixes)
-For each true-positive finding, make the smallest correction that resolves it. **Do not refactor unrelated code** (CLAUDE.md rule). If a finding is ambiguous (dead code vs staged-for-a-future-variant, etc.), surface it to the user and **pause** the iteration — do not guess, do not auto-commit, do not skip. Resume on user input.
+For each true-positive finding, make the smallest correction that resolves it. **Do not refactor unrelated code** (CLAUDE.md rule). **Default to fixing autonomously — do not pause to ask the user about ordinary findings.** If a finding is merely *ambiguous* (dead code vs staged-for-a-future-variant, a low-confidence hygiene nit, unclear intent), resolve it **conservatively without asking**: prefer the minimal, reversible change; if even the minimal change is uncertain, skip that finding this iteration and record it in `findings_history` rather than pausing. Ambiguity alone is never a reason to stop.
+
+**Pause only for a genuinely destructive or irreversible fix** — one that deletes non-trivial code that plausibly is a staged future variant, rewrites semantics, or spans many files. Only in that narrow case, surface the specific change to the user and halt (do not guess, do not auto-commit). This is the sole in-loop stop; everything short of it is auto-fixed and the loop continues.
 
 ### 7. Smoke test (before any commit)
 Run, in order. Any failure resets `consecutive_clean` to 0 and becomes a finding for the next iteration:
@@ -167,13 +172,15 @@ Never amend. Never `--no-verify`. Never push. If nothing was fixed, do not creat
 ## Termination
 - **Success:** `consecutive_clean == 5`. Print: total iterations, total real problems fixed, commit SHAs created, and "5/5 consecutive clean (Codex + Claude agree) — clean for this scope." Remove `$CODEX_TMP`.
 - **Cap hit:** `iter == 20` without 5/5. Print the summary + the outstanding findings from the last iteration. Remove `$CODEX_TMP`.
-- **Ambiguity pause:** if step 6 surfaced something, halt with the question + current state (`iter`, `consecutive_clean`, pending finding). Resume on user input (do NOT remove `$CODEX_TMP` while paused — the run may resume).
+- **Destructive-fix pause (rare):** only if step 6 hit a genuinely destructive/irreversible fix — never for ordinary or merely-ambiguous findings, which are auto-resolved. Halt with the specific change + current state (`iter`, `consecutive_clean`, pending finding). Resume on user input (do NOT remove `$CODEX_TMP` while paused — the run may resume).
 
 ## Workflow rules (project-wide, see CLAUDE.md)
+- **Run hands-off — no mid-run confirmation prompts.** Drive the whole loop autonomously; never stop to ask the user to confirm launching Codex, approve a command, continue to the next iteration, or adjudicate an ordinary finding. The pre-allowlisted commands run without prompts. The only permitted stops are the missing-tmux abort and the destructive-fix pause.
 - **Codex runs only in a new tmux window of the current session** — headless `codex exec`, which exits when its review finishes so the window **closes itself** (no `kill-window`, no user action; step 4). Never `&` / `nohup` / `run_in_background`. If `$TMUX` is unset, abort and ask the user to attach.
 - **Clean up smoke-test / Codex artifacts immediately** — the `$CODEX_TMP` dir and all sentinel / log / findings / runner files, as soon as each iteration (and the whole run) finishes.
 
 ## What this skill must NOT do
+- **Do not pause to ask the user for routine confirmations** — launching Codex, running an allowlisted command, advancing to the next iteration, or adjudicating an ordinary/ambiguous finding all proceed automatically. The only two permitted stops are the missing-tmux abort (Prerequisites) and the destructive-fix pause (step 6).
 - Do not let Codex's writes survive — it runs **yolo / unsandboxed** (headless `codex exec`), so it is kept review-only by instruction **plus** the step-2 snapshot / step-5 checksum-revert guard that reverts anything it touches. **Claude is the only writer.**
 - Do not push, force-push, or amend. Do not `--no-verify` or bypass pre-commit hooks.
 - Do not run real training / sampling / evaluation — smoke test is `py_compile` + import only.
