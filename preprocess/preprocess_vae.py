@@ -60,8 +60,12 @@ class CustomImageDataset(Dataset):
 
             for future in as_completed(futures):
                 image_paths.extend(future.result())
-        
-        return image_paths
+
+        # Sort for determinism: as_completed() yields in nondeterministic order, and each
+        # DDP rank builds this list independently. An unsorted list makes ranks partition
+        # DIFFERENT images via DistributedSampler (some never encoded); sorting guarantees
+        # every rank (and prepare_imagenet's pre-built cache) share an identical ordering.
+        return sorted(image_paths)
 
     def _get_image_paths_from_dir(self, dir_path):
         image_paths = []
@@ -142,8 +146,20 @@ def save_latent(encoded_latent, encoded_latent_flipped, image_path, save_root):
     os.makedirs(latent_dir, exist_ok=True)
     latent_np = encoded_latent.detach().cpu().numpy()
     latent_flip_np = encoded_latent_flipped.detach().cpu().numpy()
-    # Save both original and flipped latent numpy arrays as a compressed `.npz` file
-    np.savez_compressed(latent_save_path, latent=latent_np, latent_flip=latent_flip_np)
+    # Save both original and flipped latent numpy arrays as a compressed `.npz` file.
+    # Write atomically (.part + os.replace): the --skip-existing filter trusts any
+    # existing *.latent.npz as complete, so a run interrupted mid-write must NOT leave a
+    # truncated .latent.npz behind. A file object keeps np.savez_compressed from
+    # appending '.npz'; a leftover .part (never matched by the filter) is re-encoded next run.
+    tmp_path = latent_save_path + '.part'
+    try:
+        with open(tmp_path, 'wb') as f:
+            np.savez_compressed(f, latent=latent_np, latent_flip=latent_flip_np)
+        os.replace(tmp_path, latent_save_path)
+    except BaseException:
+        if osp.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
 
 
 @torch.no_grad
@@ -166,6 +182,37 @@ def worker(gpu, cfg):
         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], inplace=True)
     ])
     img_dataset = CustomImageDataset(cfg.data_path, transform=transform)
+
+    latent_save_root = cfg.latent_save_root
+
+    # Per-file skip: drop images whose latent already exists so an interrupted run
+    # only encodes the remainder. Deterministic across ranks (identical filter), so
+    # the DistributedSampler stays consistent. Mirrors save_latent()'s path logic.
+    if cfg.get('skip_existing', True):
+        existing = set()
+        for dp, _dirs, fnames in os.walk(latent_save_root):
+            rel_dir = osp.relpath(dp, latent_save_root)
+            for fn in fnames:
+                if fn.endswith('.latent.npz'):
+                    existing.add(osp.normpath(osp.join(rel_dir, fn)))
+
+        def _needs(p):
+            rel = osp.splitext(osp.relpath(p, cfg.data_path))[0] + '.latent.npz'
+            return osp.normpath(rel) not in existing
+
+        before = len(img_dataset.image_paths)
+        img_dataset.image_paths = [p for p in img_dataset.image_paths if _needs(p)]
+        if cfg.rank == 0:
+            logging.info(f"skip-existing: {before - len(img_dataset.image_paths)} already encoded, "
+                         f"{len(img_dataset.image_paths)} to encode")
+
+    if len(img_dataset) == 0:
+        if cfg.rank == 0:
+            logging.info('All latents already present -- nothing to encode.')
+        dist.barrier()
+        dist.destroy_process_group()
+        return
+
     sampler = DistributedSampler(img_dataset, num_replicas=cfg.world_size, rank=cfg.rank)
 
     # Define Sequential Dataloader (default behavior without sampler)
@@ -177,8 +224,6 @@ def worker(gpu, cfg):
         pin_memory=True,
         prefetch_factor=cfg.prefetch_factor
     )
-
-    latent_save_root = cfg.latent_save_root
 
     logging.info('Start the preprocess loop')
 
@@ -221,6 +266,8 @@ def center_crop_lambda(pil_image):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Run latent extraction/processing script.")
     parser.add_argument('--latent_save_root', type=str, required=True, help="Root directory path to save or load the latents")
+    parser.add_argument('--skip-existing', dest='skip_existing', action=argparse.BooleanOptionalAction,
+                        default=True, help="skip images whose .latent.npz already exists (resume-safe)")
     args = parser.parse_args()
 
-    main(latent_save_root=args.latent_save_root)
+    main(latent_save_root=args.latent_save_root, skip_existing=args.skip_existing)

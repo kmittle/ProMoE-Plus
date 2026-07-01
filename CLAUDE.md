@@ -72,6 +72,13 @@ bash scripts/MoS_repa/run_B_repa_mos_naive_choice_b3_5_train_sample_eval.sh
 CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python preprocess/preprocess_vae.py \
   --latent_save_root "/path/to/ImageNet/sd-vae-ft-mse_Latents_256img_npz"
 ```
+`preprocess_vae.py` now **skips images whose `.latent.npz` already exists** (`--skip-existing`, default on) and writes latents **atomically** (`.part` + rename), so an interrupted run only re-encodes the remainder.
+
+### Dataset auto-preparation (run on a fresh server)
+`preprocess/prepare_imagenet.py` (+ its `prepare_imagenet.sh` wrapper) makes an experiment runnable on a server that has no local ImageNet: it **downloads full-resolution ImageNet-1K** (HuggingFace first, ModelScope fallback — `ILSVRC/imagenet-1k`, 294 train shards), **materialises** it to `datasets/imagenet/train/<label:04d>/*.JPEG` (zero-padded label dirs so `CustomImageFolder`'s sorted-dir label == canonical ImageNet label), provisions the SD-VAE, then VAE-encodes everything to `datasets/imagenet/sd-vae-ft-mse_Latents_256img_npz/`. Idempotent + resume-safe (per-shard + per-file skip, stage sentinels under `datasets/imagenet/.state/`), cross-process `flock`-locked (two 4-GPU slots on one server won't race), and it **verifies every image has a matching latent** before finishing (a missing latent is silently zero-filled by the training loader, so this gate is mandatory). Every `run_*_train_sample_eval.sh` (and `template.sh`) calls it before training. It sets `PROMOE_DATA_PATH=datasets/imagenet/train` (relative — keeps `train.py`'s `str.replace('train', ...)` latent derivation safe); the source repo ids are overridable via `PROMOE_HF_DATASET` / `PROMOE_MS_DATASET`, and the gated HF path needs `HF_TOKEN`. `datasets/` is git-ignored.
+```bash
+bash preprocess/prepare_imagenet.sh --python <promoe-python> --gpus 0,1,2,3
+```
 
 ### Evaluation (separate conda env with TensorFlow)
 ```bash
@@ -269,11 +276,11 @@ If the ablation is controlled by an existing config flag (e.g., `router_norm_typ
 - All paper results use `qk_norm=False`. Enable `qk_norm=True` for training beyond 2M steps.
 - Token-Choice routing is default; use Expert-Choice for DDPM training. Two EC variants exist: per-image (`models_ProMoE_EC.py`) and batch-flatten (`models_ProMoE_EC_batch_choice.py`, key `ProMoE_EC_BC_B`).
 - Evaluation requires a separate TensorFlow environment and the reference batch `VIRTUAL_imagenet256_labeled.npz` from OpenAI's guided-diffusion. `evaluation/download_ref_batches.py` can auto-download these.
-- `cfg.data_path` in `config.py` must be set to your ImageNet train directory.
+- `cfg.data_path` in `config.py` is the ImageNet train directory. It defaults to the repo-relative `datasets/imagenet/train` and is overridable via the `PROMOE_DATA_PATH` env var (set by `preprocess/prepare_imagenet.sh`); train.py has no `--data-path` CLI flag. Kept relative on purpose — train.py derives latent paths with `str.replace('train', ...)`, which requires `train` to appear exactly once in the path. See "Dataset auto-preparation".
 - Multi-GPU sampling produces different random sequences than single-GPU (different class label ordering).
 - REPA training requires raw images (not just pre-computed latents) since the teacher encoder operates on pixel space. The dataset returns `(path, label, latent, raw_image)` when `load_raw_image=True`.
 - Offline/air-gapped training: all training scripts and `sample.py` accept `--vae-path`; `train_with_repa.py` and `train_with_MoS_repa.py` also accept `--repa-enc-path`. See `ProMoE-REPA.md` for details.
-- `preprocess/image_paths_cache.txt` caches the dataset file list; delete and rebuild it after switching datasets or reorganizing files.
+- `preprocess/image_paths_cache.txt` caches the dataset file list (shared by `train.py` and `preprocess_vae.py`); delete and rebuild it after switching datasets or reorganizing files. `prepare_imagenet.py` rebuilds it deterministically (sorted, atomic) so DDP ranks don't race to regenerate it.
 - When `use_pre_latents=True`, the latent directory must be a sibling of `train/` named `sd-vae-ft-mse_Latents_256img_npz` — the code derives latent paths by replacing `train` in image paths.
 - `model.py` at the repo root is an unrelated reference file (not imported anywhere in the project). Ignore it when navigating the codebase — the project's models live in `models/`.
 

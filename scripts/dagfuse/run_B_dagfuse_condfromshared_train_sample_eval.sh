@@ -110,6 +110,9 @@ echo "Config: ${CONFIG}" | tee -a "$LOG"
 echo "Steps: ${STEP_LIST_STR}" | tee -a "$LOG"
 echo "============================================================" | tee -a "$LOG"
 
+# ── Ensure ImageNet-1K dataset + VAE latents exist before training (idempotent) ──
+bash "${REPO_ROOT}/preprocess/prepare_imagenet.sh" --python "$PYTHON" --gpus "$GPU_IDS" 2>&1 | tee -a "$LOG"
+
 for i in "${!ALL_STEPS[@]}"; do
     step="${ALL_STEPS[$i]}"
     phase=$((i + 1))

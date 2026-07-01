@@ -14,6 +14,9 @@ image_paths_cache.txt
 ######################
 /pretrained_ckpt/
 
+# Local ImageNet dataset + VAE latents materialised by preprocess/prepare_imagenet.py
+/datasets/
+
 # Local smoke-test artifacts
 /collapse_smoking_test/
 /collapse_smoking_test_10k/
