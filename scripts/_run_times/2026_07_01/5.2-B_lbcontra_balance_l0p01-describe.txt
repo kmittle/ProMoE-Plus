@@ -1,0 +1,8 @@
+实验 / Experiment: 5.2-B_lbcontra_balance_l0p01   (slot 5.2, GPU [4,5,6,7])
+model_name: ProMoE_TC_B_lbcontra  |  config: configs/004_ProMoE_B_lbcontra_balance_l0p01.yaml
+基线 / Baseline: 基础 ProMoE-TC（两步路由：uncond 专家 + 静态 cluster_centers 余弦相似度原型 + top-1 token-choice + shared expert + 路由 InfoNCE 对比损失）；直接父变体 / Parent: 即基础 ProMoE_TC_B（本变体只改路由对比损失、**不加任何参数**）；兄弟臂 / siblings: 另两种 lb_contra_mode + 同模式其它超参值。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 负载均衡感知的路由对比损失 / load-balance-aware routing contrastive loss（改进组二，`lb_contra_mode=balance_term`）：基线 InfoNCE 只驱动"路由准确"、对负载无感（均值池化丢掉了每簇 token 数）。本变体把每个 codeword 分到的 token 数注入损失以压负载均衡；三模式共用一套"每 token 软分配 `q_t=softmax(cos(token,centers)/τ_route)` 覆盖全 K 原型（含空簇）"的可微底座，软 count `ñ_i=Σ_t q_t[i]`、软均值 `m_i` 均 **per-GPU 局部**，全 K InfoNCE。
+2. 本臂模式 = `balance_term`：在 InfoNCE 之外加 Switch 式均衡项 `λ·K·Σ_i f_i·P_i`（λ=0.01，f=P.detach、P=ñ/N 走梯度，均匀时最小）—— 本质=复用 Switch load-balance 的数学，但用软 count ñ_i。
+3. **无新参数**、step-0 前向与 base 逐比特一致（已数值验证 max|Δ|=0.0，checkpoint strict 兼容）；仅辅助 loss 形式变，routing/experts/shared/forward 全不变。cos-sim 处 `.clamp(-1,1)` 防 bf16 越界。相对兄弟臂仅 `lb_contra_mode` / 对应超参取值不同（iso-架构消融）。
