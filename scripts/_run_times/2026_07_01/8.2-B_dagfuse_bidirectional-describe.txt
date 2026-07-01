@@ -1,4 +1,4 @@
-实验 / Experiment: 2.1-B_dagfuse_bidirectional   (slot 2.1, GPU 0-3)
+实验 / Experiment: 8.2-B_dagfuse_bidirectional   (slot 8.2, GPU 4-7)
 model_name: ProMoE_TC_B_dagfuse  |  config: configs/004_ProMoE_B_dagfuse_bidirectional.yaml
 基线 / Baseline: 基础 ProMoE-TC（两步路由：class==1000 走 uncond 专家 + 静态可学习 cluster_centers 余弦相似度原型路由，top-1 token-choice，shared expert，路由 contrastive 损失 via AddAuxiliaryLoss）；直接父变体 / Parent: 即基础 ProMoE_TC_B 本身（本变体只在 shared↔conditional 合并处新增融合，conditional 聚合不变）；兄弟臂 / siblings: 另两个方向 cond_from_shared、shared_from_cond。
 
