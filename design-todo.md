@@ -1,8 +1,19 @@
-# design-todo：ProMoE_TC 两个改进组（组一 = DAG-fuse shared↔conditional 融合【已实现】；组二 = 路由对比损失负载均衡【设计中】）
+# design-todo：ProMoE_TC 改进计划（三个改进组）
 
-> **改进组一状态**：**已实现并通过验证（核心三臂 + 脚手架）；未提交、未训练**。架构采用方案 (b)：新建自包含 `models/models_ProMoE_TC_dagfuse.py` + `fusion_arm` 开关。（改进组二状态见文末该节，仍为「设计中」。）
-> 验证：`py_compile` ✅ / import ✅ / 四向一致性 ✅ / 输出目录碰撞守卫 ✅ / **step-0 与 base `ProMoE_TC` 前向逐比特一致（none + 三臂 max|Δ|=0.0）** ✅ / 三臂 query-set 语义 ✅ / uncond 不受影响 ✅ / **codex 独立审查 NO FINDINGS** ✅。真实训练 smoke 待在训练服务器上跑（本机无 promoe/GPU 环境，仅做了代码级前向等价验证）。
-> 按用户要求**本版只做核心三臂、不加任何额外旋钮/改动**（见末尾「本版明确不做」）。
+> **目录 / Index**（每组一个独立 `# 改进组X` 章节）：
+> 1. **改进组一 · DAG-fuse**（shared↔conditional 单向融合）—— ✅ 已实现 + 验证 + **已 push**（`ProMoE_TC_B_dagfuse`，3 臂）
+> 2. **改进组二 · lbcontra**（路由对比损失负载均衡）—— ✅ 已实现 + 验证 + **已 push**（`ProMoE_TC_B_lbcontra`，13 run）
+> 3. **改进组三 · adaptive-depth**（token 自适应跳过 / 加深 FFN，MoD 式）—— ✅ 已实现 + 验证（`ProMoE_TC_B_adepth`，fixed_q v1，扫 depth_q ×4）；未提交
+>
+> **三组共用约定**：均在 base `ProMoE_TC`（`models/models_ProMoE_TC.py`：两步路由 + 静态 `cluster_centers` + top-1 token-choice + shared expert + 路由 InfoNCE 对比损失）上做**自包含变体**（`models_ProMoE_TC_<variant>.py` + config 开关）；**uncond token 一律不受影响**；尽量 **step-0 与 base 前向逐比特一致**；默认各自**独立消融**、不叠加。运行时 slot 现统一在 `scripts/_run_times/2026_07_01/`。
+
+---
+
+# 改进组一：DAG-fuse — shared↔conditional 单向融合（DAG-MoE 风格）
+
+> **状态：已实现 + 验证 + 已 push**（commit `d61c125`/`015a8c5`/`f733c35`）。架构采用方案 (b)：新建自包含 `models/models_ProMoE_TC_dagfuse.py` + `fusion_arm` 开关。
+> 验证：`py_compile` ✅ / import ✅ / 四向一致性 ✅ / 输出目录碰撞守卫 ✅ / **step-0 与 base `ProMoE_TC` 前向逐比特一致（none + 三臂 max|Δ|=0.0）** ✅ / 三臂 query-set 语义 ✅ / uncond 不受影响 ✅ / **codex 独立审查 NO FINDINGS** ✅。真实训练 smoke 待在训练服务器上跑。
+> 本版只做核心三臂、不加额外旋钮/改动（见本章末「本版明确不做」）。
 
 ## 0. 背景与来源
 
@@ -89,25 +100,25 @@ return X[:,0], X[:,1]                                # C_new, S_new
 - [x] **step-0 数值等价**：已验证 `fusion_arm="none"` **与三臂**在初始化时前向都与 base `ProMoE_TC_B` **逐比特一致（max|Δ|=0.0）**；另单测三臂 query-set 语义正确、uncond 不受影响。
 - [ ] 短 smoke 训练（几十步不发散）；跑完清理 smoke 产物。**（唯一未完成项：本机无 GPU/promoe 环境，待训练服务器上跑。）**
 
-## 5.5 交付物 / Delivered（改进组一实际产物，slot 分配于 2026_06_30）
+## 5.5 交付物 / Delivered（改进组一实际产物）
 
 - **模型**：`models/models_ProMoE_TC_dagfuse.py`（`FusedRMSNorm`、`DAGFuseModule`、`SparseMoeBlock._fuse_shared_cond`、`DiT.initialize_weights` 里 `_basic_init` 后重置 up-proj 零初始化）。
 - **注册**：`train.py:54` import、`train.py:89` model_dict `"ProMoE_TC_B_dagfuse"`。
 - **配置（3）**：`configs/004_ProMoE_B_dagfuse_{condfromshared,sharedfromcond,bidirectional}.yaml`。
 - **脚本（3）**：`scripts/dagfuse/run_B_dagfuse_{condfromshared,sharedfromcond,bidirectional}_train_sample_eval.sh`。
-- **Run-time slot（3，`scripts/_run_times/2026_06_30/`）+ 各自 `*-describe.txt`**：
+- **Run-time slot（3，现于 `scripts/_run_times/2026_07_01/`；原 06_30 已并入今日 + 重编号以避开 lbcontra 撞号）+ 各自 `*-describe.txt`**：
 
   | slot | 臂 fusion_arm | gpu_ids | wrapper |
   |---|---|---|---|
-  | 1.1 | cond_from_shared | [0,1,2,3] | `1.1-B_dagfuse_condfromshared.sh` |
-  | 1.2 | shared_from_cond | [4,5,6,7] | `1.2-B_dagfuse_sharedfromcond.sh` |
-  | 2.1 | bidirectional | [0,1,2,3]（次台服务器） | `2.1-B_dagfuse_bidirectional.sh` |
+  | 7.2 | cond_from_shared | [4,5,6,7] | `7.2-B_dagfuse_condfromshared.sh` |
+  | 8.1 | shared_from_cond | [0,1,2,3] | `8.1-B_dagfuse_sharedfromcond.sh` |
+  | 8.2 | bidirectional | [4,5,6,7] | `8.2-B_dagfuse_bidirectional.sh` |
 
 - **启动（训练服务器上、tmux 内）**：
   ```bash
-  tmux new-window -n dagfuse_cfs 'bash scripts/_run_times/2026_06_30/1.1-B_dagfuse_condfromshared.sh'
-  tmux new-window -n dagfuse_sfc 'bash scripts/_run_times/2026_06_30/1.2-B_dagfuse_sharedfromcond.sh'
-  tmux new-window -n dagfuse_bi  'bash scripts/_run_times/2026_06_30/2.1-B_dagfuse_bidirectional.sh'
+  tmux new-window -n dagfuse_cfs 'bash scripts/_run_times/2026_07_01/7.2-B_dagfuse_condfromshared.sh'
+  tmux new-window -n dagfuse_sfc 'bash scripts/_run_times/2026_07_01/8.1-B_dagfuse_sharedfromcond.sh'
+  tmux new-window -n dagfuse_bi  'bash scripts/_run_times/2026_07_01/8.2-B_dagfuse_bidirectional.sh'
   ```
 
 ## 6. 本版明确不做（推迟，仅记录，勿实现）
@@ -192,4 +203,50 @@ return X[:,0], X[:,1]                                # C_new, S_new
 - **均衡强度 / 量级**：c 是"加一项"，需相对 `routing_contrastive_lam=1` 的权重；a/b 强度藏在 `w_i` 尺度 / `τ_adj`。三者都要确认与现有对比损失的相对量级。
 
 **待你确认的默认**：a/b 不用 STE（count 当 detached 调制）；c 默认软 count / Switch 式，STE 仅 fallback；b 用 balanced-softmax 免超参，需旋钮时退 logit-adjustment 扫 `τ_adj`。`count` 口径（局部/全局/EMA）与是否纳入空簇，留设计阶段先定并对全部臂统一。
+
+
+---
+
+# 改进组三：自适应 FFN 深度 —— 按 token 难度跳过/加深（token-adaptive FFN depth，MoD 式）
+
+> 本组**状态：fixed_q v1 已实现 + 验证；未提交、未训练**。实现 = 自包含 `models/models_ProMoE_TC_adepth.py`（`SparseMoeBlock` + `depth_gate=Linear(d,1)` + `deepen_gain` 零初始化 + step buffer）+ 注册 `train.py:56/93` + 4 config（扫 `depth_q∈{0.1,0.2,0.3,0.4}`）+ 4 script/slot（`2026_07_01/` 9.1/9.2/10.1/10.2）+ 4 describe.txt。验证：**step-0 前向逐比特 = base（max|Δ|=0.0）**、**算力守恒（routed rows 256==256）**、梯度到 depth_gate/deepen_gain/experts/cluster_centers、q>0 生效、**codex NO FINDINGS**；自测抓到并修了"s 全等时 topk 重叠→不守恒"的真 bug（改用单次 argsort disjoint 切片）。**dynamic_reg = v2 未做**（待 count-tying 防坍缩修正）。目标：每个 block 对每个 cond token 用一个轻量 **linear 门控**判断它"该走几次 FFN"——简单 token **跳过**、难 token **加深（走 2 次）**，把跳过省下的算力**再分配**给难 token，**总算力守恒**（方案 b）。
+
+## 1. 背景与思想
+
+- 定位：**Mixture-of-Depths（MoD，DeepMind 2024）** 特化到 ProMoE 的 **cond-token routed-expert FFN** 路径；亦近 adaptive computation / early-exit / token pruning。
+- 每个 block、每个 cond token：linear 门控输出**单个"难度分" `s_t`**；按 `s_t` 把 cond token 分三档（**方案 (b)，算力守恒**）：
+  - **skip**（最易）→ 0 次 FFN，走残差；
+  - **normal**（中间）→ 1 次（照常）；
+  - **deepen**（最难）→ 2 次（第二次对**更新后的表示**再走**同一个 top-1 routed expert**）。
+- 直觉：简单 token 不需要那么多 FFN，省下的算力给难 token。
+
+## 2. 锁定决策（已与用户确认）
+
+| 项 | 决定 |
+|---|---|
+| 额外 FFN 形态 | **加深**（第二次走同一 top-1 expert），**不加宽**（避免 top-K>1 路由大改） |
+| shared expert | **不动**（照常处理所有 token） |
+| uncond token | **不受影响** |
+| 守恒 | **`#deepen == #skip == k`**，每步耦合 → `k·0 + (1−2k/N)·1 + k·2 = N` 恒等 |
+| step-0 | init **人人恰好 1 次 FFN**（deepen 第二次**零初始化** + 初始不跳）→ 与 base 前向逐比特一致 |
+
+## 3. 分配机制（关键：logits 只用来「排序」，不是 per-token argmax）
+
+**门控输出单个标量 `s_t`**（不是 3 类 argmax——per-token argmax 会让 skip/deepen 数量失控、破坏守恒）。按 `s_t` 在 block 的 cond-token 池里**排序**：top-k → deepen，bottom-k → skip，中间 → normal。**`s_t` 决定"谁"，`k` 决定"多少个"。** 两种 `alloc_mode`（config 开关）：
+
+- **`fixed_q`（稳，v1 兜底）**：固定配额 `q`，top-q/bottom-q。`q·0+(1−2q)·1+q·2=N` 按构造守恒。`q∈(0,0.5)`，`q=0` 退回 base。GPU 友好（静态形状）。
+- **`dynamic_reg`（贴用户直觉，v2）**：`k` **动态 = 门控预测的跳过数**，deepen 耦合到同一个 `k`。⚠ **无约束会坍缩**（常见 `k→0` 退回 base：跳任何 token 都略伤 MSE，而"腾算力"的正向梯度信号很弱）→ **必须加软"目标率"正则**（惩罚 `|平均 skip 率 − 目标|`，或 Switch 式占用辅助 loss）锚住 `k`；目标率可从 0 退火上升（顺便满足 step-0）。变长 dispatch（像 MoE 变负载），GPU 可做但不如 `fixed_q` 高效。
+
+## 4. 门控如何学 + step-0
+
+- `s_t` **端到端学出来**（不是预先标注难度）：deepen 第二次 FFN 贡献用 `sigmoid(s_t)` 门控加权，梯度回流——**加深确有用则分被推高**，排序自然把有用的送 top-k（MoD 机制）。top-k/阈值不可导 → 用门控权重乘贡献使可导，必要时加辅助 loss。
+- **step-0 逐比特一致**：deepen 第二次 FFN **零初始化**（初始贡献=0）+ 初始 `q`（或目标率）=0（不跳）→ 人人恰好 1 次 FFN = base；之后 `q`/门控渐学，才真正"跳易 / 加难"。
+
+## 5. 待定（设计阶段拍板）
+
+- **排序池**：逐图（每图内排 cond token）vs 批展平（EC-BC 式）—— 倾向逐图更稳。
+- `fixed_q` 的 `q` 初值（如 0.25）；`dynamic_reg` 的目标率与退火曲线。
+- deepen 第二次是"同一 expert 权重原样再走一遍"（纯加深、零新参数）还是带一个独立小投影（零初始化）；两者 step-0 都要求初始贡献=0。
+- 架构 = 自包含变体文件 `models/models_ProMoE_TC_<name>.py` + `alloc_mode`/`q`/`target_rate` 等开关（同前两组约定）；是否与组一/组二叠加 —— 默认先独立。
+- 可训练性 & 稳定性细节（软门控 vs straight-through、正则权重）留实现时定。
 
