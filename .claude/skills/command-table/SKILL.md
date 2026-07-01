@@ -1,15 +1,16 @@
 ---
 name: command-table
-description: Organize the run-time launch wrappers in a scripts/_run_times/<date>/ directory into a Markdown command table. Reads every <slot>-<desc>.sh wrapper in the date dir, traces each one (wrapper → semantic run script → config) to fill the columns, renders using command-tables/command-table-template.md, and writes the result to commands.md in that same date dir. Use when the user asks to turn/organize/summarize the run-time commands (the scripts under scripts/_run_times/<date>/) into a command table — including phrasings like "把 scripts/_run_times/<date> 中的指令整理为命令表格", "整理/生成命令表格", or "make a command table for the run-time scripts". Does NOT launch any run, and does NOT commit, push, or amend.
+description: Organize the run-time launch wrappers in a scripts/_run_times/<date>/ directory into a CSV command table (Notion/Excel-importable). Reads every <slot>-<desc>.sh wrapper in the date dir, traces each one (wrapper → semantic run script → config) to fill the columns, renders using command-tables/command-table-template.csv, and writes the result to commands.csv in that same date dir. Use when the user asks to turn/organize/summarize the run-time commands (the scripts under scripts/_run_times/<date>/) into a command table — including phrasings like "把 scripts/_run_times/<date> 中的指令整理为命令表格", "整理/生成命令表格", or "make a command table for the run-time scripts". Does NOT launch any run, and does NOT commit, push, or amend.
 ---
 
 # /command-table — Build a run-time command table from a date directory
 
 Turns the auto-generated launch wrappers in one `scripts/_run_times/<date>/` directory into a
-single reference table (`commands.md`) so the experiments launched that day can be seen at a glance:
-description, git branch, launch command, and output location.
+single reference table (`commands.csv`) so the experiments launched that day can be seen at a glance:
+description, git branch, launch command, and output location. CSV pastes/imports straight into Notion
+or a spreadsheet (and GitHub renders `.csv` as a table in its web viewer).
 
-This skill **reads and writes one Markdown file only** (`commands.md`). It never launches training,
+This skill **reads and writes one CSV file only** (`commands.csv`). It never launches training,
 sampling, or evaluation, and never commits.
 
 ## Step 0 — Resolve the target date directory
@@ -42,21 +43,31 @@ Then map to the template's columns:
   into the file (see Step 2).
 - **输出位置** — the output dir from step 5, e.g. `outputs/ProMoE_EC_BC_B_proto_t/004_ProMoE_B_EC_BC_proto_t_direct/`.
 
-## Step 2 — Render from the template
-- Use `command-tables/command-table-template.md` as the table skeleton (header row + separator:
-  `实验描述 | git分支 | 启动命令 | 输出位置`). Keep exactly those four columns.
-- One row per wrapper, in sorted slot order.
-- **Output the table ONLY.** `commands.md` must contain *just* the rendered template — the header
-  row, the separator, and the data rows, nothing else. Do **not** add a `# …` title, an intro/summary
-  line, any `>` blockquote notes (no tmux-launch note, no git-branch caveat), or any other surrounding
-  prose. The file's **first line is the template's header row**. Those notes belong in the chat report
-  (Step 3), never in the file.
+## Step 2 — Render as CSV
+- Use `command-tables/command-table-template.csv` as the header skeleton — its single line is the
+  CSV header row `实验描述,git分支,启动命令,输出位置`. Keep exactly those four columns, in that order.
+- One CSV record per wrapper, in sorted slot order, appended after the header.
+- **Plain-text cells — no Markdown.** Do NOT wrap any cell in backticks and do NOT use `|`
+  separators (that was the old Markdown format). The 启动命令 and 输出位置 cells are raw text
+  (`bash scripts/_run_times/<date>/<wrapper>`, `outputs/{model_name}/{custom_cfg_name}/`).
+- **RFC 4180 quoting.** A cell that contains a comma, a double-quote, or a newline must be wrapped
+  in double-quotes, with any internal double-quote doubled (`"` → `""`). Cells without those
+  characters are written bare. (The 实验描述 label uses `·` and `=`, not commas, so it is normally
+  written bare — but always apply the rule mechanically rather than assuming.)
+- **Output the CSV ONLY.** `commands.csv` must contain *just* the header row followed by the data
+  rows — nothing else. Do **not** add a title line, an intro/summary line, blockquote notes (no
+  tmux-launch note, no git-branch caveat), a trailing blank-prose block, or any other surrounding
+  text. The file's **first line is the header row**. Those notes belong in the chat report (Step 3),
+  never in the file.
 
-## Step 3 — Write `commands.md`
-- Write the rendered **table only** to `scripts/_run_times/<date>/commands.md` (overwrite if it
-  exists — this is a regenerated summary, not hand-maintained state).
+## Step 3 — Write `commands.csv`
+- Write the rendered **CSV only** to `scripts/_run_times/<date>/commands.csv` (overwrite if it
+  exists — this is a regenerated summary, not hand-maintained state). If a legacy `commands.md`
+  exists in the same dir, mention it in the chat report so the user can remove it — but do not delete
+  it yourself (this skill writes only `commands.csv`).
 - Report **in chat, not in the file**: the date dir, how many wrappers were summarized, the output
-  path, the tmux-launch convention, and the branch caveat.
+  path, the tmux-launch convention, and the branch caveat. You may also note that `commands.csv`
+  imports directly into Notion (`/table` → Import → CSV) or pastes into a spreadsheet.
 
 ## Edge cases
 - A wrapper that is **not** the auto-generated form (no `Slot:`/`exec bash` lines): fall back to
@@ -65,10 +76,10 @@ Then map to the template's columns:
 - A config missing `model_name`: leave 输出位置 blank for that row and flag it.
 
 ## What this skill must NOT do
-- **No real training / sampling / evaluation runs.** It only reads files and writes `commands.md`.
-- **No git commits, push, force-push, or amend.** Leave `commands.md` dirty for the user to commit.
+- **No real training / sampling / evaluation runs.** It only reads files and writes `commands.csv`.
+- **No git commits, push, force-push, or amend.** Leave `commands.csv` dirty for the user to commit.
 - No `git add -A` / `git add .` — if the user later asks to commit, stage explicit paths only.
 - No edits to runtime artifact dirs (`outputs/`, `pretrained_ckpt/`, `training_logs/`, `tb_smoke_*/`,
   `collapse_smoking_test*/`) or the vendored `REPA/` (uppercase) subproject.
 - Do not edit the wrapper scripts, the semantic run scripts, the configs, or the template — read-only
-  except for the single `commands.md` output.
+  except for the single `commands.csv` output.
