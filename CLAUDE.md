@@ -84,6 +84,8 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python preprocess/preprocess_vae.py \
 bash preprocess/prepare_imagenet.sh --python <promoe-python> --gpus 0,1,2,3,4,5,6,7
 ```
 
+**Parquet-direct mode (already-downloaded data, no JPEG intermediate).** If the raw HF parquet shards are already present on the server (default `/lustre01/qianyuan/data/ILSVRC/imagenet-1k/data`, override with `PROMOE_PARQUET_DIR` or `--parquet-dir`), `prepare_imagenet.py` **auto-detects** them and encodes VAE latents **directly from parquet** via `preprocess/encode_latents_from_parquet.py` — skipping both the re-download and the ~140GB intermediate JPEG folder. Output is `<latent_root>/<label:04d>/<name>.latent.npz` in the **same** 8-channel `vae.encode(x).latent_dist.parameters` format as `preprocess_vae.py`. Training then reads these directly via the **`LatentFolder`** dataset (opt-in per config: `use_encoded_latents: True`; path from `cfg.latent_data_path` / `PROMOE_LATENT_PATH`) — no image folder and no `str.replace('train', ...)` derivation, with the class label recovered as `int(<label:04d> dir)` (canonical). Latents-only mode is for the non-REPA `train.py` families (the 2026_07_01 batch sets the flag); REPA training still needs raw images, i.e. the JPEG path. The same `prepare_imagenet.sh` command runs whichever mode matches the server (parquet-direct if the shards are there, else download+materialise). `encode_latents_from_parquet.py` is shard-parallel across GPUs and per-file resume-safe.
+
 ### Evaluation (separate conda env with TensorFlow)
 ```bash
 conda create -n fid_eval python=3.9 -y && conda activate fid_eval

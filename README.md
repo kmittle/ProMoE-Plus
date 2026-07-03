@@ -56,6 +56,8 @@ bash preprocess/prepare_imagenet.sh --python "$(which python)" --gpus 0,1,2,3,4,
 ```
 Run it **once** for the shared dataset location before launching your experiments (it is not auto-invoked by the run scripts, so two GPU slots on one machine don't both start downloading/encoding at the same time). Training then reads `/lustre01/yujie/dataset/imagenet/train` automatically. Overridable via `PROMOE_DATA_PATH` / `PROMOE_HF_DATASET` / `PROMOE_MS_DATASET` (and `HF_TOKEN` for the gated HuggingFace path).
 
+If the raw parquet shards are **already downloaded** on the server (default `/lustre01/qianyuan/data/ILSVRC/imagenet-1k/data`, override `PROMOE_PARQUET_DIR`), the same command auto-detects them and encodes VAE latents **directly from parquet** — skipping the re-download and the intermediate JPEG folder. Non-REPA training configs then read the latents directly (`use_encoded_latents: True`).
+
 ### 3. VAE Latent Preprocessing (Optional)
 
 For faster training and more efficient GPU usage, you can **precompute VAE latents** and train with `cfg.use_pre_latents=True`.

@@ -176,6 +176,62 @@ class CustomImageFolder(Dataset):
 
         return img_path, label, latent_z
 
+
+class LatentFolder(Dataset):
+    """Pre-encoded-latents dataset (no image folder). Used when `use_encoded_latents`
+    is set: preprocess/encode_latents_from_parquet.py writes one .latent.npz per image
+    into <latent_dir>/<label:04d>/, so the class index is simply int(parent-dir-name)
+    (the canonical ImageNet label) -- no JPEG folder and no str.replace('train', ...)
+    derivation. Drop-in for CustomImageFolder under use_pre_latents: __getitem__ returns
+    the same (path, label, latent_z) tuple, and latent_z is the same 8-channel
+    vae.encode(x).latent_dist.parameters that the training loop wraps in
+    DiagonalGaussianDistribution(z).sample()."""
+
+    def __init__(self, latent_dir, cfg=None):
+        self.latent_dir = latent_dir
+        self.CACHE_FILE = 'preprocess/latent_paths_cache.txt'
+        self.latent_paths = self._load_or_generate_latent_paths()
+
+    def _load_or_generate_latent_paths(self):
+        if os.path.exists(self.CACHE_FILE) and os.path.getsize(self.CACHE_FILE) > 0:
+            with open(self.CACHE_FILE, 'r') as f:
+                latent_paths = f.read().splitlines()
+            logging.info(f"****************Loaded latent paths from cache: {self.CACHE_FILE}")
+            return latent_paths
+
+        latent_paths = self._get_latent_paths(self.latent_dir)
+        os.makedirs(osp.dirname(self.CACHE_FILE), exist_ok=True)
+        with open(self.CACHE_FILE, 'w') as f:
+            f.write('\n'.join(latent_paths))
+        logging.info(f"****************Generated cache for latent paths: {self.CACHE_FILE}")
+        return latent_paths
+
+    def _get_latent_paths(self, root_dir):
+        latent_paths = []
+        for entry in os.scandir(root_dir):
+            if entry.is_dir(follow_symlinks=False):
+                with os.scandir(entry.path) as sub:
+                    for e in sub:
+                        if e.is_file(follow_symlinks=False) and e.name.endswith('.latent.npz'):
+                            latent_paths.append(e.path)
+        return sorted(latent_paths)  # deterministic across DDP ranks
+
+    def __len__(self):
+        return len(self.latent_paths)
+
+    def __getitem__(self, idx):
+        latent_path = self.latent_paths[idx]
+        # class dir is the zero-padded canonical label, e.g. .../0042/xxx.latent.npz -> 42
+        label = int(os.path.basename(os.path.dirname(latent_path)))
+        npz_data = np.load(latent_path)  # missing -> loud error (no silent zero-fill by design)
+        if torch.rand(1) < 0.5:  # randomly hflip
+            latent_z_data = npz_data['latent']
+        else:
+            latent_z_data = npz_data['latent_flip']
+        latent_z = torch.from_numpy(latent_z_data)
+        return latent_path, label, latent_z
+
+
 @torch.no_grad()
 def update_ema(ema_model, model, decay=0.9999):
     ema_params = OrderedDict(ema_model.named_parameters())
@@ -456,7 +512,12 @@ def worker(gpu, cfg):
     
     data_path = cfg.data_path
     if cfg.use_pre_latents:
-        img_dataset = CustomImageFolder(data_path, cfg=cfg)
+        if getattr(cfg, 'use_encoded_latents', False):
+            # read pre-encoded latents directly (encode_latents_from_parquet.py output);
+            # no image folder, no str.replace('train', ...) derivation.
+            img_dataset = LatentFolder(cfg.latent_data_path, cfg=cfg)
+        else:
+            img_dataset = CustomImageFolder(data_path, cfg=cfg)
     else:
         transform = transforms.Compose([
             transforms.Lambda(center_crop_lambda),

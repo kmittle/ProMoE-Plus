@@ -21,6 +21,15 @@ cfg.num_classes = 1000
 # -- only the train/ dir does. Keep any override 'train'-once-safe too.
 cfg.data_path = os.environ.get("PROMOE_DATA_PATH", "/lustre01/yujie/dataset/imagenet/train")
 
+# Pre-encoded-latents mode (opt-in per config via `use_encoded_latents: True`).
+# When on, training reads *.latent.npz directly from latent_data_path/<label:04d>/ via
+# LatentFolder (no image folder, no str.replace('train',...) derivation) -- these latents
+# are produced by preprocess/encode_latents_from_parquet.py straight from the downloaded
+# parquet, skipping the intermediate JPEG folder. Default off keeps CustomImageFolder.
+cfg.use_encoded_latents = False
+cfg.latent_data_path = os.environ.get(
+    "PROMOE_LATENT_PATH", "/lustre01/yujie/dataset/imagenet/sd-vae-ft-mse_Latents_256img_npz")
+
 cfg.img_num_workers = 8
 cfg.prefetch_factor = 2
 

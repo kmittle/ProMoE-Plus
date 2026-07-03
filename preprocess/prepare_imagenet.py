@@ -42,6 +42,7 @@ Env / args:
 """
 
 import argparse
+import glob
 import io
 import logging
 import os
@@ -71,6 +72,11 @@ DOWNLOAD_CACHE = osp.join(DATA_ROOT, "_parquet")               # transient parqu
 VAE_HF_ID = "stabilityai/sd-vae-ft-mse"
 VAE_CACHE_REL = osp.join("pretrained_ckpt", "vae", VAE_HF_ID.replace("/", "--"))  # repo-local cache
 IMAGE_CACHE_FILE = osp.join("preprocess", "image_paths_cache.txt")     # MUST match train.py:101
+LATENT_CACHE_FILE = osp.join("preprocess", "latent_paths_cache.txt")   # MUST match train.py LatentFolder
+# Already-downloaded parquet on the training server (encode latents directly from here,
+# skipping download + the JPEG folder). Override with PROMOE_PARQUET_DIR.
+PARQUET_DIR_DEFAULT = os.environ.get(
+    "PROMOE_PARQUET_DIR", "/lustre01/qianyuan/data/ILSVRC/imagenet-1k/data")
 EXPECTED_TRAIN_IMAGES = 1_281_167                                       # canonical ImageNet-1k train size
 IMG_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".gif")
 
@@ -482,6 +488,60 @@ def self_test_derivation():
     log.info("self-test OK: latent derivations agree (clean + fallback names, no 'train' leak)")
 
 
+# ----------------------------------------------------------------------------- parquet mode
+def _rebuild_latent_cache():
+    """Pre-build LatentFolder's global preprocess/latent_paths_cache.txt (sorted, atomic)
+    so DDP training ranks don't race to regenerate it."""
+    paths = []
+    for dirpath, _dirs, files in os.walk(LATENT_ROOT):
+        for fn in files:
+            if fn.endswith(".latent.npz"):
+                paths.append(osp.join(dirpath, fn))
+    paths.sort()
+    os.makedirs(osp.dirname(LATENT_CACHE_FILE), exist_ok=True)
+    tmp = LATENT_CACHE_FILE + ".part"
+    with open(tmp, "w") as f:
+        f.write("\n".join(paths))
+    os.replace(tmp, LATENT_CACHE_FILE)
+    log.info("rebuilt %s with %d latent paths (sorted)", LATENT_CACHE_FILE, len(paths))
+
+
+def stage_encode_from_parquet(parquet_dir, gpus, python_exe, limit_shards=0):
+    """Encode latents DIRECTLY from local parquet (no download, no intermediate JPEG folder).
+    Output goes to LATENT_ROOT/<label:04d>/<name>.latent.npz, read at train time by LatentFolder."""
+    if exists_sentinel("latents.done"):
+        log.info("latents.done sentinel present -- skipping encode")
+        return
+    env = dict(os.environ)
+    if gpus:
+        env["CUDA_VISIBLE_DEVICES"] = gpus
+    cmd = [python_exe, osp.join("preprocess", "encode_latents_from_parquet.py"),
+           "--parquet-dir", parquet_dir, "--latent-save-root", LATENT_ROOT, "--skip-existing"]
+    if limit_shards:
+        cmd += ["--limit-shards", str(limit_shards)]
+    log.info("running: CUDA_VISIBLE_DEVICES=%s %s", env.get("CUDA_VISIBLE_DEVICES", "(all)"),
+             " ".join(cmd))
+    rc = subprocess.call(cmd, cwd=REPO_ROOT, env=env)
+    if rc != 0:
+        sys.exit(f"[prepare_imagenet] encode_latents_from_parquet.py exited with code {rc}")
+
+
+def stage_verify_latents(limit_shards=0):
+    """Parquet mode has no image folder, so verify by latent count == expected, then write
+    the sorted latent cache + completion sentinel."""
+    n = 0
+    for _dp, _dirs, files in os.walk(LATENT_ROOT):
+        n += sum(1 for f in files if f.endswith(".latent.npz"))
+    log.info("verify: %d latents (expected ~%d)", n, EXPECTED_TRAIN_IMAGES)
+    if not limit_shards and n < EXPECTED_TRAIN_IMAGES:
+        sys.exit(f"[prepare_imagenet] only {n} latents, expected {EXPECTED_TRAIN_IMAGES}. "
+                 f"Re-run to encode the remainder (per-file skip makes this cheap).")
+    _rebuild_latent_cache()
+    if not limit_shards:
+        touch(sentinel_path("latents.done"))
+    log.info("Latents ready: %d encoded under %s", n, LATENT_ROOT)
+
+
 # ----------------------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser(description="Prepare full-res ImageNet-1K for ProMoE.")
@@ -494,9 +554,12 @@ def main():
     ap.add_argument("--limit-shards", type=int, default=0, help="DEBUG: only first N shards")
     ap.add_argument("--force", action="store_true", help="ignore completion sentinels")
     ap.add_argument("--skip-preprocess", action="store_true", help="download/materialise only")
+    ap.add_argument("--parquet-dir", default=PARQUET_DIR_DEFAULT,
+                    help="already-downloaded parquet dir; if it holds train-*.parquet, encode "
+                         "latents DIRECTLY from it (skip download + the intermediate JPEG folder)")
     args = ap.parse_args()
 
-    os.chdir(REPO_ROOT)  # so repo-relative paths (VAE cache, image_paths_cache, preprocess_vae.py) resolve; DATA_ROOT is absolute
+    os.chdir(REPO_ROOT)  # so repo-relative paths (VAE cache, latent/image caches, sub-scripts) resolve; DATA_ROOT is absolute
     token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
 
     if args.force:
@@ -505,13 +568,29 @@ def main():
             if osp.exists(p):
                 os.remove(p)
 
-    self_test_derivation()
-
     # fast path: already fully prepared
     if exists_sentinel("latents.done") and not args.force:
         log.info("ImageNet already prepared (latents.done). Nothing to do.")
         return
 
+    # Preferred path: encode latents DIRECTLY from already-downloaded local parquet
+    # (no re-download, no 140GB intermediate JPEG folder). Training reads these via LatentFolder.
+    use_parquet = bool(args.parquet_dir) and osp.isdir(args.parquet_dir) \
+        and bool(glob.glob(osp.join(args.parquet_dir, "train-*.parquet")))
+    if use_parquet:
+        log.info("local parquet found at %s -- encoding latents directly (no download, no JPEG folder)",
+                 args.parquet_dir)
+        if args.skip_preprocess:
+            log.info("--skip-preprocess set; nothing to do in parquet mode.")
+            return
+        stage_vae(args.source, token)
+        stage_encode_from_parquet(args.parquet_dir, args.gpus, args.python, args.limit_shards)
+        stage_verify_latents(args.limit_shards)
+        return
+
+    # Fallback: download + materialise to a JPEG folder + encode. self_test_derivation guards
+    # the str.replace('train', ...) derivation used only by this JPEG path.
+    self_test_derivation()
     stage_download(args.source, args.hf_dataset, args.ms_dataset, token,
                    args.keep_parquet, args.limit_shards)
     if args.skip_preprocess:

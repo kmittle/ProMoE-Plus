@@ -8,6 +8,7 @@ total_train_batch_size: 256
 lr: 0.0001
 weight_decay: 0
 use_pre_latents: True
+use_encoded_latents: True
 resume_checkpoint: True
 log_interval: 10
 num_steps: 501000

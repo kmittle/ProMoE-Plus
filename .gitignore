@@ -3,6 +3,7 @@ __pycache__/
 .vscode/
 outputs/
 image_paths_cache.txt
+latent_paths_cache.txt
 .DS_Store
 *.png
 *.zip

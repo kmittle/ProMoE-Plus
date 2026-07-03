@@ -2,9 +2,12 @@
 # ---------------------------------------------------------------------------
 # Idempotent ImageNet-1K preparation for ProMoE experiment scripts.
 #
-# Ensures the full-resolution ImageNet-1K train set + its VAE latents exist at
-# /lustre01/yujie/dataset/imagenet/ (downloading from HuggingFace, falling back to
-# ModelScope, then VAE-encoding). If everything is already present it returns
+# Ensures the ImageNet-1K VAE latents exist at
+# /lustre01/yujie/dataset/imagenet/sd-vae-ft-mse_Latents_256img_npz/. If the raw HF
+# parquet shards are already on the server (PROMOE_PARQUET_DIR, default
+# /lustre01/qianyuan/data/ILSVRC/imagenet-1k/data), it encodes latents DIRECTLY from
+# parquet (no re-download, no intermediate JPEG folder); otherwise it downloads
+# (HuggingFace -> ModelScope) + materialises + encodes. If already present it returns
 # immediately. Run it manually once (per shared dataset location), not from the
 # experiment scripts, before launching training.
 #
