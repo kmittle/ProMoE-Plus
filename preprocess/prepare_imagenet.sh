@@ -25,8 +25,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 
-PYTHON="python"
-GPUS=""
+# Hardcoded defaults so `bash preprocess/prepare_imagenet.sh` just works with no args.
+# Override with --python / --gpus if needed.
+PYTHON="/mnt/workspace/yujie/.conda/envs/promoe/bin/python"   # promoe env (same as the run scripts)
+GPUS="0,1,2,3,4,5,6,7"                                        # default to the full 8-GPU server
 PASS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
