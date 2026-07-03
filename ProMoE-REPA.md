@@ -139,7 +139,7 @@ Set `cfg.data_path` in `config.py`, or override it from YAML (or via the `PROMOE
 cfg.data_path = "/path/to/ImageNet/train"
 ```
 
-For an automated fresh-server setup, `preprocess/prepare_imagenet.sh` downloads full-resolution ImageNet-1K (HuggingFace→ModelScope), materialises it to `datasets/imagenet/train/`, and VAE-encodes it (see CLAUDE.md "Dataset auto-preparation"). It materialises **raw JPEGs plus latents**, so REPA training — which also needs raw images for teacher features — works from the same prepared tree.
+For an automated fresh-server setup, `preprocess/prepare_imagenet.sh` downloads full-resolution ImageNet-1K (HuggingFace→ModelScope), materialises it to `/lustre01/yujie/dataset/imagenet/train/`, and VAE-encodes it (see CLAUDE.md "Dataset auto-preparation"). It materialises **raw JPEGs plus latents**, so REPA training — which also needs raw images for teacher features — works from the same prepared tree.
 
 ### 2. Optional but Recommended: Precompute VAE Latents
 

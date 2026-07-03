@@ -50,11 +50,11 @@ pip install -r requirements.txt
 
 Download [ImageNet](http://image-net.org/download) dataset, and modify `cfg.data_path` in `config.py`.
 
-Alternatively, on a fresh server, let the automated preparer fetch and set everything up. It downloads full-resolution ImageNet-1K (HuggingFace first, ModelScope fallback), materialises it to `datasets/imagenet/train/`, and VAE-encodes it — idempotent, resume-safe, and cross-process locked:
+Alternatively, on a fresh server, let the automated preparer fetch and set everything up. It downloads full-resolution ImageNet-1K (HuggingFace first, ModelScope fallback), materialises it to `/lustre01/yujie/dataset/imagenet/train/`, and VAE-encodes it — idempotent, resume-safe, and cross-process locked:
 ```bash
 bash preprocess/prepare_imagenet.sh --python "$(which python)" --gpus 0,1,2,3,4,5,6,7
 ```
-Run it **once per server** before launching your experiments (it is not auto-invoked by the run scripts, so two GPU slots on one machine don't both start downloading/encoding at the same time). Training then reads `datasets/imagenet/train` automatically. Overridable via `PROMOE_DATA_PATH` / `PROMOE_HF_DATASET` / `PROMOE_MS_DATASET` (and `HF_TOKEN` for the gated HuggingFace path).
+Run it **once** for the shared dataset location before launching your experiments (it is not auto-invoked by the run scripts, so two GPU slots on one machine don't both start downloading/encoding at the same time). Training then reads `/lustre01/yujie/dataset/imagenet/train` automatically. Overridable via `PROMOE_DATA_PATH` / `PROMOE_HF_DATASET` / `PROMOE_MS_DATASET` (and `HF_TOKEN` for the gated HuggingFace path).
 
 ### 3. VAE Latent Preprocessing (Optional)
 

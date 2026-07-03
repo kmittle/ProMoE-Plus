@@ -20,9 +20,9 @@ Idempotent, resume-safe pipeline (run from the repo root; the companion
                     silently zero-filled by the training loader, which would
                     corrupt training) and only then write the completion sentinel.
 
-On-disk layout produced (relative to the repo root):
-    datasets/imagenet/train/<label:04d>/<name>.JPEG
-    datasets/imagenet/sd-vae-ft-mse_Latents_256img_npz/<label:04d>/<name>.latent.npz
+On-disk layout produced (absolute paths under the shared DATA_ROOT):
+    /lustre01/yujie/dataset/imagenet/train/<label:04d>/<name>.JPEG
+    /lustre01/yujie/dataset/imagenet/sd-vae-ft-mse_Latents_256img_npz/<label:04d>/<name>.latent.npz
 
 Why <label:04d> class dirs: train.py's CustomImageFolder assigns the class index
 by the *sorted* order of the class-dir names (train.py:123-126,160-161). HF
@@ -30,7 +30,8 @@ imagenet-1k labels are the canonical ImageNet order (0..999), so zero-padded
 label dirs make the folder label == the dataset label == canonical class. And
 because train.py derives the latent path with str.replace('train', ...)
 (train.py:163), the whole path must contain 'train' exactly once -- guaranteed
-here by the relative layout (datasets/imagenet/train/<4 digits>/<name>).
+here because no DATA_ROOT component contains 'train' (/lustre01/yujie/dataset/
+imagenet/train/<4 digits>/<name>); self_test_derivation() asserts this at runtime.
 
 Env / args:
     PROMOE_HF_DATASET   HF dataset id     (default ILSVRC/imagenet-1k)
@@ -58,14 +59,17 @@ log = logging.getLogger("prepare_imagenet")
 
 # ----------------------------------------------------------------------------- constants
 REPO_ROOT = osp.abspath(osp.join(osp.dirname(osp.abspath(__file__)), os.pardir))
-DATA_ROOT_REL = osp.join("datasets", "imagenet")                       # relative to repo root
-TRAIN_REL = osp.join(DATA_ROOT_REL, "train")
+# Shared ImageNet root (absolute). Must stay in sync with config.py's cfg.data_path
+# default. 'train'-once-safe: none of the path components except the train/ dir
+# contains the substring 'train' (train.py derives latents via replace('train',...)).
+DATA_ROOT = "/lustre01/yujie/dataset/imagenet"
+TRAIN = osp.join(DATA_ROOT, "train")
 LATENT_DIR_NAME = "sd-vae-ft-mse_Latents_256img_npz"                   # MUST match train.py:104
-LATENT_REL = osp.join(DATA_ROOT_REL, LATENT_DIR_NAME)
-STATE_REL = osp.join(DATA_ROOT_REL, ".state")
-DOWNLOAD_CACHE_REL = osp.join(DATA_ROOT_REL, "_parquet")               # transient parquet cache
+LATENT_ROOT = osp.join(DATA_ROOT, LATENT_DIR_NAME)
+STATE_ROOT = osp.join(DATA_ROOT, ".state")
+DOWNLOAD_CACHE = osp.join(DATA_ROOT, "_parquet")               # transient parquet cache
 VAE_HF_ID = "stabilityai/sd-vae-ft-mse"
-VAE_CACHE_REL = osp.join("pretrained_ckpt", "vae", VAE_HF_ID.replace("/", "--"))
+VAE_CACHE_REL = osp.join("pretrained_ckpt", "vae", VAE_HF_ID.replace("/", "--"))  # repo-local cache
 IMAGE_CACHE_FILE = osp.join("preprocess", "image_paths_cache.txt")     # MUST match train.py:101
 EXPECTED_TRAIN_IMAGES = 1_281_167                                       # canonical ImageNet-1k train size
 IMG_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".gif")
@@ -92,7 +96,7 @@ def human(n):
 
 
 def sentinel_path(name):
-    return osp.join(STATE_REL, name)
+    return osp.join(STATE_ROOT, name)
 
 
 def touch(path):
@@ -274,8 +278,8 @@ def stage_download(source, hf_id, ms_id, token, keep_parquet, limit_shards):
     if exists_sentinel("download.done"):
         log.info("download.done sentinel present -- skipping download/materialise")
         return
-    os.makedirs(TRAIN_REL, exist_ok=True)
-    os.makedirs(DOWNLOAD_CACHE_REL, exist_ok=True)
+    os.makedirs(TRAIN, exist_ok=True)
+    os.makedirs(DOWNLOAD_CACHE, exist_ok=True)
     session = _session()
 
     order = {"auto": ["hf", "modelscope"], "hf": ["hf"], "modelscope": ["modelscope"]}[source]
@@ -309,7 +313,7 @@ def stage_download(source, hf_id, ms_id, token, keep_parquet, limit_shards):
         if osp.exists(done):
             log.info("[%d/%d] %s already materialised -- skip", n, len(shards), shard_name)
             continue
-        local_parquet = osp.join(DOWNLOAD_CACHE_REL, shard_name)
+        local_parquet = osp.join(DOWNLOAD_CACHE, shard_name)
         url = hf_file_url(hf_id, sp) if picked == "hf" else ms_file_url(ms_id, sp)
         headers = {"Authorization": f"Bearer {token}"} if (picked == "hf" and token) else None
         log.info("[%d/%d] downloading %s (%s)", n, len(shards), shard_name,
@@ -317,13 +321,13 @@ def stage_download(source, hf_id, ms_id, token, keep_parquet, limit_shards):
         _download_stream(session, url, local_parquet, headers=headers,
                          expected_size=sizes.get(sp) or None)
         log.info("[%d/%d] materialising %s", n, len(shards), shard_name)
-        cnt = materialise_shard(local_parquet, TRAIN_REL)
+        cnt = materialise_shard(local_parquet, TRAIN)
         touch(done)
         if not keep_parquet:
             os.remove(local_parquet)
         log.info("[%d/%d] %s -> %d images", n, len(shards), shard_name, cnt)
 
-    total = _count_images(TRAIN_REL)
+    total = _count_images(TRAIN)
     log.info("materialised train images: %d (expected ~%d)", total, EXPECTED_TRAIN_IMAGES)
     if limit_shards:
         log.warning("--limit-shards set: partial/debug run -- NOT writing download.done sentinel")
@@ -331,8 +335,8 @@ def stage_download(source, hf_id, ms_id, token, keep_parquet, limit_shards):
     if total < EXPECTED_TRAIN_IMAGES:
         sys.exit(f"[prepare_imagenet] only {total} train images materialised, "
                  f"expected {EXPECTED_TRAIN_IMAGES}. Not writing download.done; re-run to resume.")
-    if not keep_parquet and osp.isdir(DOWNLOAD_CACHE_REL):
-        shutil.rmtree(DOWNLOAD_CACHE_REL, ignore_errors=True)
+    if not keep_parquet and osp.isdir(DOWNLOAD_CACHE):
+        shutil.rmtree(DOWNLOAD_CACHE, ignore_errors=True)
     touch(sentinel_path("download.done"))
 
 
@@ -369,11 +373,11 @@ def stage_preprocess(gpus, python_exe):
         return
     _rebuild_image_cache()
     env = dict(os.environ)
-    env["PROMOE_DATA_PATH"] = TRAIN_REL  # relative -> keeps train.py's replace('train',..) safe
+    env["PROMOE_DATA_PATH"] = TRAIN  # absolute; 'train'-once-safe for train.py's replace('train',..)
     if gpus:
         env["CUDA_VISIBLE_DEVICES"] = gpus
     cmd = [python_exe, osp.join("preprocess", "preprocess_vae.py"),
-           "--latent_save_root", LATENT_REL, "--skip-existing"]
+           "--latent_save_root", LATENT_ROOT, "--skip-existing"]
     log.info("running: CUDA_VISIBLE_DEVICES=%s %s", env.get("CUDA_VISIBLE_DEVICES", "(all)"),
              " ".join(cmd))
     rc = subprocess.call(cmd, cwd=REPO_ROOT, env=env)
@@ -384,15 +388,15 @@ def stage_preprocess(gpus, python_exe):
 def stage_verify():
     """Every image must have a matching latent, else training silently zero-fills it."""
     latent_set = set()
-    for dirpath, _dirs, files in os.walk(LATENT_REL):
-        rel = osp.relpath(dirpath, LATENT_REL)
+    for dirpath, _dirs, files in os.walk(LATENT_ROOT):
+        rel = osp.relpath(dirpath, LATENT_ROOT)
         for fn in files:
             if fn.endswith(".latent.npz"):
                 latent_set.add(osp.normpath(osp.join(rel, fn)))
     missing = 0
     total = 0
     first_missing = []
-    for dirpath, _dirs, files in os.walk(TRAIN_REL):
+    for dirpath, _dirs, files in os.walk(TRAIN):
         for fn in files:
             if not fn.lower().endswith(IMG_EXTS):
                 continue
@@ -402,7 +406,7 @@ def stage_verify():
             # preprocess's relpath) so a 'train'-in-filename divergence is caught here
             # loudly instead of silently zero-filling that image during training.
             latent_full = osp.splitext(img_path.replace("train", LATENT_DIR_NAME))[0] + ".latent.npz"
-            latent_rel = osp.normpath(osp.relpath(latent_full, LATENT_REL))
+            latent_rel = osp.normpath(osp.relpath(latent_full, LATENT_ROOT))
             if latent_rel not in latent_set:
                 missing += 1
                 if len(first_missing) < 5:
@@ -433,7 +437,7 @@ def _rebuild_image_cache():
     Pre-build it here, once, SORTED and ATOMICALLY, so every preprocess/train rank simply
     reads one consistent cache (no per-rank regeneration, no race)."""
     paths = []
-    for dirpath, _dirs, files in os.walk(TRAIN_REL):
+    for dirpath, _dirs, files in os.walk(TRAIN):
         for fn in files:
             if fn.lower().endswith(IMG_EXTS):
                 paths.append(osp.join(dirpath, fn))
@@ -448,7 +452,7 @@ def _rebuild_image_cache():
 
 def _check_one_derivation(sample_img):
     """Assert the two independent latent-path derivations agree for one image path."""
-    pre = osp.normpath(osp.join(LATENT_REL, osp.splitext(osp.relpath(sample_img, TRAIN_REL))[0]
+    pre = osp.normpath(osp.join(LATENT_ROOT, osp.splitext(osp.relpath(sample_img, TRAIN))[0]
                                 + ".latent.npz"))
     trn = osp.normpath(osp.splitext(sample_img.replace("train", LATENT_DIR_NAME))[0] + ".latent.npz")
     if sample_img.count("train") != 1:
@@ -467,14 +471,14 @@ def self_test_derivation():
     train.CustomImageFolder     : img.replace('train', LATENT_DIR_NAME) + .latent.npz
     They must agree for our layout, else training would zero-fill silently."""
     # (1) a clean original-style ImageNet filename
-    _check_one_derivation(osp.join(TRAIN_REL, "0000", "n01440764_10026.JPEG"))
+    _check_one_derivation(osp.join(TRAIN, "0000", "n01440764_10026.JPEG"))
     # (2) a fallback-style name: the parquet stem carries 'train', so _safe_name MUST
     #     scrub it -- otherwise the produced filename re-introduces 'train' and the two
     #     derivations diverge (the exact silent-zero-fill bug this guards against).
     fb = _safe_name(None, "train-00000-of-00294_0_5")
     if "train" in fb.lower():
         sys.exit(f"[prepare_imagenet] SELF-TEST FAILED: _safe_name leaked 'train' in {fb!r}")
-    _check_one_derivation(osp.join(TRAIN_REL, "0000", fb))
+    _check_one_derivation(osp.join(TRAIN, "0000", fb))
     log.info("self-test OK: latent derivations agree (clean + fallback names, no 'train' leak)")
 
 
@@ -492,7 +496,7 @@ def main():
     ap.add_argument("--skip-preprocess", action="store_true", help="download/materialise only")
     args = ap.parse_args()
 
-    os.chdir(REPO_ROOT)  # everything below is relative to the repo root
+    os.chdir(REPO_ROOT)  # so repo-relative paths (VAE cache, image_paths_cache, preprocess_vae.py) resolve; DATA_ROOT is absolute
     token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
 
     if args.force:

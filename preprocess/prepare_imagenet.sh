@@ -3,16 +3,18 @@
 # Idempotent ImageNet-1K preparation for ProMoE experiment scripts.
 #
 # Ensures the full-resolution ImageNet-1K train set + its VAE latents exist at
-# datasets/imagenet/ (downloading from HuggingFace, falling back to ModelScope,
-# then VAE-encoding). If everything is already present it returns immediately, so
-# it is safe (and cheap) to call at the top of every run_*_train_sample_eval.sh.
+# /lustre01/yujie/dataset/imagenet/ (downloading from HuggingFace, falling back to
+# ModelScope, then VAE-encoding). If everything is already present it returns
+# immediately. Run it manually once (per shared dataset location), not from the
+# experiment scripts, before launching training.
 #
 # Usage:
 #   bash preprocess/prepare_imagenet.sh --python <python> --gpus <csv-gpu-ids> [extra args...]
 #
-# It exports PROMOE_DATA_PATH=datasets/imagenet/train so train.py / sample.py /
-# preprocess_vae.py all read the materialised dataset. Any extra args are passed
-# straight through to prepare_imagenet.py (e.g. --source modelscope, --keep-parquet).
+# It exports PROMOE_DATA_PATH=/lustre01/yujie/dataset/imagenet/train so
+# preprocess_vae.py reads/writes the right place; train.py / sample.py read the same
+# path via config.py's default. Any extra args are passed straight through to
+# prepare_imagenet.py (e.g. --source modelscope, --keep-parquet).
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -31,16 +33,16 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Keep train.py's replace('train', ...) latent derivation safe: relative path,
-# resolved from the repo root (where all run scripts cd).
-export PROMOE_DATA_PATH="datasets/imagenet/train"
+# Shared dataset location (absolute). 'train'-once-safe for train.py's
+# replace('train', ...) latent derivation (no path component but train/ has 'train').
+export PROMOE_DATA_PATH="/lustre01/yujie/dataset/imagenet/train"
 
 # Cross-process lock. The run-time slot system co-schedules two 4-GPU jobs on one
 # physical server (X.1 -> GPU 0-3, X.2 -> GPU 4-7) sharing this repo/filesystem.
 # Without a lock, both would race to download/materialise/encode the SAME files and
 # corrupt the dataset. flock serializes prepare: the peer job blocks here, and once
 # it acquires the lock prepare_imagenet.py sees the sentinel and returns immediately.
-LOCK="${REPO_ROOT}/datasets/imagenet/.state/prepare.lock"
+LOCK="/lustre01/yujie/dataset/imagenet/.state/prepare.lock"
 mkdir -p "$(dirname "${LOCK}")"
 if command -v flock >/dev/null 2>&1; then
   exec 9>"${LOCK}"

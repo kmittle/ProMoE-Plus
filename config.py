@@ -13,14 +13,13 @@ world_size = pmi_world_size * gpus_per_machine
 
 # ---------------------------Dataset Parameter---------------------------------
 cfg.num_classes = 1000
-# Data path. Override with the PROMOE_DATA_PATH env var (set by
-# preprocess/prepare_imagenet.sh). Default points at the repo-local dataset that
-# prepare_imagenet.py materialises. Kept RELATIVE on purpose: train.py derives the
-# latent path via img_path.replace('train', ...), which requires 'train' to appear
-# exactly once in the path -- an absolute prefix that happened to contain 'train'
-# would break it, so the relative form (resolved from the repo root, where all
-# train/sample scripts cd) is the safe default.
-cfg.data_path = os.environ.get("PROMOE_DATA_PATH", "datasets/imagenet/train")
+# Data path. Default is the shared dataset location that prepare_imagenet.py
+# materialises into; override with the PROMOE_DATA_PATH env var.
+# NOTE: train.py derives the latent path via img_path.replace('train', ...), which
+# requires 'train' to appear EXACTLY ONCE in the path. The default is safe because
+# none of '/lustre01', 'yujie', 'dataset', 'imagenet' contains the substring 'train'
+# -- only the train/ dir does. Keep any override 'train'-once-safe too.
+cfg.data_path = os.environ.get("PROMOE_DATA_PATH", "/lustre01/yujie/dataset/imagenet/train")
 
 cfg.img_num_workers = 8
 cfg.prefetch_factor = 2
