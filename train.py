@@ -196,13 +196,23 @@ class LatentFolder(Dataset):
         if os.path.exists(self.CACHE_FILE) and os.path.getsize(self.CACHE_FILE) > 0:
             with open(self.CACHE_FILE, 'r') as f:
                 latent_paths = f.read().splitlines()
-            logging.info(f"****************Loaded latent paths from cache: {self.CACHE_FILE}")
-            return latent_paths
+            # Guard against a STALE cache pointing at a different latent_data_path (e.g. after
+            # changing PROMOE_LATENT_PATH): only trust it if its entries are under latent_dir.
+            root = os.path.normpath(self.latent_dir)
+            if latent_paths and os.path.normpath(latent_paths[0]).startswith(root + os.sep):
+                logging.info(f"****************Loaded latent paths from cache: {self.CACHE_FILE}")
+                return latent_paths
+            logging.info(f"****************Stale latent cache (not under {self.latent_dir}); regenerating")
 
         latent_paths = self._get_latent_paths(self.latent_dir)
         os.makedirs(osp.dirname(self.CACHE_FILE), exist_ok=True)
-        with open(self.CACHE_FILE, 'w') as f:
+        # Atomic write via a unique temp: DDP ranks may regenerate this concurrently (if prepare
+        # didn't pre-build it). The list is sorted -> identical across ranks, so whichever
+        # os.replace wins yields a complete, correct file and readers never see a partial cache.
+        tmp = f"{self.CACHE_FILE}.{os.getpid()}.part"
+        with open(tmp, 'w') as f:
             f.write('\n'.join(latent_paths))
+        os.replace(tmp, self.CACHE_FILE)
         logging.info(f"****************Generated cache for latent paths: {self.CACHE_FILE}")
         return latent_paths
 

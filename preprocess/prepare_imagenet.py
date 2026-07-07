@@ -532,10 +532,15 @@ def stage_verify_latents(limit_shards=0):
     n = 0
     for _dp, _dirs, files in os.walk(LATENT_ROOT):
         n += sum(1 for f in files if f.endswith(".latent.npz"))
-    log.info("verify: %d latents (expected ~%d)", n, EXPECTED_TRAIN_IMAGES)
-    if not limit_shards and n < EXPECTED_TRAIN_IMAGES:
-        sys.exit(f"[prepare_imagenet] only {n} latents, expected {EXPECTED_TRAIN_IMAGES}. "
-                 f"Re-run to encode the remainder (per-file skip makes this cheap).")
+    log.info("verify: %d latents (expected %d)", n, EXPECTED_TRAIN_IMAGES)
+    if not limit_shards and n != EXPECTED_TRAIN_IMAGES:
+        if n < EXPECTED_TRAIN_IMAGES:
+            sys.exit(f"[prepare_imagenet] only {n} latents, expected {EXPECTED_TRAIN_IMAGES}. "
+                     f"Re-run to encode the remainder (per-file skip makes this cheap).")
+        sys.exit(f"[prepare_imagenet] {n} latents but expected exactly {EXPECTED_TRAIN_IMAGES} -- "
+                 f"{n - EXPECTED_TRAIN_IMAGES} unexpected/stale latent(s) under {LATENT_ROOT} "
+                 f"(e.g. a prior dataset or a mixed JPEG+parquet run). Clean it and re-run; "
+                 f"training must not include extras.")
     _rebuild_latent_cache()
     if not limit_shards:
         touch(sentinel_path("latents.done"))
