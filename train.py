@@ -55,6 +55,7 @@ from models.models_ProMoE_TC_dagfuse import DiT as ProMoE_TC_dagfuse
 from models.models_ProMoE_TC_lbcontra import DiT as ProMoE_TC_lbcontra
 from models.models_ProMoE_TC_adepth import DiT as ProMoE_TC_adepth
 from models.models_ProMoE_TC_lossfree import DiT as ProMoE_TC_lossfree
+from models.models_ProMoE_TC_lsreg import DiT as ProMoE_TC_lsreg
 
 model_dict = {
     "DiT_B": (DiT, "DiT_B_config"),
@@ -93,6 +94,7 @@ model_dict = {
     "ProMoE_TC_B_lbcontra": (ProMoE_TC_lbcontra, "DiT_B_config"),
     "ProMoE_TC_B_adepth": (ProMoE_TC_adepth, "DiT_B_config"),
     "ProMoE_TC_B_lossfree": (ProMoE_TC_lossfree, "DiT_B_config"),
+    "ProMoE_TC_B_lsreg": (ProMoE_TC_lsreg, "DiT_B_config"),
 }
 
 class CustomImageFolder(Dataset):
@@ -761,6 +763,13 @@ def worker(gpu, cfg):
             logging.info(format_loss_log(epoch, step, logged_loss_dict))
         if cfg.rank == 0:
             write_loss_dict_to_tensorboard(writer, logged_loss_dict, step)
+            if step % cfg.log_interval == 0:
+                # lsreg: log realized mean label-smoothing epsilon (for fixed-vs-dynamic deconfounding);
+                # no-op for models whose blocks don't expose last_mean_eps.
+                _ls_eps = [m.last_mean_eps for m in model.module.modules()
+                           if getattr(m, "last_mean_eps", None) is not None]
+                if _ls_eps:
+                    writer.add_scalar('lsreg/mean_eps', float(torch.stack(_ls_eps).mean()), step)
 
         scaler.unscale_(optimizer)
         grad_norm = clip_grad_norm_(model.parameters(), cfg.max_grad_norm)
