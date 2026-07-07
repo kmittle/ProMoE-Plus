@@ -6,7 +6,7 @@ ProMoE-Plus implements ProMoE, a Mixture-of-Experts framework for scaling Diffus
 ## Project Structure & Module Organization
 Core entrypoints are at repository root:
 
-- `train.py`: baseline and non-REPA training (DiT, TCDiT, ECDiT, DiffMoE, ProMoE, hierarchical, expert-choice/batch-choice, structured-batch, proto-t, anchor, proto-choice, noise-expert, and expert-contrastive variants).
+- `train.py`: baseline and non-REPA training (DiT, TCDiT, ECDiT, DiffMoE, ProMoE, hierarchical, expert-choice/batch-choice, structured-batch, proto-t, anchor, proto-choice, load-balance-contrastive, DAG-fuse, adaptive-depth, loss-free, noise-expert, and expert-contrastive variants).
 - `train_with_repa.py`: REPA-enabled training (REPA / REPA-Shared / REPA-Cond / REPA-DYNA / REPA-DYNA-SELECT / REPA-DYNA-SCALE / REPA-DYNA-ONLY / REPA-Router / REPA-Router-Contra / REPA-Routed / REPA-Double-Share / hierarchical-expert REPA-DYNA), including teacher-feature alignment loss.
 - `train_with_MoS_repa.py`: MoS-REPA, MoS-Naive / Naive-Choice, separate-projector / per-block / blockwise / fused / multi-align, and both standard-REPA + MoS cross-alignment training with teacher-block routing and per-block REPA projectors.
 - `train_with_mae.py`: MAE/group-alignment training for `group_align` and `group_align_proj` variants.
@@ -23,8 +23,9 @@ Shared defaults and helpers:
 Main code layout:
 
 - `models/`: architecture implementations; keep the `models_*.py` naming convention.
+- `model.py`: root-level reference file that is not imported by the main training/sampling entrypoints; project model implementations live under `models/`.
 - `repa/`: REPA helper package used by `train_with_repa.py` and `train_with_MoS_repa.py` (`encoder.py`, `loss.py`).
-- `preprocess/`: VAE latent preprocessing and shared cache file `preprocess/image_paths_cache.txt`.
+- `preprocess/`: VAE latent preprocessing, parquet-direct latent encoding, ImageNet preparation helpers, and shared cache files such as `preprocess/image_paths_cache.txt` and `preprocess/latent_paths_cache.txt`.
 - `evaluation/`: OpenAI-style evaluation pipeline (`run_eval.py`, `evaluator.py`, `download_ref_batches.py`).
 - `analyses/`: analysis entry scripts live directly under this directory. Current entrypoints include `run_tokenwise_tsne.py`, `run_samplewise_pooled_tsne.py`, `run_imagewise_tsne.py`, `run_repa_dyna_heatmap.py`, `run_token_choice_expert_heatmap.py`, `run_compute_flops.py`, and `run_mos_routing_analysis.py`. Reusable helpers live under `analyses/t_SNE/`, `analyses/heatmap/`, `analyses/flops/`, and `analyses/mos_routing/`; `analyses/README.md` should remain a brief directory-level overview only, while detailed usage belongs in per-entry Markdown files that share the same basename as each entry `.py`.
 - `scripts/repa/`: REPA-B / REPA-Shared-B / REPA-Cond-B helpers plus router / routed / double-share, cross-alignment, and L/XL scale-up train + sample + eval wrappers.
@@ -39,7 +40,12 @@ Main code layout:
 - `scripts/proto_t/`: token-choice and expert-choice proto-t direct/residual train + sample + eval wrappers.
 - `scripts/anchor/`: anchor-routing and anchor-replace train + sample + eval wrappers.
 - `scripts/proto_choice/`: contrastive proto-choice ratio sweep train + sample + eval wrappers.
+- `scripts/lbcontra/`: load-balance-aware routing-contrastive reweight/logit-adjust/balance-term/soft-only train + sample + eval wrappers.
+- `scripts/dagfuse/`: DAG-MoE shared/conditional fusion train + sample + eval wrappers.
+- `scripts/adepth/`: adaptive routed-FFN depth fixed-quota train + sample + eval wrappers.
+- `scripts/lossfree/`: loss-free balancing-bias train + sample + eval wrappers.
 - `scripts/_run_times/`: timestamped launch indirection for scheduled experiment batches.
+- `command-tables/`: CSV template assets for run-time command tables.
 - `collapse_smoking_test/`, `collapse_smoking_test_10k/`: crash-diagnosis smoke configs, logs, summaries, and rerun helpers for cross-alignment stability work.
 - `tb_smoke_200/`, `tb_smoke_500/`: TensorBoard/`TrainingMonitor` smoke harnesses for selected cross-alignment configs.
 - `REPA/` (uppercase): separate upstream-style subproject with its own docs and `AGENTS.md`.
@@ -54,6 +60,8 @@ Companion documentation:
 - `ProMoE-REPA.md`: detailed REPA / MoS-REPA workflow, configuration reference, and FAQ.
 - `analyses/README.md`: analysis entrypoint overview; keep per-script usage in matching `analyses/<basename>.md` files.
 - `plans/`: implementation plans for standard REPA and MoS cross-alignment variants.
+- `.claude/skills/`: project-local workflow descriptions for inspect/check/new-experiment/rerun-experiment/command-table/describe-experiment helpers; useful as procedural reference even when not running Claude slash commands.
+- `.codex/skills/`: project-local Codex helper skills.
 - `implementation-plan.md`: Chinese draft plan for a future attention-weighted same-expert same-image alignment family; reference only, not current code.
 
 Outputs follow:
@@ -219,6 +227,30 @@ bash scripts/anchor/run_B_anchor_replace_train_sample_eval.sh
 bash scripts/proto_choice/run_B_proto_choice_083_train_sample_eval.sh
 bash scripts/proto_choice/run_B_proto_choice_125_train_sample_eval.sh
 
+bash scripts/lbcontra/run_B_lbcontra_reweight_b0p25_train_sample_eval.sh
+bash scripts/lbcontra/run_B_lbcontra_reweight_b0p5_train_sample_eval.sh
+bash scripts/lbcontra/run_B_lbcontra_reweight_b1_train_sample_eval.sh
+bash scripts/lbcontra/run_B_lbcontra_reweight_b2_train_sample_eval.sh
+bash scripts/lbcontra/run_B_lbcontra_logitadj_t0p5_train_sample_eval.sh
+bash scripts/lbcontra/run_B_lbcontra_logitadj_t1_train_sample_eval.sh
+bash scripts/lbcontra/run_B_lbcontra_logitadj_t2_train_sample_eval.sh
+bash scripts/lbcontra/run_B_lbcontra_logitadj_t4_train_sample_eval.sh
+bash scripts/lbcontra/run_B_lbcontra_balance_l0p001_train_sample_eval.sh
+bash scripts/lbcontra/run_B_lbcontra_balance_l0p01_train_sample_eval.sh
+bash scripts/lbcontra/run_B_lbcontra_balance_l0p1_train_sample_eval.sh
+bash scripts/lbcontra/run_B_lbcontra_balance_l1_train_sample_eval.sh
+bash scripts/lbcontra/run_B_lbcontra_soft_only_train_sample_eval.sh
+bash scripts/dagfuse/run_B_dagfuse_condfromshared_train_sample_eval.sh
+bash scripts/dagfuse/run_B_dagfuse_sharedfromcond_train_sample_eval.sh
+bash scripts/dagfuse/run_B_dagfuse_bidirectional_train_sample_eval.sh
+bash scripts/adepth/run_B_adepth_q0p1_train_sample_eval.sh
+bash scripts/adepth/run_B_adepth_q0p2_train_sample_eval.sh
+bash scripts/adepth/run_B_adepth_q0p3_train_sample_eval.sh
+bash scripts/adepth/run_B_adepth_q0p4_train_sample_eval.sh
+bash scripts/lossfree/run_B_lossfree_u1e2_train_sample_eval.sh
+bash scripts/lossfree/run_B_lossfree_u1e3_train_sample_eval.sh
+bash scripts/lossfree/run_B_lossfree_u1e4_train_sample_eval.sh
+
 bash tb_smoke_200/run_all.sh
 bash tb_smoke_500/run_all.sh
 
@@ -245,8 +277,8 @@ Runtime GPU-slot grouping:
 Create evaluation env (TensorFlow-based):
 
 ```bash
-conda create -n promoe_eval python=3.9 -y
-conda activate promoe_eval
+conda create -n fid_eval python=3.9 -y
+conda activate fid_eval
 cd evaluation
 pip install -r requirements.txt
 conda install -c conda-forge cudatoolkit=11.2 cudnn=8.1.0
