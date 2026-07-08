@@ -1,0 +1,8 @@
+实验 / Experiment: 1.1-B_dagfuse_dense_cond
+model_name: ProMoE_TC_B_dagfuse_dense  |  config: configs/004_ProMoE_B_dagfuse_dense_cond.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分离 + 静态 cluster_centers 余弦相似度原型路由，top-1 token-choice，shared 专家，routing contrastive InfoNCE）；直接父变体 / Parent: 就是基础 ProMoE-TC，仅在其上加"用上一 Dense 块输出补强 shared 专家"
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 上一 Dense 块输出补强 shared 专家 / augment shared-expert output from the previous Dense block（headline）：用 zero-init `SharedAugmentModule`（`fuse_mech: dag` = DAG-MoE 因子化门控 value-sum，含 self-edge）给当前 MoE block 的 shared 输出加一个门控 delta，来源 = 上一个 Dense block 的完整输出（FFN+残差），即当前 MoE block 的入口张量 x（attention 之前），经 `DiTBlock.forward` 显式传入（不是 shared 专家经过本 block attention 的输入）；每 block 一个调制 `Linear`。动机：上一批 DAG-fusion 里 `shared_from_cond` 最好 → "补强 shared" 是关键杠杆。
+2. `fuse_apply: cond` / 作用范围：融合只作用于 cond token（labels!=1000）切片（本实验 cond；姊妹实验 1.2 为 all=全部 token）。
+3. step-0 与路由 / step-0 & routing：输出投影 zero-init（且在 `initialize_weights` 的 `_basic_init` 之后二次清零）→ step-0 与 base 逐比特一致、可非严格加载 base checkpoint；融合只改 shared 输出，`compute_router`/dispatch 与 base 逐比特不变。

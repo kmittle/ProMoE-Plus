@@ -56,6 +56,10 @@ from models.models_ProMoE_TC_lbcontra import DiT as ProMoE_TC_lbcontra
 from models.models_ProMoE_TC_adepth import DiT as ProMoE_TC_adepth
 from models.models_ProMoE_TC_lossfree import DiT as ProMoE_TC_lossfree
 from models.models_ProMoE_TC_lsreg import DiT as ProMoE_TC_lsreg
+from models.models_ProMoE_TC_dagfuse_dense import DiT as ProMoE_TC_dagfuse_dense
+from models.models_ProMoE_TC_dagfuse_densenet import DiT as ProMoE_TC_dagfuse_densenet
+from models.models_ProMoE_TC_dagfuse_sharedroute import DiT as ProMoE_TC_dagfuse_sharedroute
+from models.models_ProMoE_TC_dagfuse_region import DiT as ProMoE_TC_dagfuse_region
 
 model_dict = {
     "DiT_B": (DiT, "DiT_B_config"),
@@ -95,6 +99,10 @@ model_dict = {
     "ProMoE_TC_B_adepth": (ProMoE_TC_adepth, "DiT_B_config"),
     "ProMoE_TC_B_lossfree": (ProMoE_TC_lossfree, "DiT_B_config"),
     "ProMoE_TC_B_lsreg": (ProMoE_TC_lsreg, "DiT_B_config"),
+    "ProMoE_TC_B_dagfuse_dense": (ProMoE_TC_dagfuse_dense, "DiT_B_config"),
+    "ProMoE_TC_B_dagfuse_densenet": (ProMoE_TC_dagfuse_densenet, "DiT_B_config"),
+    "ProMoE_TC_B_dagfuse_sharedroute": (ProMoE_TC_dagfuse_sharedroute, "DiT_B_config"),
+    "ProMoE_TC_B_dagfuse_region": (ProMoE_TC_dagfuse_region, "DiT_B_config"),
 }
 
 class CustomImageFolder(Dataset):
