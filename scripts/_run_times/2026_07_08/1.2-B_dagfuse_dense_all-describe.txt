@@ -1,8 +1,0 @@
-实验 / Experiment: 1.2-B_dagfuse_dense_all
-model_name: ProMoE_TC_B_dagfuse_dense  |  config: configs/004_ProMoE_B_dagfuse_dense_all.yaml
-基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分离 + 静态 cluster_centers 余弦相似度原型路由，top-1 token-choice，shared 专家，routing contrastive InfoNCE）；直接父变体 / Parent: 姊妹实验 1.1（fuse_apply: cond）——本实验是它的 cond/all 消融对照
-
-核心改动 / Core changes（相对基线，重点优先）:
-1. 上一 Dense 块输出补强 shared 专家 / augment shared-expert output from the previous Dense block（headline）：用 zero-init `SharedAugmentModule`（`fuse_mech: dag` = DAG-MoE 因子化门控 value-sum，含 self-edge）给当前 MoE block 的 shared 输出加一个门控 delta，来源 = 上一个 Dense block 的完整输出（FFN+残差）= 当前 MoE block 入口张量 x（attention 之前），经 `DiTBlock.forward` 显式传入；每 block 一个调制 `Linear`。
-2. `fuse_apply: all` / 作用范围：融合作用于全部 token（对照姊妹实验 1.1 的 cond=仅 cond token 切片）。这是 cond↔all 的消融轴。
-3. step-0 与路由 / step-0 & routing：输出投影 zero-init（`_basic_init` 后二次清零）→ step-0 与 base 逐比特一致、非严格可加载；只改 shared 输出，路由与 base 逐比特不变。

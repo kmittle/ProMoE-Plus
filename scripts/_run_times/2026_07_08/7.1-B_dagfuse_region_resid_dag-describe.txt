@@ -1,8 +1,0 @@
-实验 / Experiment: 7.1-B_dagfuse_region_resid_dag
-model_name: ProMoE_TC_B_dagfuse_region  |  config: configs/004_ProMoE_B_dagfuse_region_resid_dag.yaml
-基线 / Baseline: 基础 ProMoE-TC（静态 cluster_centers 原型 + 两步路由 + shared 专家 + contrastive）；直接父变体 / Parent: region_shared 臂（5.x/6.x）——本臂是"挂载点" attach-point 消融（shared 输出 ↔ 主干残差流）
-
-核心改动 / Core changes（相对基线，重点优先）:
-1. 区域残差流 Block-AttnRes / region residual-stream Attention-Residual（headline）：`region_attach: resid`——在每个**区域边界**（新区域第一个 block 之前，depth-12 → blocks 3/6/9），用**之前各区域代表**（区域最后一个 block 输出）经 DiT 级 zero-init `SharedAugmentModule`（`fuse_mech: dag`）给**主干残差流 x** 加一个注意力残差，作用于**全部 token**（无 cond/all 之分）。
-2. 相对 region_shared 臂 / vs shared arm（attach-point 消融）：补强对象从"MoE block 的 shared 输出"改为"主干 x"。**诚实标注**：输出投影 zero-init → **step-0 与 base 逐比特一致**；但训练后 x 被改写 → **改变下游 block 的 attention/路由输入**，故"不碰路由"仅**结构上**成立、**行为上**是全家唯一会影响下游路由的臂。
-3. `fuse_mech: dag`（DAG-MoE 门控 value-sum，含 self-edge；对照姊妹 7.2 的 softmax）；`region_size: 3`。

@@ -1,0 +1,8 @@
+实验 / Experiment: 4.1-B_dagfuse_sharedroute_cond_top1
+model_name: ProMoE_TC_B_dagfuse_sharedroute | config: configs/004_ProMoE_B_dagfuse_sharedroute_cond_top1.yaml
+基线 / Baseline: 基础 ProMoE-TC（静态 cluster_centers 原型 + 两步路由 + shared 专家 + contrastive）；直接父变体 / Parent: dagfuse_densenet（融合全部之前 MoE shared）
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 路由选择式补强 shared 专家 / router-selected shared augmentation（headline）：densenet 的省资源版——每个 MoE block 一个 router `Linear(d, num_prev_moe)`，以当前 raw shared token 为 query 逐 token 对之前各 MoE block 打分 softmax，取 top-k（`fuse_top_k: 1`），gather 被选 block **同 patch 位置** 的 raw shared，per-block 调制后按 softmax 概率加权（top-1 也加权、**不归一化成 1** → router 能拿到梯度），再经 zero-init `SharedAugmentModule`（`fuse_mech: dag`，含 self-edge）融合。
+2. 相对父变体 dagfuse_densenet / vs parent：从"融合全部之前 shared"改为"router top-k 选择"（省显存/算力），top-1。
+3. `fuse_apply: cond` + step-0 zero-init 与 base 逐比特一致 + **MoE 专家路由**（`compute_router`/dispatch）与 base 逐比特不变（此 router 仅挑选补强源，不参与专家分配）。

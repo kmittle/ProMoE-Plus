@@ -1,8 +1,0 @@
-实验 / Experiment: 2.2-B_dagfuse_densenet_all
-model_name: ProMoE_TC_B_dagfuse_densenet  |  config: configs/004_ProMoE_B_dagfuse_densenet_all.yaml
-基线 / Baseline: 基础 ProMoE-TC（静态 cluster_centers 原型 + 两步路由 + shared 专家 + contrastive）；直接父变体 / Parent: 姊妹实验 2.1（fuse_apply: cond）——cond/all 消融对照；机制父变体 = dagfuse_dense
-
-核心改动 / Core changes（相对基线，重点优先）:
-1. DenseNet 式补强 shared 专家 / DenseNet-style shared augmentation（headline）：zero-init `SharedAugmentModule`（`fuse_mech: dag`，含 self-edge）给当前 MoE block 的 shared 输出补强，来源 = 之前所有 MoE block 的 **raw shared 输出**（forward-local 缓存、不 detach；缓存补强前的 raw shared）；一个共享调制 `Linear` 过全部 K 源，一次 (1+K)-key 聚合。首个 MoE block K=0 → 退化 base（fake-grad touch 保 DDP）。
-2. `fuse_apply: all` / 作用范围：融合作用于全部 token（对照姊妹实验 2.1 的 cond）。cond↔all 消融轴。
-3. 相对 dagfuse_dense：来源单个上一 Dense → 所有之前 MoE shared（K 可变）。step-0 zero-init 与 base 一致、非严格可加载；路由与 base 逐比特不变。

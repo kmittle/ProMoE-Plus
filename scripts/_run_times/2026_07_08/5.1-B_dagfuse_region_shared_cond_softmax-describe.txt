@@ -1,0 +1,8 @@
+实验 / Experiment: 5.1-B_dagfuse_region_shared_cond_softmax
+model_name: ProMoE_TC_B_dagfuse_region | config: configs/004_ProMoE_B_dagfuse_region_shared_cond_softmax.yaml
+基线 / Baseline: 基础 ProMoE-TC（静态 cluster_centers 原型 + 两步路由 + shared 专家 + contrastive）；直接父变体 / Parent: 姊妹实验（region_shared_cond_dag）——dag↔softmax 机制消融对照
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 区域/Block-AttnRes 补强 shared 专家 / region (Block-AttnRes) shared augmentation（headline）：Attention Residuals（arXiv 2603.15031）。每 3 个 block 一区域，区域代表 = 区域最后一个 block 输出；`region_attach: shared` 在每个区域第一个 MoE block（blocks 3/7/9）用之前各区域代表经 zero-init `SharedAugmentModule` 补强其 shared；区域 0 无前驱 → base。
+2. `fuse_mech: softmax` 聚合机制：缩放点积注意力（target 为 query 对 (1+K) 个 key 做 fp32 softmax，含 self-edge），对照姊妹 的 `dag`（门控 value-sum）——**同一 source 集合**下的机制消融轴。
+3. `fuse_apply: cond`（姊妹 为 all）+ step-0 zero-init（输出投影零初始化，`_basic_init` 后二次清零）与 base 逐比特一致 + 路由与 base 逐比特不变。

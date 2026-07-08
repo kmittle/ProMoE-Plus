@@ -1,8 +1,0 @@
-实验 / Experiment: 5.1-B_dagfuse_region_shared_cond_dag
-model_name: ProMoE_TC_B_dagfuse_region  |  config: configs/004_ProMoE_B_dagfuse_region_shared_cond_dag.yaml
-基线 / Baseline: 基础 ProMoE-TC（静态 cluster_centers 原型 + 两步路由 + shared 专家 + contrastive）；直接父变体 / Parent: 就是基础 ProMoE-TC 加"区域代表补强 shared"；区域内它与 resid 臂（7.x）互为 attach-point 消融
-
-核心改动 / Core changes（相对基线，重点优先）:
-1. 区域/Block-AttnRes 补强 shared 专家 / region (Block-AttnRes) shared augmentation（headline）：依据 Attention Residuals（Kimi Team, arXiv 2603.15031）。每 `region_size: 3` 个连续 block 为一区域，区域代表 = 区域**最后一个 block 的输出**。`region_attach: shared`：在每个区域的**第一个 MoE block**（depth-12 → blocks 3/7/9）用**之前各区域代表**补强其 shared 输出（zero-init `SharedAugmentModule`）；区域 0 无前驱 → 该 block 退化为 base。
-2. `fuse_mech: dag` 聚合机制：DAG-MoE 因子化门控 value-sum（含 self-edge）。与姊妹 6.1 的 `softmax`（缩放点积注意力）用**同一 source 集合**，是机制消融轴。
-3. `fuse_apply: cond`（姊妹 5.2 为 all）+ step-0 zero-init 与 base 逐比特一致 + 路由与 base 逐比特不变（只改 shared 输出）。

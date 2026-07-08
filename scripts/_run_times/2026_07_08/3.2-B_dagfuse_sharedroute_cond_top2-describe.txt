@@ -1,8 +1,0 @@
-实验 / Experiment: 3.2-B_dagfuse_sharedroute_cond_top2
-model_name: ProMoE_TC_B_dagfuse_sharedroute  |  config: configs/004_ProMoE_B_dagfuse_sharedroute_cond_top2.yaml
-基线 / Baseline: 基础 ProMoE-TC（静态 cluster_centers 原型 + 两步路由 + shared 专家 + contrastive）；直接父变体 / Parent: 姊妹实验 3.1（fuse_top_k: 1）——top-1↔top-2 消融对照
-
-核心改动 / Core changes（相对基线，重点优先）:
-1. 路由选择式补强 shared 专家 / router-selected shared augmentation（headline）：每个 MoE block 一个 router `Linear(d, num_prev_moe)`，逐 token 对之前 MoE block softmax 打分，gather 被选 block 同位置 raw shared，per-block 调制 + softmax 概率加权后经 zero-init `SharedAugmentModule`（`fuse_mech: dag`）融合进当前 shared。
-2. `fuse_top_k: 2` / 选择数：每 token 选**两个**之前 MoE block（对照姊妹 3.1 的 top-1）；不足两个前驱时 `k=min(2, num_prev)`。这是 top-k 消融轴。
-3. `fuse_apply: cond` + step-0 zero-init 与 base 逐比特一致 + MoE 专家路由与 base 逐比特不变（router 仅选补强源）。

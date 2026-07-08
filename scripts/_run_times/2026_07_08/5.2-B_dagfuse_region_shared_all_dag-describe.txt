@@ -1,8 +1,0 @@
-实验 / Experiment: 5.2-B_dagfuse_region_shared_all_dag
-model_name: ProMoE_TC_B_dagfuse_region  |  config: configs/004_ProMoE_B_dagfuse_region_shared_all_dag.yaml
-基线 / Baseline: 基础 ProMoE-TC（静态 cluster_centers 原型 + 两步路由 + shared 专家 + contrastive）；直接父变体 / Parent: 姊妹实验 5.1（fuse_apply: cond, dag）——cond↔all 消融对照
-
-核心改动 / Core changes（相对基线，重点优先）:
-1. 区域/Block-AttnRes 补强 shared 专家 / region (Block-AttnRes) shared augmentation（headline）：Attention Residuals（arXiv 2603.15031）思路。每 3 个 block 一区域，区域代表 = 区域最后一个 block 输出；`region_attach: shared` 在每个区域第一个 MoE block（blocks 3/7/9）用之前各区域代表经 zero-init `SharedAugmentModule` 补强其 shared；区域 0 无前驱 → base。
-2. `fuse_apply: all` / 作用范围：融合作用于全部 token（对照 5.1 的 cond）。cond↔all 消融轴。
-3. `fuse_mech: dag`（DAG-MoE 门控 value-sum，含 self-edge；对照 6.2 的 softmax）+ step-0 zero-init 与 base 逐比特一致 + 路由与 base 逐比特不变。

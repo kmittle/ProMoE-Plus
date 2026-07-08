@@ -1,8 +1,0 @@
-实验 / Experiment: 6.2-B_dagfuse_region_shared_all_softmax
-model_name: ProMoE_TC_B_dagfuse_region  |  config: configs/004_ProMoE_B_dagfuse_region_shared_all_softmax.yaml
-基线 / Baseline: 基础 ProMoE-TC（静态 cluster_centers 原型 + 两步路由 + shared 专家 + contrastive）；直接父变体 / Parent: 姊妹 5.2（all, dag）与 6.1（cond, softmax）——region-shared 四格的 all×softmax 角
-
-核心改动 / Core changes（相对基线，重点优先）:
-1. 区域/Block-AttnRes 补强 shared 专家 / region (Block-AttnRes) shared augmentation（headline）：Attention Residuals（arXiv 2603.15031）。每 3 个 block 一区域，区域代表 = 区域最后一个 block 输出；`region_attach: shared` 在每个区域第一个 MoE block（blocks 3/7/9）用之前各区域代表经 zero-init `SharedAugmentModule` 补强其 shared；区域 0 无前驱 → base。
-2. `fuse_apply: all` + `fuse_mech: softmax`：融合作用于全部 token，聚合用缩放点积注意力（fp32 softmax，含 self-edge）。是 region-shared 消融（cond/all × dag/softmax）的 all×softmax 角。
-3. step-0 zero-init 与 base 逐比特一致、非严格可加载 + 路由与 base 逐比特不变（只改 shared 输出）。
