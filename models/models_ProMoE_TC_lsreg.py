@@ -53,6 +53,9 @@ class SparseMoeBlock(nn.Module):
         ls_warmup=0,
         ls_eps_max=0.4,
         ls_n_ref=None,
+        ls_apply="label",
+        ls_diag_sign=1.0,
+        ls_diag_strength=0.2,
         **kwargs,
     ):
         super().__init__()
@@ -88,6 +91,10 @@ class SparseMoeBlock(nn.Module):
         self.ls_warmup = ls_warmup
         self.ls_eps_max = ls_eps_max
         self.ls_n_ref = ls_n_ref               # invsqrt reference count; None -> mean over valid rows
+        # ---- diag apply (idea-1): add a signed load-dependent offset to the similarity DIAGONAL ----
+        self.ls_apply = ls_apply               # "label" (soft-target smoothing) | "diag" (offset on sim diagonal)
+        self.ls_diag_sign = ls_diag_sign       # +1 = original idea-1 (overloaded +, underloaded -); -1 = inverse
+        self.ls_diag_strength = ls_diag_strength
         # running stats only -> persistent=False (absent from state_dict; won't trip
         # train.py's strict no-missing-key assert; not needed at inference).
         # NOTE: train.py wraps in DDP with default broadcast_buffers=True, so these buffers are
@@ -296,8 +303,8 @@ class SparseMoeBlock(nn.Module):
         cluster_means = torch.cat(cluster_means, dim=0)  # [num_valid_clusters, hidden_size]
         valid_centers = cluster_centers[valid_clusters]  # [num_valid_clusters, hidden_size]
         
-        # ---- lsreg: off mode -> EXACT base hard-mean InfoNCE (bit-identical to base) ----
-        if self.ls_mode == "off":
+        # ---- lsreg: off mode (label apply) -> EXACT base hard-mean InfoNCE (bit-identical to base) ----
+        if self.ls_apply != "diag" and self.ls_mode == "off":
             centers_norm = F.normalize(valid_centers, p=2, dim=1)
             means_norm = F.normalize(cluster_means, p=2, dim=1)
             sim_matrix = centers_norm @ means_norm.T
@@ -306,8 +313,7 @@ class SparseMoeBlock(nn.Module):
             logits = sim_matrix / temperature
             return F.cross_entropy(logits, labels)
 
-        # ---- lsreg active modes: per-prototype label smoothing; eps from sample-count reliability ----
-        # eps is DETACHED and only reshapes the contrastive TARGET; routing is untouched.
+        # ---- lsreg active: EMA-smoothed per-prototype sample counts (shared by label & diag apply) ----
         with torch.no_grad():
             beta = self.ls_ema_beta
             if beta and beta > 0.0:
@@ -318,8 +324,6 @@ class SparseMoeBlock(nn.Module):
             if self.training:
                 self._ls_step += 1
             valid_counts = ema[valid_clusters]
-            eps = self._compute_ls_eps(valid_counts, ema)
-            self.last_mean_eps = eps.mean().detach()   # tensor (no per-block CUDA sync); .item() at log time
             self.last_load_hist = full_counts.detach()
 
         V = valid_centers.size(0)
@@ -327,14 +331,34 @@ class SparseMoeBlock(nn.Module):
         means_norm = F.normalize(cluster_means, p=2, dim=1)
         sim_matrix = (centers_norm @ means_norm.T).clamp(-1.0, 1.0)   # bf16-safe, like lbcontra
         temperature = self.routing_contrastive_temperature
+        labels = torch.arange(V, device=device)
+
+        if self.ls_apply == "diag":
+            # idea-1: signed load-dependent offset ADDED TO THE SIMILARITY DIAGONAL, then HARD-target CE.
+            # Directly perturbs the K x K similarity matrix (not the target).
+            #   sign=+1 -> overloaded diag +delta (weaken), underloaded diag -delta (strengthen reg)  [original idea-1]
+            #   sign=-1 -> the inverse direction.
+            # delta is DETACHED -> no gradient into routing / cluster_centers.
+            with torch.no_grad():
+                vc = valid_counts.float()
+                n_bar = vc.mean()
+                rel = ((vc - n_bar) / (n_bar + 1e-6)).clamp(-1.0, 1.0)   # >0 overloaded
+                delta = (self.ls_diag_sign * self.ls_diag_strength * rel).detach()   # [V]
+                self.last_mean_eps = delta.abs().mean().detach()        # log mean |diag offset|
+            sim_matrix = sim_matrix + torch.diag(delta.to(sim_matrix.dtype))
+            logits = sim_matrix / temperature
+            return F.cross_entropy(logits, labels)
+
+        # ---- else: per-prototype label smoothing on the TARGET (soft-target CE) ----
+        with torch.no_grad():
+            eps = self._compute_ls_eps(valid_counts, ema)
+            self.last_mean_eps = eps.mean().detach()   # tensor (no per-block CUDA sync); .item() at log time
         logits = sim_matrix / temperature
         log_p = F.log_softmax(logits, dim=1)                          # autocast promotes to fp32
-
         eps_col = eps.to(log_p.dtype).unsqueeze(1)                    # [V,1], detached
         eye = torch.eye(V, device=device, dtype=log_p.dtype)
         Q = eye * (1.0 - eps_col) + (1.0 - eye) * (eps_col / max(V - 1, 1))
         loss = -(Q * log_p).sum(dim=1).mean()
-
         return loss
 
     def _compute_ls_eps(self, valid_counts, ema):
