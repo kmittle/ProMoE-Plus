@@ -1,8 +1,0 @@
-实验 / Experiment: 4.2-B_lsreg_dynover
-model_name: ProMoE_TC_B_lsreg  |  config: configs/004_ProMoE_B_lsreg_dynover.yaml
-基线 / Baseline: 基础 ProMoE-TC(静态可学习 cluster_centers 原型 + 两步路由 + routing InfoNCE 对比损失);直接父变体 / Parent: 基础 ProMoE_TC_B(lsreg 仅在其对比损失上加标签平滑,模型整体复制自 ProMoE_TC)
-
-核心改动 / Core changes(相对基线,重点优先):
-1. 逐原型标签平滑 / per-prototype label smoothing 于 routing contrastive loss(InfoNCE):把硬 one-hot 目标换成软目标 Q(对角 1-ε_i、非对角 ε_i/(V-1)),用软目标 CE `-(Q*log_softmax(logits)).sum(1).mean()` 取代 `F.cross_entropy(hard)`。动机是抑制**低样本簇 cluster_mean 噪声估计**的过拟合(anti-overfitting)——**不是 load balance**。红线:`compute_router`/dispatch/`forward` 与 base **byte-identical**,ε 全程 **detach**(无梯度回流路由/cluster_centers),`ls_mode=off` 与 base **逐比特一致**。
-2. `ls_mode: dyn_over` + `ls_load_map: linear`:ε_i=clamp(0.2 + 0.2·relu(rel_i), 0, 0.4)——**只给高样本(可靠)原型加平滑**。这是**证伪臂 / falsification arm**:高样本簇均值本就可靠、按假说不该多平滑;若它反而胜过 dyn_under/dyn_both,则说明起作用的不是「抗噪」而是别的机制。
-3. 相对同族 **lbcontra**(load-balance-aware contrastive:reweight/logit_adjust/balance_term/soft_only):lbcontra 用 codeword 计数对 InfoNCE 做**负载均衡**;本变体改用**样本可靠性**(每原型样本数 n_i,经 per-block EMA)驱动的**抗过拟合平滑**。二者都只改对比损失、都不碰路由,但目标不同(均衡 vs 抗过拟合)。评测须打败 lbcontra、且以 matched-step FID 为准(load entropy 仅诊断)。

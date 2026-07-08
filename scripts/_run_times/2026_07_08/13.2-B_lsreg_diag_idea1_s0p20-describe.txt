@@ -1,0 +1,8 @@
+实验 / Experiment: 13.2-B_lsreg_diag_idea1_s0p20
+model_name: ProMoE_TC_B_lsreg  |  config: configs/004_ProMoE_B_lsreg_diag_idea1_s0p20.yaml
+基线 / Baseline: 基础 ProMoE-TC(静态 cluster_centers 原型 + routing InfoNCE 对比损失,正样本硬 one-hot);直接父变体 / Parent: lsreg 的 label 版(同一套按样本可靠性的强度去**软化 target**)
+
+核心改动 / Core changes(相对基线,重点优先):
+1. **直接干预相似度矩阵对角线** / diag apply(`ls_apply: diag`):把按样本负载算的**带符号偏移 δ 直接加到 K×K 相似度矩阵对角线**(正样本对)`sim_matrix + diag(δ)`,再走**硬目标 CE**——这就是最初"直接改相似度矩阵"的想法(idea-1)。δ 全程 **detach**,`compute_router`/dispatch 与 base **byte-identical**(不碰路由)。
+2. **方向 = 最初 idea-1**(`ls_diag_sign=+1`):过载原型对角线 **+δ(减弱正则)**、欠载 **−δ(增强正则)**;**强度 `ls_diag_strength=0.20`**。`δ_i = sign·strength·rel_i`,`rel=(n_i−n̄)/n̄∈[−1,1]`(>0 过载),负载=per-block EMA 计数(与 label 版共用)。强度已按 Codex 评审校准到**温和区间 0.05–0.2**(δ/temperature=0.07 ⇒ 最大 logit 偏移≈14×δ;此档 max≈×17),去掉了过强的 0.4(×303 会压垮一行)。
+3. 相对**父变体 lsreg-label**:表亲——label 软化 target(给负样本一点吸引)、diag 只改 logits 对角线(不加负样本吸引);δ 与 ε 共用同一套 EMA 负载信号,构成"改 target vs 改对角线"的干净 A/B。评测以 matched-step FID 为准、须打败 base 与 lbcontra。
