@@ -1,8 +1,9 @@
 实验 / Experiment: 6.1-B_dagfuse_region_resid_dag
-model_name: ProMoE_TC_B_dagfuse_region | config: configs/004_ProMoE_B_dagfuse_region_resid_dag.yaml
-基线 / Baseline: 基础 ProMoE-TC（静态 cluster_centers 原型 + 两步路由 + shared 专家 + contrastive）；直接父变体 / Parent: region_shared 臂——本臂是"挂载点" attach-point 消融（shared 输出 ↔ 主干残差流）
+model_name: ProMoE_TC_B_dagfuse_region  |  config: configs/004_ProMoE_B_dagfuse_region_resid_dag.yaml
+一句话 / TL;DR: 同样用"每 3 层一段的代表"，但这版不补给共享专家，而是直接加回模型主干上，看"补到哪儿"这个位置差异有没有用。
 
-核心改动 / Core changes（相对基线，重点优先）:
-1. 区域残差流 Block-AttnRes / region residual-stream Attention-Residual（headline）：`region_attach: resid`——在每个**区域边界**（新区域第一个 block 之前，depth-12 → blocks 3/6/9），用**之前各区域代表**（区域最后一个 block 输出）经 DiT 级 zero-init `SharedAugmentModule`（`fuse_mech: dag`）给**主干残差流 x** 加一个注意力残差，作用于**全部 token**（无 cond/all 之分）。
-2. 相对 region_shared 臂 / vs shared arm（attach-point 消融）：补强对象从"MoE block 的 shared 输出"改为"主干 x"。**诚实标注**：输出投影 zero-init → **step-0 与 base 逐比特一致**；但训练后 x 被改写 → **改变下游 block 的 attention/路由输入**，故"不碰路由"仅**结构上**成立、**行为上**是全家唯一会影响下游路由的臂。
-3. `fuse_mech: dag`（DAG-MoE 门控 value-sum，含 self-edge；对照姊妹 的 softmax）；`region_size: 3`。
+这个实验在做什么（大白话）:
+1. 背景：把所有层每 3 层划成一段（region_size=3），每段用最后一层输出当代表。这版的补料位置换了：在每个段的分界处（新一段第一个层之前，也就是第 3/6/9 个层前），把之前各段的代表通过小融合模块（dag 方式=门控加权求和）当作一个残差直接加到模型的主干信息流上（region_attach=resid），作用于所有图像块。
+2. 相对 shared 臂（3.x）：区别就是"补到哪儿"——shared 臂补的是共享专家的输出，这版补的是主干本身。诚实说明：起点仍为零、跟原模型一样能接存档继续训；但因为它改的是主干，训练后会顺带改变后面各层看到的输入，所以严格讲它是这一整组里唯一会间接影响到路由输入的一臂（结构上不碰路由，行为上会波及）。
+3. 融合方式取 dag（对照 softmax 姊妹 6.2）；补料对全部图像块生效。
+4. 位置：region 的 resid 臂 dag 一格，和 3.x 的 shared 臂对照"补到哪儿"，和 6.2 对照"融合方式"。

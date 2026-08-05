@@ -1,8 +1,9 @@
-实验 / Experiment: 7.1-B_lbcontra_soft_only   (slot 7.1, GPU [0,1,2,3])
+实验 / Experiment: 7.1-B_lbcontra_soft_only
 model_name: ProMoE_TC_B_lbcontra  |  config: configs/004_ProMoE_B_lbcontra_soft_only.yaml
-基线 / Baseline: 基础 ProMoE-TC（两步路由 + 静态 cluster_centers 余弦相似度原型 + top-1 token-choice + shared expert + 路由 InfoNCE 对比损失，硬均值）；直接父变体 / Parent: 即基础 ProMoE_TC_B（本变体只改路由对比损失、**不加任何参数**）；用途 = 归因**对照臂**。
+一句话 / TL;DR: 一个“干净对照组”——只把损失里的算法从硬统计换成软统计，但完全不做任何忙闲纠偏，用来分清“换算法”和“做纠偏”各自的功劳。
 
-核心改动 / Core changes（相对基线，重点优先）:
-1. **归因对照 / control（`lb_contra_mode=soft_only`）**：软均值全 K InfoNCE、**不加任何负载均衡调制**。目的是把"硬均值→软均值"这一步单独量出来，从而在解读 reweight/logit_adjust/balance_term 三臂时干净归因（base→soft_only = 纯软均值效果；soft_only→三臂 = 纯均衡调制效果）。
-2. 软均值机制 / soft mean：每个 cond token 先对 K 个原型做 `softmax(clamp(cos(token,centers),-1,1)/τ_route)` 得软归属 q_t，再按各 token 归给原型 i 的权重求加权平均 `m_i=Σ_t q_t[i]·token_t/(ñ_i+ε)`（所有 K 都有均值、含空簇，per-GPU 局部、可微）；损失 = `CE(clamp(cos(centers,m),-1,1)/temperature, arange(K))`。数值上等价于 `balance_term` 且 `lb_balance_lambda=0`。
-3. **无新参数**、step-0 前向与 base 逐比特一致（max|Δ|=0.0，checkpoint strict 兼容）；仅辅助 loss 形式变（硬均值→软均值），routing/experts/shared/forward 全不变。相对 12 个调制臂仅少了均衡调制这一项。
+这个实验在做什么（大白话）:
+1. 它是对照组，不是纠偏方案（lb_contra_mode=soft_only）：其他几组都在“换了算法”的基础上又额外做了忙闲纠偏。这一组只走到“换算法”这一步就停，不加任何纠偏，好让人看清楚——最后提没提质量，到底是换算法带来的，还是纠偏带来的。
+2. 换的是什么算法：原始模型统计每个专家收了哪些活时用的是“硬归属”（一个 token 只算进它最终去的那个专家）。这里改成“软归属”（一个 token 按相似度分摊给所有专家一点），统计更平滑；除此之外损失形式和原来一致。它相当于把 balance 那组的力度调成 0。
+3. 它没动路由怎么走、专家怎么算、活怎么分，只改了这一个辅助损失的统计方式，所以从第 0 步开始就和原始模型一模一样，可以直接接着原模型的存档继续训。
+4. 整组在做的事：三种纠偏思路（reweight / logit_adjust / balance_term）各扫几档力度，本组是它们共同的对照基准——原始模型 →（本组，只换算法）→（各纠偏臂，再加纠偏），这样每一步的功劳都能单独算清楚。

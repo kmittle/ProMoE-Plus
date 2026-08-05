@@ -1,8 +1,9 @@
 实验 / Experiment: 2.2-B_dagfuse_dense_all
-model_name: ProMoE_TC_B_dagfuse_dense | config: configs/004_ProMoE_B_dagfuse_dense_all.yaml
-基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分离 + 静态 cluster_centers 余弦相似度原型路由，top-1 token-choice，shared 专家，routing contrastive InfoNCE）；直接父变体 / Parent: 姊妹实验（fuse_apply: cond）——本实验是它的 cond/all 消融对照
+model_name: ProMoE_TC_B_dagfuse_dense  |  config: configs/004_ProMoE_B_dagfuse_dense_all.yaml
+一句话 / TL;DR: 跟 2.1 一样给共享专家补上一层的信息，区别只有一个：这版对"所有图像块"都补料，不只给带条件的块。
 
-核心改动 / Core changes（相对基线，重点优先）:
-1. 上一 Dense 块输出补强 shared 专家 / augment shared-expert output from the previous Dense block（headline）：用 zero-init `SharedAugmentModule`（`fuse_mech: dag` = DAG-MoE 因子化门控 value-sum，含 self-edge）给当前 MoE block 的 shared 输出加一个门控 delta，来源 = 上一个 Dense block 的完整输出（FFN+残差）= 当前 MoE block 入口张量 x（attention 之前），经 `DiTBlock.forward` 显式传入；每 block 一个调制 `Linear`。
-2. `fuse_apply: all` / 作用范围：融合作用于全部 token（对照姊妹实验 的 cond=仅 cond token 切片）。这是 cond↔all 的消融轴。
-3. step-0 与路由 / step-0 & routing：输出投影 zero-init（`_basic_init` 后二次清零）→ step-0 与 base 逐比特一致、非严格可加载；只改 shared 输出，路由与 base 逐比特不变。
+这个实验在做什么（大白话）:
+1. 背景：模型里有个"共享专家"，每个图像块都会额外过它一遍、结果加到输出上。这个实验给它的输出"补料"——把紧挨着的上一层（一个普通 Dense 层）算出来的完整结果，通过一个小融合模块（dag 方式=门控加权求和）掺进去，希望多这点上下文能提升质量。
+2. 补料范围（fuse_apply=all）：这版对全部图像块都补料（带不带类别条件都补），跟姊妹实验 2.1 的"只补条件块"正好相反——这就是本组的对照点。融合方式仍是 dag。
+3. 起点很稳：补料模块一开始输出为零，跟原模型一模一样、能接原存档继续训；只改共享专家那一路，完全不动路由和专家分配。
+4. 位置：dense 想法（来源=上一层输出）的 all 一格，和 2.1（cond）对照，看"补料给谁"更有效。

@@ -1,8 +1,9 @@
-实验 / Experiment: 3.1-B_lbcontra_logitadj_t0p5   (slot 3.1, GPU [0,1,2,3])
+实验 / Experiment: 3.1-B_lbcontra_logitadj_t0p5
 model_name: ProMoE_TC_B_lbcontra  |  config: configs/004_ProMoE_B_lbcontra_logitadj_t0p5.yaml
-基线 / Baseline: 基础 ProMoE-TC（两步路由：uncond 专家 + 静态 cluster_centers 余弦相似度原型 + top-1 token-choice + shared expert + 路由 InfoNCE 对比损失）；直接父变体 / Parent: 即基础 ProMoE_TC_B（本变体只改路由对比损失、**不加任何参数**）；兄弟臂 / siblings: 另两种 lb_contra_mode + 同模式其它超参值。
+一句话 / TL;DR: 换个思路纠偏“专家忙闲不均”——在辅助损失的打分上给忙专家一点“折扣”，别让它们太贪；这是这一档里最轻的折扣。
 
-核心改动 / Core changes（相对基线，重点优先）:
-1. 负载均衡感知的路由对比损失 / load-balance-aware routing contrastive loss（改进组二，`lb_contra_mode=logit_adjust`）：基线 InfoNCE 只驱动"路由准确"、对负载无感（均值池化丢掉了每簇 token 数）。本变体把每个 codeword 分到的 token 数注入损失以压负载均衡；三模式共用一套"每 token 软分配 `q_t=softmax(cos(token,centers)/τ_route)` 覆盖全 K 原型（含空簇）"的可微底座，软 count `ñ_i=Σ_t q_t[i]`、软均值 `m_i` 均 **per-GPU 局部**，全 K InfoNCE。
-2. 本臂模式 = `logit_adjust`：候选列上加频率偏置 `logits[:,j] += τ_adj·log(ñ_j)`（τ_adj=0.5，balanced-softmax 方向、ñ detach）—— 抬高高频列，使过载簇的对角特化压力变小。
-3. **无新参数**、step-0 前向与 base 逐比特一致（已数值验证 max|Δ|=0.0，checkpoint strict 兼容）；仅辅助 loss 形式变，routing/experts/shared/forward 全不变。cos-sim 处 `.clamp(-1,1)` 防 bf16 越界。相对兄弟臂仅 `lb_contra_mode` / 对应超参取值不同（iso-架构消融）。
+这个实验在做什么（大白话）:
+1. 问题背景：模型里有一组专家，一个路由器决定每个图像块交给谁。理想是活分得比较匀，但实际常常有的专家很忙、有的很闲。原始模型的辅助损失（路由对比损失）只管“路由分得准不准”，完全不看谁忙谁闲。这个实验（lb_contra_mode=logit_adjust）换一种做法压均衡。
+2. 本档的做法和力度：在损失打分时，给收活越多（越忙）的专家加一个越大的“加成”，反而降低它继续独占的压力，等于劝忙专家别再贪、把机会让给别人（力度 lb_logit_adj_tau=0.5）。这是四个力度里最轻的一档（0.5→1→2→4）。
+3. 它没动路由怎么走、专家怎么算、活怎么分，只改了这一个辅助损失，所以从第 0 步开始就和原始模型一模一样，可以直接接着原模型的存档继续训。
+4. 整组在做的事：一共三种纠偏思路（reweight 抬闲专家 / logit_adjust 调打分 / balance_term 加均衡项）外加一个只换算法不纠偏的对照（soft_only），各自扫几档力度，就是想跑出真实 FID，看哪种思路、多大力度最能提质量。

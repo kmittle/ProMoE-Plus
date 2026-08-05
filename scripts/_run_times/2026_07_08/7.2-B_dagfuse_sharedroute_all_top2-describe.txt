@@ -1,8 +1,9 @@
 实验 / Experiment: 7.2-B_dagfuse_sharedroute_all_top2
-model_name: ProMoE_TC_B_dagfuse_sharedroute | config: configs/004_ProMoE_B_dagfuse_sharedroute_all_top2.yaml
-基线 / Baseline: 基础 ProMoE-TC（静态 cluster_centers 原型 + 两步路由 + shared 专家 + contrastive）；直接父变体 / Parent: 姊妹实验（all, top1）与（cond, top2）——all×top2 组合
+model_name: ProMoE_TC_B_dagfuse_sharedroute  |  config: configs/004_ProMoE_B_dagfuse_sharedroute_all_top2.yaml
+一句话 / TL;DR: "选择器挑来源补给共享专家"的做法开到最满一档：既对所有图像块都补，又每块挑 2 个来源。
 
-核心改动 / Core changes（相对基线，重点优先）:
-1. 路由选择式补强 shared 专家 / router-selected shared augmentation（headline）：每个 MoE block 一个 router `Linear(d, num_prev_moe)`，逐 token 对之前 MoE block softmax 打分，gather 被选 block 同位置 raw shared，per-block 调制 + softmax 概率加权后经 zero-init `SharedAugmentModule`（`fuse_mech: dag`）融合进当前 shared。
-2. `fuse_apply: all` + `fuse_top_k: 2`：融合作用于全部 token，每 token 选两个之前 MoE block（不足则 `k=min(2,num_prev)`）。是 sharedroute 四格（cond/all × top1/top2）的 all×top2 角。
-3. step-0 zero-init 与 base 逐比特一致 + MoE 专家路由与 base 逐比特不变（router 仅选补强源）。
+这个实验在做什么（大白话）:
+1. 背景：给每个 MoE 层配一个轻量小选择器，对每个图像块从前面各 MoE 层里打分挑最有用的来源，拿它们同位置的共享结果按打分权重融进当前共享专家的输出（dag 门控方式）。第一个 MoE 层前面没得挑，就退回成原模型。
+2. 两个开关都开大：这版对全部图像块都补料（fuse_apply=all），且每块挑 2 个来源（fuse_top_k=2，前驱不足 2 个就有几个挑几个）。
+3. 起点很稳：补料模块一开始输出为零、跟原模型一样能接存档继续训；选择器只挑补料来源，模型真正的专家路由和分配完全没变。
+4. 位置：sharedroute 四格（cond/all × top1/top2）里的 all×top2 角，是这套做法"补得最多"的组合。

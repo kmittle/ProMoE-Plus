@@ -1,8 +1,9 @@
-实验 / Experiment: 10.1-B_adepth_q0p3   (slot 10.1, GPU [0,1,2,3])
+实验 / Experiment: 10.1-B_adepth_q0p3
 model_name: ProMoE_TC_B_adepth  |  config: configs/004_ProMoE_B_adepth_q0p3.yaml
-基线 / Baseline: 基础 ProMoE-TC（两步路由 + 静态 cluster_centers + top-1 token-choice + shared expert + 路由 InfoNCE 对比损失）；直接父变体 / Parent: 即基础 ProMoE_TC_B（本变体只在 routed-expert FFN 上加自适应深度）；兄弟臂 / siblings: 其它 depth_q 值。
+一句话 / TL;DR: 让模型自己判断哪些图像块“简单”哪些“难”，把简单块的算力省下来匀给难块——简单块直接跳过专家、难块多算一遍，总算力不变，看能不能提升质量。这是省/加比例第三大的一档。
 
-核心改动 / Core changes（相对基线，重点优先）:
-1. 自适应 FFN 深度 / adaptive routed-FFN depth（改进组三，MoD 式，`alloc_mode=fixed_q`）：每 block 一个 `depth_gate=Linear(d,1)` 给每个 cond token 打难度分 s_t；**批展平**排序后按固定配额分三档——bottom-q **skip**（0 次 routed FFN，真跳过省算力）、中间 **normal**（1 次，=base）、top-q **deepen**（2 次，第二次对 `x+rw·E(x)` 再走**同一个 top-1 expert**）。`#skip==#deepen==k` ⇒ 总 routed passes = N_cond，**算力守恒**（易 token 省下的匀给难 token）。加深不加宽，shared expert 与 uncond token 不受影响。
-2. 本臂配额 = `depth_q=0.3`（0.3 跳过 + 0.3 加深 + 其余正常；从 0 退火，`depth_warmup=5000`）。相对兄弟臂仅 `depth_q` 不同（配额扫描）。
-3. **可导 + step-0**：跳过侧靠 STE keep-gate `tau=1+sigmoid(s)−sigmoid(s).detach()`（前向恒=1，反向有梯度），加深侧靠 `deepen_gain·sigmoid(s)`（零初始化）。`depth_gate` 零初始化（在 `initialize_weights` 的 xavier 后重置）+ `deepen_gain=0` + 初始 q=0 ⇒ **step-0 前向与 base 逐比特一致**（已数值验证 max|Δ|=0.0、守恒 256==256）；新增参数仅 `depth_gate`(d+1)+`deepen_gain`(1)/block，checkpoint 非严格加载。DDP 假梯度触碰防 unused-param 崩溃；`assert top_k==1`。
+这个实验在做什么（大白话）:
+1. 核心想法（改进组三，仿 MoD 做法，alloc_mode=fixed_q）：每个 MoE 层新增一个小打分器(depth_gate)给每个有类别的图像块打一个“难度分”，然后按固定比例把这些块分成三档——最简单的一批直接跳过专家不算(省算力)、中间的照常算一遍(和原来一样)、最难的一批多算一遍(第二次再走同一个专属专家，相当于加深处理)。因为“跳过的数量”正好等于“加深的数量”，总计算量和原来完全一样，只是把简单块省下的算力挪给了难块。只加深不加宽，公共专家和无类别的块都不受影响。
+2. 本实验的比例（depth_q=0.3）：最难/最简单各挑 30%，也就是 30% 跳过 + 30% 加深 + 剩下 40% 照常。比例从 0 慢慢涨上去(前 5000 步热身，depth_warmup=5000)。
+3. 它在这组里的位置：省/加比例 0.1 / 0.2 / 0.3 / 0.4 四档扫描里的第三档，四个实验只有比例不同，用来看“挪多少算力最划算”。
+4. 打分器和加深开关都是零初始化、比例从 0 起步，所以从第 0 步起和原始 ProMoE 一模一样，能直接接原模型存档继续训；这套机制是慢慢“长出来”的。（要求 top_k=1，即每块只走一个专属专家。）

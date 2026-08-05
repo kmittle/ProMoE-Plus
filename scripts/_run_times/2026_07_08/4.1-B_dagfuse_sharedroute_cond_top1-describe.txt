@@ -1,8 +1,9 @@
 实验 / Experiment: 4.1-B_dagfuse_sharedroute_cond_top1
-model_name: ProMoE_TC_B_dagfuse_sharedroute | config: configs/004_ProMoE_B_dagfuse_sharedroute_cond_top1.yaml
-基线 / Baseline: 基础 ProMoE-TC（静态 cluster_centers 原型 + 两步路由 + shared 专家 + contrastive）；直接父变体 / Parent: dagfuse_densenet（融合全部之前 MoE shared）
+model_name: ProMoE_TC_B_dagfuse_sharedroute  |  config: configs/004_ProMoE_B_dagfuse_sharedroute_cond_top1.yaml
+一句话 / TL;DR: densenet 的省资源版——不再把前面所有层的信息都拉来，而是让每个图像块用一个小选择器只挑出最有用的 1 个来补给共享专家。
 
-核心改动 / Core changes（相对基线，重点优先）:
-1. 路由选择式补强 shared 专家 / router-selected shared augmentation（headline）：densenet 的省资源版——每个 MoE block 一个 router `Linear(d, num_prev_moe)`，以当前 raw shared token 为 query 逐 token 对之前各 MoE block 打分 softmax，取 top-k（`fuse_top_k: 1`），gather 被选 block **同 patch 位置** 的 raw shared，per-block 调制后按 softmax 概率加权（top-1 也加权、**不归一化成 1** → router 能拿到梯度），再经 zero-init `SharedAugmentModule`（`fuse_mech: dag`，含 self-edge）融合。
-2. 相对父变体 dagfuse_densenet / vs parent：从"融合全部之前 shared"改为"router top-k 选择"（省显存/算力），top-1。
-3. `fuse_apply: cond` + step-0 zero-init 与 base 逐比特一致 + **MoE 专家路由**（`compute_router`/dispatch）与 base 逐比特不变（此 router 仅挑选补强源，不参与专家分配）。
+这个实验在做什么（大白话）:
+1. 背景：上一版（densenet）把前面所有 MoE 层的共享结果全拉来融合，很吃显存。这版给每个 MoE 层配一个轻量小选择器：对每个图像块，从前面各 MoE 层里打分挑出最有用的那 1 个（fuse_top_k=1），只拿它同一位置的共享结果，按打分权重融进当前共享专家的输出（用 dag 门控方式）。第一个 MoE 层前面没得挑，就退回成原模型。
+2. 补料范围（fuse_apply=cond）：只给带类别条件的图像块补料。这个"挑来源"的小选择器自己也能在训练中学得越挑越准。
+3. 相对父版 densenet：从"全拿"变成"只挑最有用的 1 个"，省显存省算力。注意这个选择器只用来挑补料来源，模型真正的专家路由和分配完全没变、跟原模型一模一样，起点也为零、能接存档继续训。
+4. 位置：sharedroute 四格（cond/all × top1/top2）里的 cond×top1 角，最省的一档。

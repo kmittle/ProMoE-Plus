@@ -1,8 +1,8 @@
 实验 / Experiment: 3.1-B_anchor_routing
 model_name: ProMoE_TC_B_anchor  |  config: configs/004_ProMoE_B_anchor_routing.yaml
-基线 / Baseline: 基础 ProMoE-TC（条件路由分流 uncond 专家 + 静态可学习 cluster_centers 余弦相似度 top-1 token-choice + 共享专家 + routing contrastive loss）；直接父变体 / Parent: 即“基础 ProMoE-TC 之上仅加 anchor 机制”——本模型为 ProMoE_TC 的自包含副本，路由/专家/派发不变（anchor_apply_mode 的另一取值 "replace" 为消融兄弟）。
+一句话 / TL;DR: 路由前先把每个图像块里一个"大家都有的公共方向"减掉，再去匹配专家，看能不能让专家分工更干净；这一版只在"做路由决定"时减，专家本身还是拿原始内容处理。
 
-核心改动 / Core changes（相对基线，重点优先）:
-1. Anchor / R3-VAE 参考向量移除（核心机制）：每个 MoE block 新增一个可学习 `anchor` 向量 r，对 cond token 先做正交投影去除 `alpha = (x·r)/(‖r‖²+anchor_eps); x_new = x - alpha·r`（R3-VAE Eq 1-2），再进入原型余弦相似度路由。相对基础 ProMoE 直接用原始 cond token 与静态 `cluster_centers` 算 cos-sim，这里在路由前先剥离 anchor 方向。
-2. `anchor_apply_mode: "routing"`（默认模式 / 消融轴）：仅路由器看到 anchor-removed 的 `x_new`，routed experts 与 shared_expert 仍消费原始 `x`，uncond token（class==1000）完全不动。相对兄弟变体 "replace"（router + routed + shared 全部消费 `x_new`），本实验把 anchor 移除限定在“只影响路由决策”这一最小侵入面。
-3. 非 step-0 等价、需从头训练：`anchor` 为随机初始化（`std=0.02`，无 zero-gate），从第 0 步即扰动路由，因此 base-ProMoE checkpoint 非严格可加载（`anchor_eps=1e-6` 稳定 ‖r‖² 分母）。除此之外路由权重模式 identity、top_k=1、12 routed experts + shared expert、`routing_contrastive_lam=1` 等均与基础 ProMoE 一致；forward() 返回普通张量，contrastive 辅助损失仍经 `AddAuxiliaryLoss` 注入。
+这个实验在做什么（大白话）:
+1. 核心想法：不同图像块往往都带有一个共同的、跟"该交给哪个专家"无关的方向（好比一堆信号里的公共底噪）。这个实验给每个专家层学一个"参考向量"（anchor），在路由匹配前先把图像块在这个方向上的成分减掉（一种正交投影去除，来自 R3-VAE 的做法），让剩下的差异更能反映"这块内容真正属于哪个专家"。
+2. 这一版是"routing"模式（anchor_apply_mode=routing）：只有路由器在做判断时看到"减掉公共方向后"的版本，真正干活的专家和共享专家仍然拿原始图像块处理，无条件块（uncond）完全不碰。也就是把这个改动限制在最小范围——只影响"分配决定"，不改变喂给专家的内容。
+3. 位置与注意点：它和兄弟实验 3.2（replace 模式，专家也拿减掉后的版本）对照，看这个"减公共方向"到底该只用于路由、还是连专家输入一起换。因为这个参考向量是随机初始化、从第 0 步就在起作用，所以这个变体不能接原始 ProMoE 的存档，得从头训练。其余（12 个专家、每块选 1 个专家、共享专家、路由对比损失）都和原始模型一样。

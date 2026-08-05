@@ -1,8 +1,8 @@
 实验 / Experiment: 2.1-B_ec_bc_proto_t_residual_v2
 model_name: ProMoE_EC_BC_B_proto_t  |  config: configs/004_ProMoE_B_EC_BC_proto_t_residual_v2.yaml
-基线 / Baseline: 基础 ProMoE-EC（静态可学习 cluster_centers 原型 + 两步路由 + routing 对比损失）；直接父变体 / Parent: ProMoE_EC_BC_B（EC-BC 批展平 Expert-Choice，静态原型）
+一句话 / TL;DR: 在"专家挑图像块"这种路由方式上，也让路由参考模板随噪声程度动态变，用最轻的残差做法，看能不能路由得更准。
 
-核心改动 / Core changes（相对基线，重点优先）:
-1. 时间步条件原型 / timestep-conditioned prototypes（proto_t）：把固定可学习的 `cluster_centers` 换成由 `PrototypeMLP(concat(LN(cluster_centers), LN(t_emb)))` 逐样本生成的原型 `prototype_t` (B_cond, E, D)，使余弦相似度路由在与噪声水平对齐的特征空间中进行；为此 DiTBlock/MoE block forward 多接收一个 `t_emb` 参数（`block(x, c, label, t)` → `SparseMoeBlock.forward(..., t_emb)`），每个 MoE block 各持一个 `PrototypeMLP`。相对父变体 ProMoE_EC_BC_B 的静态原型，这是本实验的定义性改动。
-2. `residual` 原型更新模式 / update mode（`proto_t_update_mode: "residual"`，默认值）：`prototype_t = cluster_centers + MLP(concat(cc, t_emb))`，其中 fc2 零初始化 → step 0 时 MLP delta 为 0、`prototype_t == cluster_centers`，与基础 ProMoE step-0 逐位等价。相对 sweep 兄弟 `direct` 模式（`proto_proj(cc) + MLP(...)`，恒等初始化的可训练 `proto_proj`，额外约 +3.5M 参数），residual 不引入 `proto_proj`，是该消融轴的默认/轻量端。
-3. EC-BC 批展平 Expert-Choice 路由：相对基础 ProMoE-TC 的逐 token top-1 token-choice，专家在批展平的 cond-token 池（T = B_cond*S）上各取 top-k（容量 `k = T/E * top_k`，`top_k: 1`），经 `torch.topk` + 高级索引 gather 派发、`index_add_` 加权回散；`router_weight_mode: identity`、`routing_contrastive_lam: 1`（温度 0.07，top-k 子集做对比），辅助对比损失仍通过 `AddAuxiliaryLoss` 注入、forward 返回纯张量。
+这个实验在做什么（大白话）:
+1. 核心想法：路由靠一组"参考模板"（cluster_centers，12 个专家各自的代表内容）来匹配图像块和专家。原始模型这组模板固定不变，不管图像现在糊还是清晰都用同一套。这个实验让模板随"当前去噪到了哪一步"动态微调（proto_t），使匹配相似度时双方处在同一噪声语境里，路由更贴合。
+2. 更新方式是"残差"（proto_t_update_mode=residual）：新模板 = 原模板 + 小网络按噪声档位算出的微调量，微调量在第 0 步初始化成 0，所以一开始跟原始模型一模一样、能直接接原模型存档续训。相比 direct 档不额外加线性映射，是更省的一端。
+3. 路由方式的区别：这一支用的是 EC-BC（Expert-Choice，反过来由"专家挑图像块"），把一整批里所有需要处理的图像块汇到一个大池子，每个专家从池子里各挑一批最合它的块来处理（每个专家名额固定），而不是 token-choice 那样每个块自己挑专家。它和 token-choice 的 proto_t 分支（2.2）互为对照，看在哪种路由方式下"动态模板"更管用。名字里的 _v2 是代码改过后重开干净输出目录再跑。

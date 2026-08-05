@@ -1,8 +1,9 @@
-实验 / Experiment: 8.1-B_dagfuse_sharedfromcond   (slot 8.1, GPU 0-3)
+实验 / Experiment: 8.1-B_dagfuse_sharedfromcond
 model_name: ProMoE_TC_B_dagfuse  |  config: configs/004_ProMoE_B_dagfuse_sharedfromcond.yaml
-基线 / Baseline: 基础 ProMoE-TC（两步路由：class==1000 走 uncond 专家 + 静态可学习 cluster_centers 余弦相似度原型路由，top-1 token-choice，shared expert，路由 contrastive 损失 via AddAuxiliaryLoss）；直接父变体 / Parent: 即基础 ProMoE_TC_B 本身（本变体只在 shared↔conditional 合并处新增融合，conditional 聚合不变）；兄弟臂 / siblings: 另两个方向 cond_from_shared、bidirectional。
+一句话 / TL;DR: 每个图像块本来会拿到两份处理结果——一份来自路由挑的“专属专家”、一份来自所有块共用的“公共专家”；这个实验让公共那份反过来去参考专属那份、再补全自己，是核心方向的反向对照。
 
-核心改动 / Core changes（相对基线，重点优先）:
-1. DAG-MoE 风格的 shared↔conditional 结构化融合 / structural fusion（DAG-MoE, arXiv 2606.01062, Eq 7-11）：把 DAG-MoE 的结构化聚合从「被选专家之间」迁移到两角色节点 {C = routed/conditional 局部输出, S = shared 全局输出}。用一个 K=2 的门控边算子 `DAGFuseModule`（FusedRMSNorm → down_proj d→d_g=64 → combined_proj d_g→4·d_g 拆 g_src/g_tgt/v_src/v_tgt → gate=GELU(g_src[i]+g_tgt[j]) · value=v_src[i]+v_tgt[j] → 对 key 求和 → 零初始化 up_proj d_g→d → 残差，`fusion_num_iter`=L=1）。仅对 cond token 生效，uncond token 完全不受影响，shared 始终加回（融合是「补全」而非「替换」）。conditional 专家聚合本身不改。
-2. 融合方向 / fusion_arm = `shared_from_cond`（S←C，反向对照臂）：只更新节点 S（key 集合恒为 {C, S}，含自环），C 保持不变。用来检验「shared 已是全集、未必需要回看 conditional」这一假设的反方向——即让全局 S 反过来从局部 C 取信息。相对兄弟臂仅 `fusion_arm` 取值不同；三臂共用同一个 DAGFuseModule、参数完全相同，方向是唯一实验变量（iso-param 消融）。
-3. step-0 等价 / identity：up_proj 零初始化（在 `DiT.initialize_weights` 的 `_basic_init` 全量 xavier 之后再次置零）⇒ 模块初始输出 0 ⇒ 块输出 = C+S，与 base ProMoE_TC 前向逐比特一致（已数值验证 max|Δ|=0.0），base ckpt 可 `strict=False` 加载。其余（两步路由 / 静态 cluster_centers / top-1 token-choice / 路由 contrastive 损失）与 base ProMoE-TC 相同；训练/采样超参对齐已跑过的 `configs/004_ProMoE_B.yaml`。
+这个实验在做什么（大白话）:
+1. 背景：模型里每个图像块的输出由两部分相加而成——C（路由器给它挑的专属专家的结果，偏“局部”）和 S（所有块共享的公共专家的结果，偏“全局”）。原来只是简单把 C+S 相加。这个实验在相加前插一个小“融合器”，让两者互相看一眼再合（借鉴 DAG-MoE 论文的做法，fusion_dim=64、只融合一轮 fusion_num_iter=1）。
+2. 本实验的方向（fusion_arm=shared_from_cond，即 S 参考 C）：只让“公共结果 S”去读取“专属结果 C”来完善自己，C 本身不动。这是核心臂(cond_from_shared，让局部去参考全局)的反方向对照——用来检验“公共专家看的已经是全集、未必还需要回头看局部”这个假设到底对不对。融合只作用在有类别的图像块上，无类别(uncond)的块完全不碰，公共那份 S 始终加回去，融合是“补全”不是“替换”。
+3. 它在这组里的位置：三个方向对照之一，另两个是核心臂(cond_from_shared)和双向(bidirectional)。三者用同一个融合器、参数量完全一样，唯一变量就是融合方向，专门比出哪个方向有效。
+4. 融合器初始输出为 0，所以从第 0 步起和原始 ProMoE 一模一样，能直接接原模型存档继续训；路由、专家、对比损失都没动。

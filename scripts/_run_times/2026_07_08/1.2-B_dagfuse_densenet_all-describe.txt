@@ -1,8 +1,9 @@
 实验 / Experiment: 1.2-B_dagfuse_densenet_all
-model_name: ProMoE_TC_B_dagfuse_densenet | config: configs/004_ProMoE_B_dagfuse_densenet_all.yaml
-基线 / Baseline: 基础 ProMoE-TC（静态 cluster_centers 原型 + 两步路由 + shared 专家 + contrastive）；直接父变体 / Parent: 姊妹实验（fuse_apply: cond）——cond/all 消融对照；机制父变体 = dagfuse_dense
+model_name: ProMoE_TC_B_dagfuse_densenet  |  config: configs/004_ProMoE_B_dagfuse_densenet_all.yaml
+一句话 / TL;DR: 跟 1.1 一样把前面所有 MoE 层的共享结果都拉来补给共享专家，区别只有一个：这版对所有图像块都补，不只带条件的。
 
-核心改动 / Core changes（相对基线，重点优先）:
-1. DenseNet 式补强 shared 专家 / DenseNet-style shared augmentation（headline）：zero-init `SharedAugmentModule`（`fuse_mech: dag`，含 self-edge）给当前 MoE block 的 shared 输出补强，来源 = 之前所有 MoE block 的 **raw shared 输出**（forward-local 缓存、不 detach；缓存补强前的 raw shared）；一个共享调制 `Linear` 过全部 K 源，一次 (1+K)-key 聚合。首个 MoE block K=0 → 退化 base（fake-grad touch 保 DDP）。
-2. `fuse_apply: all` / 作用范围：融合作用于全部 token（对照姊妹实验 的 cond）。cond↔all 消融轴。
-3. 相对 dagfuse_dense：来源单个上一 Dense → 所有之前 MoE shared（K 可变）。step-0 zero-init 与 base 一致、非严格可加载；路由与 base 逐比特不变。
+这个实验在做什么（大白话）:
+1. 背景：模型里有个"共享专家"，每个图像块都会额外过一遍。这个实验给它的输出补料，来源是把前面所有 MoE 层的共享专家原始输出全都拿来融合（DenseNet 式跳连，越深能拿的越多），通过一个小融合模块（dag 方式=门控加权求和）掺进当前共享专家的输出。第一个 MoE 层前面没料可拿，就退回成原模型。
+2. 补料范围（fuse_apply=all）：这版对全部图像块都补料，跟姊妹实验 1.1 的"只补条件块"正好相反——这是本组的对照点。融合方式仍是 dag。
+3. 起点很稳：补料模块一开始输出为零、跟原模型一样能接存档继续训；只改共享专家那一路，不动路由和专家分配。
+4. 位置：densenet 想法的 all 一格，和 1.1（cond）对照。

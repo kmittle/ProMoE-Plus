@@ -1,8 +1,8 @@
 实验 / Experiment: 4.1-B_proto_choice_083
 model_name: ProMoE_TC_B_proto_choice  |  config: configs/004_ProMoE_B_proto_choice_083.yaml
-基线 / Baseline: 基础 ProMoE-TC（静态 cluster_centers 原型 + 两步路由 + token-choice 路由对比损失）；直接父变体 / Parent: proto_choice 模型本身（仅路由对比损失公式改变，默认 ratio=0.1；sweep 兄弟 _125 用 0.125）
+一句话 / TL;DR: 换一种"训练时逼专家分工"的辅助损失算法——让每个专家模板主动去挑最像自己的一小撮图像块当正例，这一档挑得最少、信号最尖锐。
 
-核心改动 / Core changes（相对基线，重点优先）:
-1. Prototype-choice InfoNCE 路由对比损失（变体定义性改动）：把基础 ProMoE-TC 的 token-choice 对比（每个 token 路由到一个簇，簇的正样本=路由到它的 token 均值，负样本=其它簇均值）换成 prototype-choice InfoNCE —— 每个 prototype（`cluster_centers`）按 cos-sim 选取自己最相似的 top-K cond tokens，正样本=这 top-K 的均值，负样本=剩余 cond tokens；逐 prototype 计算后按 prototype 平均，无 prototype-prototype 项、无空簇跳过（`compute_proto_choice_contrastive_loss`）。路由 / experts / shared_expert / dispatch 与 base 完全一致，仅对比损失改变。
-2. `contrastive_proto_choice_ratio: 0.083`（sweep 轴）：每个 prototype 认领为正集的 cond-token 比例，`K = ceil(0.083 · N_cond)`（代码 clamp 到 `[1, N-1]`）。相对 sweep 兄弟 _125（0.125）与默认 0.1，083 让每个原型的正集更小、更聚焦于最相似的极少数 token，对比信号更尖锐。
-3. step-0 与基础 ProMoE 等价：cluster_centers / 两步路由 / dispatch 均不变，只有对比损失公式不同（`routing_contrastive_lam=1`、`routing_contrastive_temperature=0.07`、`router_weight_mode=identity`、`top_k=1`）；forward() 仍返回普通 tensor，对比损失梯度经 `AddAuxiliaryLoss` 注入。
+这个实验在做什么（大白话）:
+1. 核心改动：只改一个训练时的辅助损失（用来鼓励 12 个专家分工不重叠），其它路由、专家、分配全都不动。原始做法是"图像块挑专家"：每个块被路由到某个专家后，把路由到同一专家的块的平均当作该专家的正例。这个实验反过来，用"专家挑块"（prototype-choice）：每个专家模板按相似度主动挑出最像自己的一小撮图像块，把这一小撮的平均当正例、其余的块当反例，再用对比学习（InfoNCE）拉近正例、推开反例。
+2. 挑多少：由比例 contrastive_proto_choice_ratio=0.083 决定，也就是每个专家挑当前这批里约 8.3% 最相似的块当正例。相比兄弟档 0.1（默认）和 0.125（4.2），这一档挑得最少、只盯极少数最像的块，对比信号最集中、最尖锐。
+3. 位置：这是 proto_choice 比例扫描里最小的一档，和 0.1、0.125 对照，看正例集取多大最有利于专家分工和最终生成质量。这个改动只动损失公式，从第 0 步开始就和原始模型一模一样，可直接接原模型存档续训。

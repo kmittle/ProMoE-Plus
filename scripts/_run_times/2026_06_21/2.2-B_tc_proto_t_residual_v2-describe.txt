@@ -1,8 +1,8 @@
 实验 / Experiment: 2.2-B_tc_proto_t_residual_v2
 model_name: ProMoE_TC_B_proto_t  |  config: configs/004_ProMoE_B_proto_t_residual_v2.yaml
-基线 / Baseline: 基础 ProMoE-TC（静态可学习 cluster_centers + 两步路由：uncond token(class==1000) 分流到专用 uncond expert → cond token 按原型余弦相似度 top-1 token-choice，配共享专家与路由 contrastive 损失）；直接父变体 / Parent: 即基础 ProMoE-TC 本身（proto_t-TC 仅在其上叠加 timestep 条件原型这一机制；同轴 sweep 兄弟为 proto_t_update_mode="direct"）
+一句话 / TL;DR: 让"路由器判断每个图像块该交给哪个专家"时，把参考模板随当前噪声程度一起变，看能不能路由得更准；这是最轻的一档做法。
 
-核心改动 / Core changes（相对基线，重点优先）:
-1. 时间步条件原型 / timestep-conditioned prototypes（proto_t）：把固定的可学习 `cluster_centers` 换成由 `PrototypeMLP(cluster_centers, t_emb)` 逐样本生成的原型 `prototype_t (B, E, D)`，使原型余弦相似度路由在与噪声水平对齐的空间中进行；为此每个 `DiTBlock`/`SparseMoeBlock` 的 forward 多接收一个 `t_emb` 参数（`block(x, c, label, t_emb)` → MoE `forward(..., t_emb)`）。其余路由/专家/共享专家/路由 contrastive 损失（仍经 `AddAuxiliaryLoss`，forward 返回普通 tensor）与基础 ProMoE-TC 完全一致——这是相对基础 ProMoE-TC（即父变体）唯一新增的机制。
-2. `residual` 原型更新模式 / update mode：`proto_t_update_mode: "residual"` → `prototype_t = cluster_centers + MLP(concat(LN(cc), LN(t_emb)))`，其中 `fc2` 零初始化使 step-0 的 delta 恒为 0、`prototype_t == cluster_centers` 精确成立 → step-0 与基础 ProMoE-TC 逐比特等价（可从 base 续训）。相对 sweep 兄弟 `direct` 模式（`proto_proj(cc) + MLP(...)`、`proto_proj` 恒等初始化、每个 MoE block 多一个 D×D≈0.59M 的 `proto_proj`、全模型额外约 +3.5M 参数），residual 更轻，直接复用原始（未归一化）cc 作 skip 路径。
-3. Token-Choice（TC）路由族：本实验是 proto_t 的 TC 臂，沿用基础 ProMoE-TC 的逐 token top-1 原型路由（cond token 按各自样本的 `prototype_t` 余弦相似度选 1 个 routed expert），区别于 EC-BC proto_t 兄弟在批展平 cond-token 池（`B_cond*S`）上做的 Expert-Choice 路由。`_v2` 为模型代码改动后的重跑分桶（fresh output dir），行为与变体定义一致。
+这个实验在做什么（大白话）:
+1. 核心想法：模型里有一组"参考模板"（cluster_centers，共 12 个，代表 12 个专家各自擅长的内容），路由器拿每个图像块去和这些模板比相似度、决定交给哪个专家。原始模型的模板是固定的一套，不管图像现在是很糊（噪声大）还是很清晰（噪声小）都用同一套。这个实验让模板随"当前去噪到了哪一步"（timestep）动态微调（proto_t），这样比相似度时双方处在同一个"噪声档位"的语境里，路由更贴合。
+2. 这一版用的是"残差"更新方式（proto_t_update_mode=residual）：新模板 = 原模板 + 一个小网络根据噪声档位算出的微调量。这个微调量在训练第 0 步被初始化成 0，所以一开始新模型和原始模型一模一样、可以直接接着原模型的存档继续训。相比另一档 direct 方式，残差方式更省、不额外加一层线性映射。
+3. 它在整组里的位置：这是 proto_t 的 token-choice（TC，逐块各自挑专家）分支，用来和 direct 档（2.2 的兄弟 1.2）、以及 EC-BC（专家挑块）的 proto_t 分支互相对照，看"动态模板"到底有没有用、哪种更新方式更好。名字里的 _v2 是因为模型代码改过、重新开一个干净的输出目录再跑。

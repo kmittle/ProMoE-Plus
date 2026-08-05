@@ -1,8 +1,9 @@
 实验 / Experiment: 1.1-B_dagfuse_densenet_cond
-model_name: ProMoE_TC_B_dagfuse_densenet | config: configs/004_ProMoE_B_dagfuse_densenet_cond.yaml
-基线 / Baseline: 基础 ProMoE-TC（静态 cluster_centers 原型 + 两步路由 + shared 专家 + contrastive）；直接父变体 / Parent: dagfuse_dense（单一来源=上一 Dense 输出）
+model_name: ProMoE_TC_B_dagfuse_densenet  |  config: configs/004_ProMoE_B_dagfuse_densenet_cond.yaml
+一句话 / TL;DR: 还是给共享专家补料，但来源更豪——把前面所有 MoE 层的共享专家结果全拉过来融合（DenseNet 式跳连），看信息越多是不是越好。
 
-核心改动 / Core changes（相对基线，重点优先）:
-1. DenseNet 式补强 shared 专家 / DenseNet-style shared augmentation（headline）：用 zero-init `SharedAugmentModule`（`fuse_mech: dag`，含 self-edge）给当前 MoE block 的 shared 输出补强，来源 = 之前所有 MoE block 的 **raw shared 输出**（forward-local 缓存、**不 detach** 保梯度；缓存的是补强前的 raw shared，用户决策）；一个**共享**调制 `Linear` 过所有 K 个源，一次 (1+K)-key 聚合。首个 MoE block 无前驱（K=0）→ 退化为 base，fake-grad touch 保 DDP 不炸。
-2. 相对父变体 dagfuse_dense / vs parent：补强来源从"单个上一 Dense 输出"扩展到"之前所有 MoE shared 输出"（K 随深度递增），即 shared-expert 流上的 DenseNet skip。
-3. `fuse_apply: cond`（姊妹 为 all）+ step-0 zero-init 与 base 逐比特一致 + 路由（`compute_router`/dispatch）与 base 逐比特不变。
+这个实验在做什么（大白话）:
+1. 背景：模型里有个"共享专家"，每个图像块都会额外过一遍。这个实验给它的输出补料，来源不是只拿上一层，而是把前面所有 MoE 层的共享专家原始输出全都拿来一起融合（像 DenseNet 那样层层跳连，越深的层能拿的越多），再通过一个小融合模块（dag 方式=门控加权求和）掺进当前共享专家的输出。第一个 MoE 层前面没有可拿的，就退回成原模型。
+2. 补料范围（fuse_apply=cond）：只给带类别条件的图像块补料，不带条件的块不动。
+3. 相对上一版（dense）：来源从"单个上一层"扩大到"前面所有 MoE 层的共享输出"，信息量更大但也更吃显存。起点仍然为零、跟原模型一样能接存档继续训，不碰路由和专家分配。
+4. 位置：densenet 想法的 cond 一格，和 all 版（1.2）对照"补给谁"，也和更省资源的 sharedroute（只挑几个来源）形成对照。

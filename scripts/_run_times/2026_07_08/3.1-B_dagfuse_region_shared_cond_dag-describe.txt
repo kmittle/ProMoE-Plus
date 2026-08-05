@@ -1,8 +1,9 @@
 实验 / Experiment: 3.1-B_dagfuse_region_shared_cond_dag
-model_name: ProMoE_TC_B_dagfuse_region | config: configs/004_ProMoE_B_dagfuse_region_shared_cond_dag.yaml
-基线 / Baseline: 基础 ProMoE-TC（静态 cluster_centers 原型 + 两步路由 + shared 专家 + contrastive）；直接父变体 / Parent: 就是基础 ProMoE-TC 加"区域代表补强 shared"；区域内它与 resid 臂互为 attach-point 消融
+model_name: ProMoE_TC_B_dagfuse_region  |  config: configs/004_ProMoE_B_dagfuse_region_shared_cond_dag.yaml
+一句话 / TL;DR: 换个来源给共享专家补料——把层分成"每 3 层一段"，用之前每段的代表信息补给新一段的共享专家，看这种分段跳连有没有用。
 
-核心改动 / Core changes（相对基线，重点优先）:
-1. 区域/Block-AttnRes 补强 shared 专家 / region (Block-AttnRes) shared augmentation（headline）：依据 Attention Residuals（Kimi Team, arXiv 2603.15031）。每 `region_size: 3` 个连续 block 为一区域，区域代表 = 区域**最后一个 block 的输出**。`region_attach: shared`：在每个区域的**第一个 MoE block**（depth-12 → blocks 3/7/9）用**之前各区域代表**补强其 shared 输出（zero-init `SharedAugmentModule`）；区域 0 无前驱 → 该 block 退化为 base。
-2. `fuse_mech: dag` 聚合机制：DAG-MoE 因子化门控 value-sum（含 self-edge）。与姊妹 的 `softmax`（缩放点积注意力）用**同一 source 集合**，是机制消融轴。
-3. `fuse_apply: cond`（姊妹 为 all）+ step-0 zero-init 与 base 逐比特一致 + 路由与 base 逐比特不变（只改 shared 输出）。
+这个实验在做什么（大白话）:
+1. 背景：模型里有个"共享专家"，每个图像块都会额外过一遍。这个实验的补料来源换成"分段代表"：把所有层每 3 层划成一段（region_size=3），每段用它最后一层的输出当"代表"。在每一段的第一个 MoE 层，把之前各段的代表通过小融合模块（dag 方式=门控加权求和）补进它的共享专家输出。第一段前面没有段，就保持原样。（做法参考 Attention Residuals 那篇的分段残差思路。）
+2. 补料范围（fuse_apply=cond）：只给带类别条件的图像块补料。融合方式取 dag（另有 softmax 姊妹 5.1 对照）。
+3. 起点很稳：补料模块一开始输出为零、跟原模型一样能接存档继续训；这一臂（region_attach=shared）只改共享专家那一路，完全不碰路由和专家分配。
+4. 位置：region 想法的起点格（shared 挂载 + cond + dag）。它和 resid 臂（6.x，改的是主干而非共享输出）是"补到哪儿"的对照，和 softmax 版是"融合方式"的对照，和 all 版是"补给谁"的对照。

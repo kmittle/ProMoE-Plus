@@ -294,6 +294,7 @@ If the ablation is controlled by an existing config flag (e.g., `router_norm_typ
 6. **Run-time slot**: allocate a launch slot with `scripts/_run_times/new_run.sh --script scripts/<family>/run_<size>_<variant>_train_sample_eval.sh [--gpus 4|8]` instead of hand-setting `gpu_ids` (see "Run-time GPU-slot grouping" above).
 
 ## Important Notes
+- **Experiments run on other servers; this server is primarily for writing code.** Training/sampling/evaluation are launched elsewhere — on this machine expect to author models, configs, scripts, and run-time slot wrappers, not to run real training. Experiment results (per-experiment FID/IS at 300K/500K, cfg 1.0/1.5) live on a dashboard at `https://video-generation-wulanchabu.oss-cn-wulanchabu.aliyuncs.com/yujie/projects/promoe_plus/index.html`. The **WebFetch tool is blocked** for this domain, but plain `curl` from the server reaches it fine — pull and parse locally: `curl -sS -L "<url>" -o /tmp/promoe_dashboard.html` then read `/tmp/promoe_dashboard.html` (the results are one HTML `<table class="cmp">`).
 - All paper results use `qk_norm=False`. Enable `qk_norm=True` for training beyond 2M steps.
 - Token-Choice routing is default; use Expert-Choice for DDPM training. Two EC variants exist: per-image (`models_ProMoE_EC.py`) and batch-flatten (`models_ProMoE_EC_batch_choice.py`, key `ProMoE_EC_BC_B`).
 - Evaluation requires a separate TensorFlow environment and the reference batch `VIRTUAL_imagenet256_labeled.npz` from OpenAI's guided-diffusion. `evaluation/download_ref_batches.py` can auto-download these.

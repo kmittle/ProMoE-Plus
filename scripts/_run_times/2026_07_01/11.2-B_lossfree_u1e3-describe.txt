@@ -1,8 +1,9 @@
-实验 / Experiment: 11.2-B_lossfree_u1e3   (slot 11.2, GPU [4,5,6,7])
+实验 / Experiment: 11.2-B_lossfree_u1e3
 model_name: ProMoE_TC_B_lossfree  |  config: configs/004_ProMoE_B_lossfree_u1e3.yaml
-基线 / Baseline: 基础 ProMoE-TC（两步路由 + 静态 cluster_centers + top-1 token-choice + shared expert + 路由 InfoNCE 对比损失）；直接父变体 / Parent: 即基础 ProMoE_TC_B（本变体只在 cond 路由的 top-1 选择处加一个偏置）；兄弟臂 / siblings: 其它 bias_update_rate。
+一句话 / TL;DR: 用一种“不掺进损失函数”的办法给忙闲不均的专家做负载均衡——直接在选专家时给每个专家加一个可调偏置，忙的减、闲的加。这是论文推荐的中间档步长。
 
-核心改动 / Core changes（相对基线，重点优先）:
-1. 无损负载均衡 / Loss-Free Balancing（改进组四，`use_lossfree_bias=True`；DeepSeek arXiv 2408.15664）：给每个 prototype 一个偏置 `expert_bias`（**buffer、非 Parameter、不反传**）加到 cond token 的 cos-sim 上，**只用于 top-1 选择**；专家输出权重仍用**无偏置**的 cos-sim → **零干扰梯度**（区别于改进组二把均衡塞进辅助 loss）。每个训练 forward 后 no-grad 更新 `b_i += u·sign(mean_c − c_i)`（欠载抬/过载压），`c_i` 跨卡 all_reduce（全局负载）。
-2. 本臂偏置更新率 = `bias_update_rate=1e-3`（论文所扫 (0.0001, 0.001, 0.01) 之一，最佳约 1e-3；太大后期震荡/坍缩）。相对兄弟臂仅 `bias_update_rate` 不同（u 扫描）。
-3. **无新可训练参数**、step-0 前向与 base 逐比特一致（`expert_bias` 初始 0 → 带偏置==无偏置；已数值验证 max|Δ|=0.0、均衡有效 MaxVio 0.219→0.125、偏置无梯度），checkpoint 非严格加载。uncond 专家与对比损失 **完全不变**（均衡与准确度正交）。扩散非自回归，无"未来 token 泄漏"。
+这个实验在做什么（大白话）:
+1. 背景问题：模型有 12 个专家，理想情况下活儿分得比较匀，但实际常常有的专家很忙、有的很闲。这个实验用 DeepSeek 的“无损负载均衡”做法（改进组四，use_lossfree_bias=True）：给每个专家维护一个偏置数，选专家的时候把它加到打分上——忙的专家偏置往下调、闲的专家往上调，逼分配变匀。关键是这个偏置只影响“选谁”，不影响“选中后给多大权重”，也不进任何损失函数，所以它完全不干扰模型学画图的主目标（区别于另一种把均衡塞进辅助损失、会互相拉扯的做法）。每训练一步后按这一批各专家的实际忙闲更新一次偏置，跨所有 GPU 汇总后统一算（全局忙闲）。
+2. 本实验的调整速度（bias_update_rate=1e-3）：每步偏置调多少的“步长”取了 1e-3——正是论文里效果最好的那档，也是三档扫描里的中间值。
+3. 它在这组里的位置：三档步长 1e-4 / 1e-3 / 1e-2 扫描里的中间档（预期最优），三个实验只有步长不同，用来找出“调多快最合适”。
+4. 这个偏置初始为 0、不参与反向传播、也不算新的可训练参数，所以从第 0 步起和原始 ProMoE 一模一样，能直接接原模型存档继续训；无类别专家和对比损失都完全没动。
