@@ -1,0 +1,8 @@
+实验 / Experiment: 2.1-B_lsreg_diag_idea1_s0p40
+model_name: ProMoE_TC_B_lsreg  |  config: configs/004_ProMoE_B_lsreg_diag_idea1_s0p40.yaml
+基线 / Baseline: 基础 ProMoE-TC（两步路由 + 静态 cluster_centers 原型 + routing contrastive InfoNCE）；直接父变体 / Parent: 同族 s0p20（相同 ls_apply=diag、原始方向 ls_diag_sign=+1，仅正则强度更低）
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 路由对比学习的对角线负载正则 / diagonal load regularizer（ls_apply="diag", idea-1）：在 KxK（K=num_routed_experts=12）相似度矩阵的对角线上加一个 .detach() 的、正比于各原型相对负载的带符号偏移量（models_ProMoE_TC_lsreg.py:336-348），以此平衡专家负载。仅改动 contrastive 损失，路由/专家/派发不变，step-0 与基础 ProMoE 等价（无新增参数，可 non-strict 加载 base checkpoint）。
+2. 正则强度 ls_diag_strength = 0.40 / regularizer coefficient：把对角线正则系数上界从原 0.20 扩到 0.40（本批新增 0.30 与 0.40 两档）。相对父变体 s0p20：唯一区别是更强的正则强度。
+3. 方向 ls_diag_sign = +1.0（原始 idea-1：过载原型对角线 +delta 削弱、欠载 -delta）。
