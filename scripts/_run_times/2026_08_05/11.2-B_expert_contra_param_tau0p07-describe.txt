@@ -1,0 +1,8 @@
+实验 / Experiment: 11.2-B_expert_contra_param_tau0p07
+model_name: ProMoE_TC_B_expert_contra  |  config: configs/004_ProMoE_B_expert_contra_param_tau0p07.yaml
+基线 / Baseline: 基础 ProMoE-TC（静态 cluster_centers 原型 + 两步路由 + 路由 contrastive 损失）；直接父变体 / Parent: _param（全 6 MoE 块 · L2 排斥 exp(-dist/τ) · 拼 bias · 仅路由专家 · τ=0.7）
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. RBF 带宽 τ 缩小 10 倍：`expert_contrastive_temperature` 0.7 → 0.07，其余与 _param 逐字段一致（L2 排斥、mode="param"、全 6 块 [1,3,5,7,9,11]、拼 bias、λ=0.5）。这是 τ 温度消融对（另一支为 tau7=×10）中的“缩小”端。
+2. 动机与预判 / rationale：param 模式把每个专家 MLP 摊平成 ~2.36M 维向量、两两做 `exp(-‖v_i−v_j‖₂/τ)` 排斥（喂的是**原始** L2 距离，未归一化）。两个独立 Kaiming 初始化专家的初始间距 d≈39（解析 √1537.7=39.21，蒙卡 39.29 吻合）。固定 d 下 τ 越小 loss 越小、惩罚越弱——τ=0.07 时 exp(-39/0.07)≈0，理论上是**彻底死项**，比 τ=0.7 更死。此支意在把“死区”端钉死，与 tau7 的“激活”端对照，验证 raw-L2 排斥项在初始点是否根本不产生梯度。
+3. 只改一个标量、无模型代码改动 / config-only OFAT：model_name 与 _param 相同（train.py:97 已注册），从第 0 步与基础 ProMoE 一致、可非严格加载。最终以对齐步数的 FID（cfg 1.0/1.5）为准。

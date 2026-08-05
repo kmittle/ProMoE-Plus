@@ -1,0 +1,9 @@
+实验 / Experiment: 10.1-B_expert_contra_param_cos
+model_name: ProMoE_TC_B_expert_contra  |  config: configs/004_ProMoE_B_expert_contra_param_cos.yaml
+一句话 / TL;DR: 专家参数解耦正则的“温和化”系列核心：把 L2 排斥换成幅值无关的余弦排斥 mean(relu(cos))，堵住“靠吹大权重范数偷偷满足正则”的漏洞，很可能就是之前 param 全量最差的真正原因。
+
+这个实验在做什么（大白话）:
+1. 背景：param 模式把每个专家 MLP 参数摊平成长向量、两两做 L2 排斥 exp(-dist/τ)。L2 有个致命漏洞——不改变权重方向、只把所有专家权重范数一起吹大，就能让两两 L2 距离变大、满足正则；全 6 层都加时这个 norm 膨胀逐层复利，把 backbone 权重尺度整体推高，训练不稳、FID 崩。这解释了为什么之前 param 全量垫底、单层反而最好。
+2. 这一版怎么改（相对 _param 基线的唯一改动）：**度量从 L2 排斥换成余弦排斥** loss = mean_{i<j} relu(cos(w_i, w_j))。余弦幅值不变，想降相似度只能真的转方向，堵死吹范数的捷径；relu 让两专家一旦正交就零梯度，不强求“12 个高维向量两两反相关”这个不可达目标，因此天然温和、无温度超参。用 expert_contrastive_mode="param_cos" 实现，bf16 下 cos 做了 clamp(-1,1)。
+3. 相对基线：仍全 6 个 MoE 块、仍只推 12 个路由专家、仍拼 bias、λ=0.5，全部不变；就差“L2→余弦relu”这一处。OFAT 四连消融的第二支，也是整套“温和化”的主角。
+4. 从第 0 步与原始 ProMoE 一致、可非严格加载。全程全块 + 单一全局 λ、不挑层号，跨尺度通用。判决性看点：若此版变得能打，就坐实“是 loss 设计不对、不是层数问题”，之前挑 block4 的魔法层号可弃。最终以对齐步数的 FID 为准。

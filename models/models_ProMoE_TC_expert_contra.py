@@ -47,6 +47,9 @@ class SparseMoeBlock(nn.Module):
         expert_contrastive_lam=0,
         expert_contrastive_temperature=0.5,
         expert_contrastive_mode="output",
+        expert_contrastive_include_bias=True,
+        expert_contrastive_include_shared=False,
+        expert_contrastive_include_uncond=False,
         **kwargs,
     ):
         super().__init__()
@@ -73,6 +76,11 @@ class SparseMoeBlock(nn.Module):
         self.expert_contrastive_lam = expert_contrastive_lam
         self.expert_contrastive_temperature = expert_contrastive_temperature
         self.expert_contrastive_mode = expert_contrastive_mode
+        # param/param_cos knobs: whether to concat biases, and whether the
+        # shared / unconditional experts join the pairwise repulsion set.
+        self.expert_contrastive_include_bias = expert_contrastive_include_bias
+        self.expert_contrastive_include_shared = expert_contrastive_include_shared
+        self.expert_contrastive_include_uncond = expert_contrastive_include_uncond
         # Whether this block computes expert contrastive loss (set by DiT.__init__)
         self.compute_expert_contrastive = False
 
@@ -253,7 +261,7 @@ class SparseMoeBlock(nn.Module):
         if self.training and self.compute_expert_contrastive and self.expert_contrastive_lam > 0:
             if self.expert_contrastive_mode == "output":
                 expert_contra_loss = self._expert_contrastive_output(expert_output_pools)
-            else:  # "param"
+            else:  # "param" / "param_cos" (dispatched inside _expert_contrastive_param)
                 expert_contra_loss = self._expert_contrastive_param()
 
             expert_contra_loss = expert_contra_loss * self.expert_contrastive_lam
@@ -277,21 +285,68 @@ class SparseMoeBlock(nn.Module):
         pooled = torch.stack([expert_output_pools[eid] for eid in valid_ids])  # [K, hidden_dim]
         return self._pairwise_repulsion_loss(pooled)
 
+    def _flatten_expert(self, expert):
+        """
+        Flatten one expert's parameters into a 1-D vector, honoring
+        expert_contrastive_include_bias (biases dropped when False, since a
+        per-feature offset carries no functional specialization and only adds
+        noise to the pairwise distance).
+        """
+        parts = []
+        for name, p in expert.named_parameters():
+            if not self.expert_contrastive_include_bias and name.endswith("bias"):
+                continue
+            parts.append(p.flatten())
+        return torch.cat(parts)
+
     def _expert_contrastive_param(self):
         """
         Parameter-based expert contrastive loss.
-        Flatten each conditional expert's parameters and compute pairwise repulsion.
+        The routed experts always participate; the shared and unconditional
+        experts optionally join the pairwise set via include_shared /
+        include_uncond. All participating experts must share the same flattened
+        length (i.e. equal intermediate size) so torch.stack is well-defined.
+        Dispatches to L2 repulsion ("param") or gentle cosine repulsion
+        ("param_cos").
         """
-        param_vecs = []
-        for expert_id in range(self.num_routed_experts):
-            expert = self.experts[expert_id]
-            parts = []
-            for p in expert.parameters():
-                parts.append(p.flatten())
-            param_vecs.append(torch.cat(parts))  # [total_params]
+        param_vecs = [self._flatten_expert(self.experts[eid])
+                      for eid in range(self.num_routed_experts)]
 
-        param_vecs = torch.stack(param_vecs)  # [num_routed_experts, total_params]
+        if self.expert_contrastive_include_shared and self.use_shared_expert:
+            param_vecs.append(self._flatten_expert(self.shared_expert))
+
+        if self.expert_contrastive_include_uncond and self.use_uncond_expert:
+            # uncond expert is the last entry in self.experts
+            param_vecs.append(self._flatten_expert(self.experts[self.num_experts - 1]))
+
+        param_vecs = torch.stack(param_vecs)  # [K, total_params]
+
+        if self.expert_contrastive_mode == "param_cos":
+            return self._pairwise_cosine_relu_loss(param_vecs)
         return self._pairwise_repulsion_loss(param_vecs)
+
+    def _pairwise_cosine_relu_loss(self, vecs):
+        """
+        Gentle cosine repulsion: mean over unique pairs (i<j) of relu(cos_sim).
+        Magnitude-invariant (unlike L2), so it cannot be trivially satisfied by
+        inflating weight norms — the failure mode we suspect sinks full-block L2
+        repulsion. relu zeroes the gradient once a pair reaches orthogonality,
+        so it never demands the (unreachable in high-dim) two-by-two
+        anti-correlation of many experts. No temperature.
+        vecs: [K, D] tensor of K parameter vectors
+        """
+        K = vecs.size(0)
+        if K < 2:
+            return torch.tensor(0.0, device=vecs.device)
+
+        vecs_norm = F.normalize(vecs, p=2, dim=1)
+        sim = vecs_norm @ vecs_norm.T  # [K, K]
+        sim = sim.clamp(-1.0, 1.0)     # bf16 matmul can drift slightly outside [-1, 1]
+
+        mask = torch.triu(torch.ones(K, K, device=vecs.device, dtype=torch.bool), diagonal=1)
+        pairwise = sim[mask]  # [K*(K-1)/2]
+        loss = F.relu(pairwise).mean()
+        return loss
 
     def _pairwise_repulsion_loss(self, vecs):
         """

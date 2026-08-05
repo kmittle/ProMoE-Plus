@@ -1,0 +1,9 @@
+实验 / Experiment: 9.2-B_expert_contra_param_nobias
+model_name: ProMoE_TC_B_expert_contra  |  config: configs/004_ProMoE_B_expert_contra_param_nobias.yaml
+一句话 / TL;DR: 专家参数解耦正则的“温和化”系列之一：把拼接专家参数向量时的 Linear bias 去掉，只留两个权重矩阵，验证 bias 是不是纯噪声。
+
+这个实验在做什么（大白话）:
+1. 背景：ProMoE 原本只在“路由阶段”做对比学习，专家知识解耦是间接发生的。expert_contra 系列在此之上直接推开专家：param 模式把每个专家 MLP 的参数摊平成一条长向量，两两做 L2 排斥 exp(-dist/τ)，逼不同专家的权重坐标分开。之前的消融里 param 全量最差、param 单层(block4)最好，怀疑是正则设计不够温和。
+2. 这一版怎么改（相对 _param 基线的唯一改动）：拼接专家参数向量时**丢掉两个 Linear 层的 bias**，只保留 up_proj / down_proj 两个权重矩阵。动机：bias 是逐特征偏移、不承载“专家学到什么”的功能性分工，拼进去只给两两距离添噪声（bias 只占向量约 0.1%，本就淹没）。用开关 expert_contrastive_include_bias=False 实现。
+3. 相对基线：度量仍是 L2 排斥、仍全 6 个 MoE 块 [1,3,5,7,9,11]、仍只推 12 个路由专家、λ=0.5、τ=0.7，全部不变；就差“拼不拼 bias”这一处。这是 one-factor-at-a-time (OFAT) 四连消融的第一支。
+4. 从第 0 步与原始 ProMoE 一致、可非严格加载（只加了向后兼容开关，λ=0 时行为不变）。全程全块 + 单一全局 λ、不挑魔法层号，跨 B/L/XL 通用。最终以对齐步数的 FID 为准。
