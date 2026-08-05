@@ -1,0 +1,8 @@
+实验 / Experiment: 1.1-B_ec_bc_hetero
+model_name: ProMoE_EC_BC_hetero_B  |  config: configs/004_ProMoE_B_EC_BC_hetero.yaml
+基线 / Baseline: 基础 ProMoE-EC（Expert-Choice：专家在 cond-token 池上各取 top-k；两步路由 + 静态 cluster_centers 原型 + contrastive 损失）；直接父变体 / Parent: ProMoE_EC_BC_B（批展平 EC，同构专家，中间维统一 2x）
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. EC-BC 路由 × 异构专家 = 算力严格可控 / FLOPs-fair heterogeneous MoE（本变体的核心动机）：token-choice + 异构专家（models_ProMoE_TC_hierar_expert）无法保证算力公平——TC 路由器为提性能可自由把更多 token 送进 3x 宽专家，总 FLOPs 随数据漂移、只能靠 cost penalty 软约束。改用 Expert-Choice 后，每个专家容量被硬性固定为 `k = (B_cond*S / E) * top_k`（均匀，与路由无关），于是总 FLOPs = `k * Σ_i cost_i` 是结构性定值，路由器无法通过偏好大专家来抬高算力。
+2. 异构专家宽度 1x→3x 线性阶梯 / heterogeneous expert widths：routed 专家 i 的 intermediate_size = `int(hidden * (1 + 2i/(E-1)))`（沿用 hierar_expert 的阶梯，E=12），uncond 专家仍固定 2x（moe_intermediate_size）。因线性阶梯均值恰为 2x，本变体总 FLOPs 与同构 ProMoE_EC_BC 严格相等 —— 是一个 FLOPs-matched 对照实验，而非单纯"算力可控"。相对父变体 ProMoE_EC_BC_B：唯一区别就是把统一 2x 专家换成 1x→3x 异构专家。
+3. 移除 cost penalty / no soft FLOPs regularizer：相对 hierar_expert，彻底删掉 `cost_penalty_lam`、`alpha_penalty` buffer 及惩罚损失分支——EC 已把每专家 token 数硬性封顶，软性算力正则在此没有存在意义。其余（路由方向、index_add_ 派发、uncond 处理、shared expert、批展平 contrastive 损失 `expert_inputs.mean(dim=1)`→InfoNCE、forward 经 AddAuxiliaryLoss 返回纯 tensor）与 ProMoE_EC_BC_B 完全一致。因专家形状变化，非 step-0-identical，需从头训练（base checkpoint 仅 non-strict 可加载），与 hierar_expert 相同。

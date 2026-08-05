@@ -40,11 +40,12 @@ from models.models_ProMoE_TC import DiT as ProMoE_TC
 from models.models_ProMoE_TC_symmetric import DiT as ProMoE_TC_symmetric
 from models.models_ProMoE_TC_sigmoid import DiT as ProMoE_TC_sigmoid
 from models.models_ProMoE_TC_hierar import DiT as ProMoE_TC_hierar
-from models.models_ProMoE_TC_hierar_expert import DiT as ProMoE_TC_hierar_expert
+from models.models_ProMoE_TC_hetero_expert import DiT as ProMoE_TC_hetero_expert
 from models.models_ProMoE_EC import DiT as ProMoE_EC
 from models.models_ProMoE_EC_batch_choice import DiT as ProMoE_EC_BC
 from models.models_ProMoE_TC_proto_t import DiT as ProMoE_TC_proto_t
 from models.models_ProMoE_EC_batch_choice_proto_t import DiT as ProMoE_EC_BC_proto_t
+from models.models_ProMoE_EC_batch_choice_hetero import DiT as ProMoE_EC_BC_hetero
 from models.models_ProMoE_TC_anchor import DiT as ProMoE_TC_anchor
 from models.models_ProMoE_TC_proto_choice import DiT as ProMoE_TC_proto_choice
 from models.models_ProMoE_TC_noise_expert import DiT as ProMoE_TC_noise_expert
@@ -74,16 +75,17 @@ model_dict = {
     "ProMoE_TC_S_symmetric": (ProMoE_TC_symmetric, "DiT_S_config"),
     "ProMoE_TC_S_sigmoid": (ProMoE_TC_sigmoid, "DiT_S_config"),
     "ProMoE_TC_S_hierar": (ProMoE_TC_hierar, "DiT_S_config"),
-    "ProMoE_TC_S_hierar_expert": (ProMoE_TC_hierar_expert, "DiT_S_config"),
+    "ProMoE_TC_S_hetero_expert": (ProMoE_TC_hetero_expert, "DiT_S_config"),
     "ProMoE_TC_B": (ProMoE_TC, "DiT_B_config"),
     "ProMoE_TC_B_hierar": (ProMoE_TC_hierar, "DiT_B_config"),
-    "ProMoE_TC_B_hierar_expert": (ProMoE_TC_hierar_expert, "DiT_B_config"),
+    "ProMoE_TC_B_hetero_expert": (ProMoE_TC_hetero_expert, "DiT_B_config"),
     "ProMoE_TC_L": (ProMoE_TC, "DiT_L_config"),
     "ProMoE_TC_XL": (ProMoE_TC, "DiT_XL_config"),
     "ProMoE_EC_L": (ProMoE_EC, "DiT_L_config"),
     "ProMoE_EC_BC_B": (ProMoE_EC_BC, "DiT_B_config"),
     "ProMoE_TC_B_proto_t": (ProMoE_TC_proto_t, "DiT_B_config"),
     "ProMoE_EC_BC_B_proto_t": (ProMoE_EC_BC_proto_t, "DiT_B_config"),
+    "ProMoE_EC_BC_hetero_B": (ProMoE_EC_BC_hetero, "DiT_B_config"),
     "ProMoE_TC_B_anchor": (ProMoE_TC_anchor, "DiT_B_config"),
     "ProMoE_TC_B_proto_choice": (ProMoE_TC_proto_choice, "DiT_B_config"),
     "ProMoE_TC_B_noise_expert": (ProMoE_TC_noise_expert, "DiT_B_config"),
