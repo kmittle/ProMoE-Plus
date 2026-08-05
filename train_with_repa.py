@@ -49,7 +49,7 @@ from models.models_ProMoE_TC_repa_router import DiT as ProMoE_TC_REPA_Router
 from models.models_ProMoE_TC_repa_router_contra import DiT as ProMoE_TC_REPA_Router_Contra
 from models.models_ProMoE_TC_repa_routed import DiT as ProMoE_TC_REPA_Routed
 from models.models_ProMoE_TC_repa_double_share import DiT as ProMoE_TC_REPA_Double_Share
-from models.models_ProMoE_TC_hierar_expert_repa_dyna import DiT as ProMoE_TC_hierar_expert_REPA_DYNA
+from models.models_ProMoE_TC_hetero_expert_repa_dyna import DiT as ProMoE_TC_hetero_expert_REPA_DYNA
 from repa.encoder import load_teacher_encoder, extract_teacher_features
 from repa.loss import compute_repa_loss
 
@@ -122,8 +122,8 @@ model_dict = {
     "ProMoE_TC_REPA_Double_Share_B": (ProMoE_TC_REPA_Double_Share, "DiT_B_config"),
     "ProMoE_TC_REPA_Double_Share_L": (ProMoE_TC_REPA_Double_Share, "DiT_L_config"),
     "ProMoE_TC_REPA_Double_Share_XL": (ProMoE_TC_REPA_Double_Share, "DiT_XL_config"),
-    # Hierarchical-expert + dynamic REPA alignment variant (base/B config for now)
-    "ProMoE_TC_B_hierar_expert_repa_dyna": (ProMoE_TC_hierar_expert_REPA_DYNA, "DiT_B_config"),
+    # Heterogeneous-expert + dynamic REPA alignment variant (base/B config for now)
+    "ProMoE_TC_B_hetero_expert_repa_dyna": (ProMoE_TC_hetero_expert_REPA_DYNA, "DiT_B_config"),
 }
 
 

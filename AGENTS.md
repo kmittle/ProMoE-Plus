@@ -7,7 +7,7 @@ ProMoE-Plus implements ProMoE, a Mixture-of-Experts framework for scaling Diffus
 Core entrypoints are at repository root:
 
 - `train.py`: baseline and non-REPA training (DiT, TCDiT, ECDiT, DiffMoE, ProMoE, hierarchical, expert-choice/batch-choice, structured-batch, proto-t, anchor, proto-choice, load-balance-contrastive, DAG-fuse, adaptive-depth, loss-free, noise-expert, and expert-contrastive variants).
-- `train_with_repa.py`: REPA-enabled training (REPA / REPA-Shared / REPA-Cond / REPA-DYNA / REPA-DYNA-SELECT / REPA-DYNA-SCALE / REPA-DYNA-ONLY / REPA-Router / REPA-Router-Contra / REPA-Routed / REPA-Double-Share / hierarchical-expert REPA-DYNA), including teacher-feature alignment loss.
+- `train_with_repa.py`: REPA-enabled training (REPA / REPA-Shared / REPA-Cond / REPA-DYNA / REPA-DYNA-SELECT / REPA-DYNA-SCALE / REPA-DYNA-ONLY / REPA-Router / REPA-Router-Contra / REPA-Routed / REPA-Double-Share / heterogeneous-expert REPA-DYNA), including teacher-feature alignment loss.
 - `train_with_MoS_repa.py`: MoS-REPA, MoS-Naive / Naive-Choice, separate-projector / per-block / blockwise / fused / multi-align, and both standard-REPA + MoS cross-alignment training with teacher-block routing and per-block REPA projectors.
 - `train_with_mae.py`: MAE/group-alignment training for `group_align` and `group_align_proj` variants.
 - `sample.py`: sampling/inference entrypoint. It merges model registries from `train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, and `train_with_mae.py`, so one script can sample all registered families.
@@ -30,7 +30,7 @@ Main code layout:
 - `analyses/`: analysis entry scripts live directly under this directory. Current entrypoints include `run_tokenwise_tsne.py`, `run_samplewise_pooled_tsne.py`, `run_imagewise_tsne.py`, `run_repa_dyna_heatmap.py`, `run_token_choice_expert_heatmap.py`, `run_compute_flops.py`, and `run_mos_routing_analysis.py`. Reusable helpers live under `analyses/t_SNE/`, `analyses/heatmap/`, `analyses/flops/`, and `analyses/mos_routing/`; `analyses/README.md` should remain a brief directory-level overview only, while detailed usage belongs in per-entry Markdown files that share the same basename as each entry `.py`.
 - `scripts/repa/`: REPA-B / REPA-Shared-B / REPA-Cond-B helpers plus router / routed / double-share, cross-alignment, and L/XL scale-up train + sample + eval wrappers.
 - `scripts/MoS_repa/`: MoS-REPA, naive / naive-choice, per-block / blockwise / fused, multi-align, cross-alignment, and B/L/XL block-range sweep wrappers following `scripts/template.sh`.
-- `scripts/hierar/`: B-scale hierarchical/expert train + infer/eval wrappers.
+- `scripts/hierar/`: B-scale hierarchical + heterogeneous-expert train + infer/eval wrappers.
 - `scripts/dynamic_repa/`: REPA-DYNA-B, REPA-DYNA-SELECT-B, REPA-DYNA-SCALE-B, and REPA-DYNA-ONLY-B train + sample + eval pipelines (including select-ratio variants r25/r75).
 - `scripts/mae_align/`: group-align and group-align-proj train + sample + eval wrappers.
 - `scripts/noise_expert/`: noise-expert, proj, EMA-on-shared, and EMA-on-noise train + sample + eval wrappers.
@@ -53,7 +53,7 @@ Main code layout:
 Top-level wrappers:
 
 - `scripts/run_all_infer_eval_500K.sh`: batch sample+eval for multiple configs at 500K.
-- `scripts/eval_B_hierar_expert.sh`, `scripts/eval_B_hierar_expert_NoPenalty.sh`: eval-only wrappers.
+- `scripts/eval_B_hetero_expert.sh`, `scripts/eval_B_hetero_expert_NoPenalty.sh`: eval-only wrappers.
 
 Companion documentation:
 
@@ -199,11 +199,11 @@ bash scripts/dynamic_repa/run_B_repa_dyna_only_train_sample_eval.sh
 
 bash scripts/hierar/run_B_hierar_train.sh
 bash scripts/hierar/run_B_hierar_infer_eval.sh
-bash scripts/hierar/run_B_hierar_expert_train.sh
-bash scripts/hierar/run_B_hierar_expert_infer_eval.sh
-bash scripts/hierar/run_B_hierar_expert_NoPenalty_train.sh
-bash scripts/hierar/run_B_hierar_expert_NoPenalty_infer_eval.sh
-bash scripts/hierar/run_B_hierar_expert_repa_dyna_train_sample_eval.sh
+bash scripts/hierar/run_B_hetero_expert_train.sh
+bash scripts/hierar/run_B_hetero_expert_infer_eval.sh
+bash scripts/hierar/run_B_hetero_expert_NoPenalty_train.sh
+bash scripts/hierar/run_B_hetero_expert_NoPenalty_infer_eval.sh
+bash scripts/hierar/run_B_hetero_expert_repa_dyna_train_sample_eval.sh
 
 bash scripts/mae_align/run_B_mae_align_train_sample_eval.sh
 bash scripts/mae_align/run_B_mae_align_proj_train_sample_eval.sh
@@ -384,7 +384,7 @@ Model registry and forward conventions:
 
 - `train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, and `train_with_mae.py` each define a `model_dict` from `model_name` to `(ModelClass, config_key)`. Add new registrations in the training script that owns the family.
 - `train.py` hosts base DiT/baselines, ProMoE TC/EC, EC batch-choice, proto-t, anchor, proto-choice, lbcontra (load-balance-aware routing contrastive), dagfuse (DAG-MoE shared↔cond fusion), adepth (adaptive routed-FFN depth), lossfree (loss-free balancing bias), structured-batch, noise-expert, and expert-contrastive families.
-- `train_with_repa.py` hosts standard REPA, REPA shared/cond, dynamic REPA, router/routed/double-share REPA, and hierarchical-expert REPA-DYNA families.
+- `train_with_repa.py` hosts standard REPA, REPA shared/cond, dynamic REPA, router/routed/double-share REPA, and heterogeneous-expert REPA-DYNA families.
 - `train_with_MoS_repa.py` hosts MoS, naive/choice/separate/blockwise/per-block/fused variants, multi-align, and standard REPA + MoS cross-alignment families.
 - `train_with_mae.py` hosts `group_align` and `group_align_proj` families.
 - Plain DiT and most ProMoE variants return a tensor. REPA variants return `(pred, zs_proj)` during training. MoS-REPA, multi-align, fused MoS, and cross-alignment variants return `(pred, alignment_loss)` during training.

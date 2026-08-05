@@ -62,7 +62,7 @@ python analyses/run_repa_dyna_heatmap.py \
 
 ```bash
 python analyses/run_repa_dyna_heatmap.py \
-  --image-dir outputs/ProMoE_TC_B_hierar_expert_repa_dyna/004_ProMoE_B_hierar_expert_repa_dyna/sample/step500000/img256_cfg1.0_seed0_FID50K_bs128_ema/images \
+  --image-dir outputs/ProMoE_TC_B_hetero_expert_repa_dyna/004_ProMoE_B_hetero_expert_repa_dyna/sample/step500000/img256_cfg1.0_seed0_FID50K_bs128_ema/images \
   --class-ids 1,7,12,281 \
   --samples-per-class 3 \
   --analysis-every 25 \

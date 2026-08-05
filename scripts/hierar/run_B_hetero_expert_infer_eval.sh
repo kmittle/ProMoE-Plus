@@ -7,10 +7,10 @@ cd "$REPO_ROOT"
 
 export CUDA_VISIBLE_DEVICES=0,1,2,3
 
-CONFIG="configs/004_ProMoE_B_hierar_expert.yaml"
-LOG="log_ProMoE_B_hierar_expert.log"
+CONFIG="configs/004_ProMoE_B_hetero_expert.yaml"
+LOG="log_ProMoE_B_hetero_expert.log"
 
-SAMPLE_BASE="outputs/ProMoE_TC_B_hierar_expert/004_ProMoE_B_hierar_expert/sample"
+SAMPLE_BASE="outputs/ProMoE_TC_B_hetero_expert/004_ProMoE_B_hetero_expert/sample"
 STEPS="300000 500000"
 SCALES="1.0 1.5"
 SEED=0

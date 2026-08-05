@@ -1,8 +1,8 @@
 #!/bin/bash
 #
-# Train ProMoE-TC-B-HIERAR-EXPERT-REPA-DYNA, then sample and evaluate FID.
+# Train ProMoE-TC-B-HETERO-EXPERT-REPA-DYNA, then sample and evaluate FID.
 #
-# Step 1: Train with configs/004_ProMoE_B_hierar_expert_repa_dyna.yaml
+# Step 1: Train with configs/004_ProMoE_B_hetero_expert_repa_dyna.yaml
 # Step 2: Sample with parameters from YAML
 # Step 3: Evaluate generated images with OpenAI evaluator (count from YAML)
 #
@@ -16,8 +16,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "$REPO_ROOT"
 
-CONFIG="configs/004_ProMoE_B_hierar_expert_repa_dyna.yaml"
-LOG="log_ProMoE_B_hierar_expert_repa_dyna_train_sample_eval.log"
+CONFIG="configs/004_ProMoE_B_hetero_expert_repa_dyna.yaml"
+LOG="log_ProMoE_B_hetero_expert_repa_dyna_train_sample_eval.log"
 
 readarray -t YAML_INFO < <(python - "$CONFIG" <<'PY'
 import os

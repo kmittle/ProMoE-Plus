@@ -22,8 +22,8 @@ GPUS="0,1,2,3"
 #   outputs/<model_name>/<custom_cfg_name>/sample/step500000/...
 CONFIGS=(
   "configs/004_ProMoE_B_hierar.yaml               ProMoE_TC_B_hierar          004_ProMoE_B_hierar"
-  "configs/004_ProMoE_B_hierar_expert.yaml         ProMoE_TC_B_hierar_expert   004_ProMoE_B_hierar_expert"
-  "configs/004_ProMoE_B_hierar_expert_NoPenalty.yaml ProMoE_TC_B_hierar_expert 004_ProMoE_B_hierar_expert_NoPenalty"
+  "configs/004_ProMoE_B_hetero_expert.yaml         ProMoE_TC_B_hetero_expert   004_ProMoE_B_hetero_expert"
+  "configs/004_ProMoE_B_hetero_expert_NoPenalty.yaml ProMoE_TC_B_hetero_expert 004_ProMoE_B_hetero_expert_NoPenalty"
   "configs/004_ProMoE_B_repa.yaml                  ProMoE_TC_REPA_B            004_ProMoE_B_repa"
   "configs/004_ProMoE_B_repa_cond.yaml             ProMoE_TC_REPA_Cond_B       004_ProMoE_B_repa_cond"
   "configs/004_ProMoE_B_repa_shared.yaml           ProMoE_TC_REPA_Shared_B     004_ProMoE_B_repa_shared"

@@ -1,4 +1,4 @@
-model_name: "ProMoE_TC_S_hierar_expert"
+model_name: "ProMoE_TC_S_hetero_expert"
 
 gpu_ids: [0, 1, 2, 3]
 

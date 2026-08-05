@@ -4,9 +4,9 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_ROOT"
 
-LOG="log_ProMoE_B_hierar_expert_NoPenalty_eval.log"
+LOG="log_ProMoE_B_hetero_expert_NoPenalty_eval.log"
 
-SAMPLE_BASE="outputs/ProMoE_TC_B_hierar_expert/004_ProMoE_B_hierar_expert_NoPenalty/sample"
+SAMPLE_BASE="outputs/ProMoE_TC_B_hetero_expert/004_ProMoE_B_hetero_expert_NoPenalty/sample"
 STEPS="300000"
 SCALES="1.0 1.5"
 SEED=0
