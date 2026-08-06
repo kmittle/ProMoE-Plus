@@ -1,6 +1,6 @@
 model_name: "ProMoE_TC_B_expert_contra"
 
-gpu_ids: [0, 1, 2, 3]
+gpu_ids: [4, 5]
 
 ###### For train
 image_size: 256

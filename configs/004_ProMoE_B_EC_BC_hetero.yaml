@@ -1,6 +1,6 @@
 model_name: "ProMoE_EC_BC_hetero_B"
 
-gpu_ids: [0, 1, 2, 3]
+gpu_ids: [0, 1]
 
 ###### For train
 image_size: 256
