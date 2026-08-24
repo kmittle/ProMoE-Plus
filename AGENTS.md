@@ -440,9 +440,9 @@ Model registry and forward conventions:
 - The current `train.py` registrations include `ProMoE_TC_B_lsreg` (`models/models_ProMoE_TC_lsreg.py`) and the shared-expert DAG-Fuse keys `ProMoE_TC_B_dagfuse_{dense,densenet,sharedroute,region}` (`models/models_ProMoE_TC_dagfuse_*.py`). The LS-Reg files are config-only sweeps within that registered class; each shared-expert source has its own registered class.
 - `train.py` hosts base DiT/baselines, ProMoE TC/EC, EC batch-choice, proto-t, anchor, proto-choice, lbcontra (load-balance-aware routing contrastive), dagfuse (DAG-MoE shared↔cond fusion), dagfuse_shared (shared-expert augmentation), adepth (adaptive routed-FFN depth), lossfree (loss-free balancing bias), lsreg (routing-contrastive label smoothing), structured-batch, noise-expert, and expert-contrastive families.
 - `train_with_repa.py` hosts standard REPA, REPA shared/cond, dynamic REPA, router/routed/double-share REPA, and heterogeneous-expert REPA-DYNA families.
-- `train_with_MoS_repa.py` hosts MoS, naive/choice/separate/blockwise/per-block/fused variants, multi-align, and standard REPA + MoS cross-alignment families.
+- `train_with_MoS_repa.py` hosts MoS, naive/choice/separate/blockwise/per-block/fused variants, multi-align, teacher-affinity multi-align, and standard REPA + MoS cross-alignment families.
 - `train_with_mae.py` hosts `group_align` and `group_align_proj` families.
-- Plain DiT and most ProMoE variants return a tensor. REPA variants return `(pred, zs_proj)` during training. MoS-REPA, multi-align, fused MoS, and cross-alignment variants return `(pred, alignment_loss)` during training.
+- Plain DiT and most ProMoE variants return a tensor. REPA variants return `(pred, zs_proj)` during training. MoS-REPA, multi-align, fused MoS, and cross-alignment variants return `(pred, alignment_loss)` during training. Teacher-affinity multi-align returns `(pred, alignment_loss, teacher_affinity_loss)`; `train_with_MoS_repa.py` weights its third value with top-level `teacher_affinity_coeff`.
 - ProMoE routing contrastive loss generally flows through the `AddAuxiliaryLoss` autograd wrapper even when `forward()` returns a plain tensor.
 
 REPA config scope:

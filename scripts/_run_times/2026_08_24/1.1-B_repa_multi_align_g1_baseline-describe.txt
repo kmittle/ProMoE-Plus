@@ -1,0 +1,8 @@
+实验 / Experiment: 1.1-B_repa_multi_align_g1_baseline
+model_name: ProMoE_TC_REPA_Multi_Align_B  |  config: configs/004_ProMoE_B_repa_multi_align_g1_baseline.yaml
+基线 / Baseline: 基础 ProMoE-TC（条件/无条件分流、可学习 cluster_centers、余弦原型路由、shared expert 和 routing contrastive guidance）；直接父变体 / Parent: 当前 Multi-Align，配置和实现保持一致，本实验作为同批次从头训练的公平对照。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 多点 REPA / multi-point REPA：DiT 第 3、4、5 层（`align_blocks: [2, 3, 4]`）分别通过独立 projector 对齐 DINOv2 最后一层 patch 表征，而基础 ProMoE-TC 没有教师表征对齐。
+2. 动态对齐权重 / dynamic alignment weights：两层 `AlignCoefficientPredictor` 为每个 token、每个对齐层预测 sigmoid 系数；顶层 `proj_coeff: 0.5` 保持现有 Multi-Align 训练设置。
+3. 同批公平对照 / matched control：显式设置 `teacher_affinity_coeff: 0.0`，不加入 TAR 损失；模型规模、MoE 路由、训练步数、全局 batch、学习率、采样和评估协议均与 TAR 实验一致。

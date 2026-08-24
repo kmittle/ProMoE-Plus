@@ -1,0 +1,8 @@
+实验 / Experiment: 1.2-B_repa_multi_align_tar
+model_name: ProMoE_TC_REPA_Multi_Align_Affinity_B  |  config: configs/004_ProMoE_B_repa_multi_align_tar.yaml
+基线 / Baseline: 基础 ProMoE-TC（条件/无条件分流、可学习 cluster_centers、余弦原型路由、shared expert 和 routing contrastive guidance）；直接父变体 / Parent: Multi-Align，在 DiT 第 3、4、5 层对齐 DINOv2 最后一层并用动态 token 权重调节 REPA。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 教师亲和路由 / Teacher-Affinity Routing（TAR）：在零起始编号第 3 层，也就是对齐区间内唯一的 MoE 层，读取实际送入专家路由器的 AdaLN 后 token；用连续的 soft expert assignment 构造 token 关系，不把教师表征转成硬聚类标签。
+2. 空间关系目标 / spatial relation target：对冻结的 DINOv2 最后一层 patch 表征按空间维做中心化和标准化，将教师表征与路由概率都确定性池化为 8x8 区域，再用去除对角线的逐行 KL 匹配两者的 affinity distribution。配置为路由温度 `0.1`、关系温度 `0.5`、`teacher_affinity_coeff: 0.5`，且只监督 conditional 样本。
+3. 保留直接父变体 / preserve parent behavior：第 3、4、5 层 Multi-Align、`proj_coeff: 0.5`、top-1 identity routing 和原有 routing contrastive loss 均不变。TAR 不新增可训练参数，且只在训练且提供教师特征时计算，因此采样时的参数量、激活路径和 FLOPs 与直接父变体相同。

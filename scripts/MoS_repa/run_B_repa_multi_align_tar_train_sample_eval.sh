@@ -20,8 +20,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "$REPO_ROOT"
 
-CONFIG="configs/004_ProMoE_B_repa_dyna_only.yaml"
-LOG="log_ProMoE_B_repa_dyna_only_train_sample_eval.log"
+CONFIG="configs/004_ProMoE_B_repa_multi_align_tar.yaml"
+LOG="log_ProMoE_B_repa_multi_align_tar_train_sample_eval.log"
 
 readarray -t YAML_INFO < <(python - "$CONFIG" <<'PY'
 import os
@@ -67,7 +67,7 @@ SAMPLE_BASE="${REPO_ROOT}/outputs/${MODEL_NAME}/${CUSTOM_CFG_NAME}/sample"
 PYTHON="/mnt/workspace/yujie/.conda/envs/promoe/bin/python"
 PYTHON_EVAL="/mnt/workspace/yujie/.conda/envs/fid_eval/bin/python"
 
-# ── Parse step_list ──────────────────────────────────────────────────────────
+# ── Parse step_list ─────────────────────────────────────────
 if [ -z "$STEP_LIST_STR" ]; then
     echo "ERROR: step_list_for_sample is empty or missing in ${CONFIG}" >&2
     exit 1
@@ -80,7 +80,7 @@ TEMP_DIR=$(mktemp -d)
 TEMP_CONFIG="${TEMP_DIR}/$(basename "$CONFIG")"
 trap 'rm -rf "$TEMP_DIR"' EXIT
 
-# ── Helper: sample + eval one checkpoint step ────────────────────────────────
+# ── Helper: sample + eval one checkpoint step ──────────────────────────
 sample_and_eval_step() {
     local step=$1
     echo "[$(date '+%H:%M:%S')] Sample+eval step ${step} started" | tee -a "$LOG"
@@ -101,9 +101,9 @@ sample_and_eval_step() {
     echo "[$(date '+%H:%M:%S')] Sample+eval step ${step} done" | tee -a "$LOG"
 }
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 # Sequential pipeline: train → stop → sample + eval → resume → ...
-# ══════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════════
 echo "============================================================" | tee "$LOG"
 echo "Sequential pipeline: ${MODEL_NAME}" | tee -a "$LOG"
 echo "Config: ${CONFIG}" | tee -a "$LOG"
@@ -139,7 +139,7 @@ PY
     echo "============================================================" | tee -a "$LOG"
 
     set +e
-    CUDA_VISIBLE_DEVICES="${GPU_IDS}" $PYTHON train_with_repa.py \
+    CUDA_VISIBLE_DEVICES="${GPU_IDS}" $PYTHON train_with_MoS_repa.py \
         --config "${TEMP_CONFIG}" \
         >> "$LOG" 2>&1
     TRAIN_RC=$?
@@ -151,7 +151,7 @@ PY
     fi
     echo "Phase ${phase} training completed successfully" | tee -a "$LOG"
 
-    # ── Sample + eval ─────────────────────────────────────────────────────────
+    # ── Sample + eval ────────────────────────────────────────────────────────────────
     echo "============================================================" | tee -a "$LOG"
     echo "Phase ${phase}/${NUM_ALL_STEPS}: Sample+eval step ${step}" | tee -a "$LOG"
     echo "============================================================" | tee -a "$LOG"

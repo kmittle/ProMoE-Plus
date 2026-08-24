@@ -38,6 +38,7 @@ from models.models_ProMoE_TC_repa_MoS_naive import DiT as ProMoE_TC_REPA_MoS_Nai
 from models.models_ProMoE_TC_repa_MoS_naive_choice import DiT as ProMoE_TC_REPA_MoS_Naive_Choice_DiT
 from models.models_ProMoE_TC_repa_MoS_naive_choice_ import DiT as ProMoE_TC_REPA_MoS_Naive_Choice_Sep_DiT
 from models.models_ProMoE_TC_repa_multi_align import DiT as ProMoE_TC_REPA_Multi_Align_DiT
+from models.models_ProMoE_TC_repa_multi_align_affinity import DiT as ProMoE_TC_REPA_Multi_Align_Affinity_DiT
 from models.models_ProMoE_TC_repa_MoS_choice_per_block import DiT as ProMoE_TC_REPA_MoS_Choice_PerBlock_DiT
 from models.models_ProMoE_TC_repa_MoS_naive_choice_blockwise import DiT as ProMoE_TC_REPA_MoS_Naive_Choice_Blockwise_DiT
 from models.models_ProMoE_TC_repa_cross_global_pre import DiT as ProMoE_TC_REPA_CrossGlobalPre_DiT
@@ -62,6 +63,7 @@ model_dict = {
     "ProMoE_TC_REPA_MoS_Naive_Choice_XL": (ProMoE_TC_REPA_MoS_Naive_Choice_DiT, "DiT_XL_config"),
     "ProMoE_TC_REPA_MoS_Naive_Choice_Sep_B": (ProMoE_TC_REPA_MoS_Naive_Choice_Sep_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_Multi_Align_B": (ProMoE_TC_REPA_Multi_Align_DiT, "DiT_B_config"),
+    "ProMoE_TC_REPA_Multi_Align_Affinity_B": (ProMoE_TC_REPA_Multi_Align_Affinity_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_MoS_Choice_PerBlock_B": (ProMoE_TC_REPA_MoS_Choice_PerBlock_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_MoS_Naive_Choice_Blockwise_B": (ProMoE_TC_REPA_MoS_Naive_Choice_Blockwise_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_CROSS_GLOBAL_PRE_B": (ProMoE_TC_REPA_CrossGlobalPre_DiT, "DiT_B_config"),
@@ -512,11 +514,15 @@ def worker(gpu, cfg):
     if use_repa:
         enc_type = repa_config.get('enc_type', 'dinov2-vit-b')
         proj_coeff = repa_config.get('proj_coeff', 0.5)
+        teacher_affinity_coeff = repa_config.get('teacher_affinity_coeff', 0.0)
         if cfg.rank == 0:
             logging.info(f'Rank 0: downloading/caching REPA teacher encoder: {enc_type}')
             load_teacher_encoder(enc_type, resolution=cfg.image_size, enc_path=repa_enc_path)
         dist.barrier()  # wait for rank 0 to finish caching
-        logging.info(f'Initializing REPA teacher encoder: {enc_type}, proj_coeff={proj_coeff}')
+        logging.info(
+            f'Initializing REPA teacher encoder: {enc_type}, proj_coeff={proj_coeff}, '
+            f'teacher_affinity_coeff={teacher_affinity_coeff}'
+        )
         teacher_encoder, teacher_embed_dim = load_teacher_encoder(
             enc_type, resolution=cfg.image_size, enc_path=repa_enc_path
         )
@@ -674,6 +680,7 @@ def worker(gpu, cfg):
         # Handle model output: MoS REPA returns (pred, mos_repa_loss)
         if isinstance(model_output, tuple):
             model_pred, mos_repa_loss = model_output[0], model_output[1]
+            teacher_affinity_loss = model_output[2] if len(model_output) == 3 else None
 
             if model_pred.shape[1] != noised_z_in.shape[1]:
                 model_pred, _ = model_pred.chunk(2, dim=1)
@@ -685,6 +692,14 @@ def worker(gpu, cfg):
                 mos_repa_loss_weighted = mos_repa_loss * proj_coeff
                 loss_dict["mos_repa_loss_weighted"] = mos_repa_loss_weighted
                 loss_dict["loss"] += mos_repa_loss_weighted
+
+            if use_repa and torch.is_tensor(teacher_affinity_loss):
+                loss_dict["teacher_affinity_loss"] = teacher_affinity_loss
+                teacher_affinity_loss_weighted = (
+                    teacher_affinity_loss * teacher_affinity_coeff
+                )
+                loss_dict["teacher_affinity_loss_weighted"] = teacher_affinity_loss_weighted
+                loss_dict["loss"] += teacher_affinity_loss_weighted
 
         elif model_output.shape[1] != noised_z_in.shape[1]:
             ########## DiT loss

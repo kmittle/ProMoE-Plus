@@ -25,7 +25,7 @@ This document reflects the current REPA-related code in `ProMoE-Plus`. It covers
 | Entrypoint | Scope |
 | --- | --- |
 | `train_with_repa.py` | Standard REPA and most REPA-derived ProMoE variants |
-| `train_with_MoS_repa.py` | MoS-REPA and MoS-REPA-Naive |
+| `train_with_MoS_repa.py` | MoS-REPA, Multi-Align, Teacher-Affinity Routing, and cross-alignment variants |
 | `sample.py` | Shared sampling entrypoint for base, REPA, and MoS-REPA models |
 
 `sample.py` merges model registries from `train.py`, `train_with_repa.py`, and `train_with_MoS_repa.py`, so one script can sample all registered families.
@@ -46,10 +46,14 @@ This document reflects the current REPA-related code in `ProMoE-Plus`. It covers
 - `ProMoE_TC_REPA_Routed_{S,B,L,XL}`
 - `ProMoE_TC_REPA_Double_Share_{S,B,L,XL}`
 
-`train_with_MoS_repa.py` registers:
+Representative `train_with_MoS_repa.py` registry keys include:
 
 - `ProMoE_TC_REPA_MoS_{B,L}`
 - `ProMoE_TC_REPA_MoS_Naive_{B,L}`
+- `ProMoE_TC_REPA_Multi_Align_B`
+- `ProMoE_TC_REPA_Multi_Align_Affinity_B`
+
+See `train_with_MoS_repa.py:model_dict` for the complete current registry.
 
 The repo currently ships example YAMLs mainly for B-scale REPA experiments.
 
@@ -80,13 +84,14 @@ The second form is used by dynamic REPA variants so per-token weighting can be a
 
 ### MoS-REPA Family
 
-MoS-REPA uses a different training path:
+MoS-REPA and Multi-Align use a different training path:
 
 - the teacher encoder exposes features from all transformer blocks
-- the model returns `(pred, mos_repa_loss)`
-- the outer loop applies `mos_repa_loss * proj_coeff`
+- standard models return `(pred, mos_repa_loss)`
+- Teacher-Affinity Multi-Align returns `(pred, mos_repa_loss, teacher_affinity_loss)`
+- the outer loop applies `mos_repa_loss * proj_coeff` and, when present, `teacher_affinity_loss * teacher_affinity_coeff`
 
-This makes MoS-REPA a block-to-block alignment problem rather than a single-layer alignment problem.
+MoS variants route among teacher blocks, making them block-to-block alignment methods. Multi-Align and Teacher-Affinity Multi-Align share the trainer but align selected DiT blocks only with the teacher's last layer.
 
 ### Variant Summary
 
@@ -103,6 +108,8 @@ This makes MoS-REPA a block-to-block alignment problem rather than a single-laye
 - `REPA-Router-Contra`: linearly hands off router auxiliary weight from router REPA to routing contrastive loss over `router_loss_decay_steps`.
 - `MoS-REPA`: each DiT block has its own teacher-block router.
 - `MoS-REPA-Naive`: uses a global transformer-based block router.
+- `Multi-Align`: aligns several DiT blocks with the teacher's last layer using per-token dynamic coefficients.
+- `Teacher-Affinity Routing`: keeps Multi-Align and adds a parameter-free training loss that matches pooled DINO patch affinities to one MoE router's soft co-assignment affinities for conditional samples.
 
 ---
 
@@ -121,8 +128,8 @@ pip install -r requirements.txt
 Evaluation uses the TensorFlow-based pipeline in `evaluation/` and is best kept in a separate environment:
 
 ```bash
-conda create -n promoe_eval python=3.9 -y
-conda activate promoe_eval
+conda create -n fid_eval python=3.9 -y
+conda activate fid_eval
 cd evaluation
 pip install -r requirements.txt
 ```
@@ -451,6 +458,7 @@ This block is read by `train_with_repa.py` or `train_with_MoS_repa.py`.
 | --- | --- |
 | `enc_type` | Teacher encoder type, for example `dinov2-vit-b` |
 | `proj_coeff` | Global coefficient applied to REPA or MoS-REPA loss |
+| `teacher_affinity_coeff` | Global coefficient applied to Teacher-Affinity Routing loss; `0` disables its contribution |
 
 Example:
 
@@ -482,9 +490,15 @@ Variant-specific fields:
 | `router_repa_coeff` | `Router` | Router alignment coefficient |
 | `router_loss_decay_steps` | `Router_Contra` | Steps for linear handoff from router REPA to routing contrastive loss |
 | `num_teacher_blocks` | `MoS` / `MoS_Naive` | Teacher depth used for block-level routing |
-| `router_hidden_dim` | `MoS_Naive` | Hidden width of the transformer block router |
-| `num_router_blocks` | `MoS_Naive` | Number of transformer blocks in the block router |
-| `router_num_heads` | `MoS_Naive` | Attention heads in the block router |
+| `router_hidden_dim` | `MoS_Naive`, `Multi-Align`, `Teacher-Affinity` | Hidden width of the transformer router or alignment coefficient predictor |
+| `num_router_blocks` | `MoS_Naive`, `Multi-Align`, `Teacher-Affinity` | Number of transformer blocks in the router or alignment coefficient predictor |
+| `router_num_heads` | `MoS_Naive`, `Multi-Align`, `Teacher-Affinity` | Attention heads in the router or alignment coefficient predictor |
+| `align_blocks` | `Multi-Align`, `Teacher-Affinity` | Zero-based DiT blocks aligned with the teacher's last layer |
+| `teacher_affinity_block` | `Teacher-Affinity` | Zero-based MoE block whose router receives affinity supervision |
+| `teacher_affinity_grid_size` | `Teacher-Affinity` | Side length used to pool teacher tokens and soft routing probabilities |
+| `teacher_affinity_router_temperature` | `Teacher-Affinity` | Temperature for soft assignments to existing cluster centers |
+| `teacher_affinity_relation_temperature` | `Teacher-Affinity` | Temperature for row-wise teacher/router affinity distributions |
+| `teacher_affinity_eps` | `Teacher-Affinity` | Numerical epsilon for spatial teacher-feature normalization |
 
 MoS-specific validation rules:
 
@@ -563,4 +577,3 @@ A: Not quite. Some newer one-click experiment scripts in `scripts/repa/` and `sc
 
 **Q: Why does evaluation fail if I rename the images?**  
 A: `evaluation/run_eval.py` extracts labels from the filename suffix `_class<id>.png`. If that suffix is missing, the evaluator cannot build the labeled NPZ correctly.
-
