@@ -5,6 +5,7 @@ from PIL import Image
 from tqdm import tqdm
 import argparse
 import subprocess
+import sys
 
 from download_ref_batches import ensure_ref_batches
 
@@ -17,7 +18,7 @@ def run_evaluator(ref_npz_path, generated_npz_path):
     print("\n--- Start running the evaluation script ---")
     
     command = [
-        'python',
+        sys.executable,
         evaluator_script,
         ref_npz_path,
         generated_npz_path
