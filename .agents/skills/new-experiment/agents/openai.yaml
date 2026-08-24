@@ -1,0 +1,4 @@
+interface:
+  display_name: "New Experiment"
+  short_description: "Scaffold and schedule a ProMoE experiment"
+  default_prompt: "Use $new-experiment to scaffold and allocate a complete ProMoE experiment without launching it."

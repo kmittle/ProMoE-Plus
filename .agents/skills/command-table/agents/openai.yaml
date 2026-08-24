@@ -1,0 +1,4 @@
+interface:
+  display_name: "Command Table"
+  short_description: "Build CSV tables from run-time wrappers"
+  default_prompt: "Use $command-table to summarize a ProMoE run-time date directory into commands.csv."

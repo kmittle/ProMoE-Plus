@@ -1,0 +1,4 @@
+interface:
+  display_name: "Describe Experiment"
+  short_description: "Write grounded descriptions for run wrappers"
+  default_prompt: "Use $describe-experiment to write a grounded bilingual description for a ProMoE run-time wrapper."

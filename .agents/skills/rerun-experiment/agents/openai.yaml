@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rerun Experiment"
+  short_description: "Re-bucket a ProMoE experiment into fresh output"
+  default_prompt: "Use $rerun-experiment to move an existing ProMoE experiment to a fresh versioned output bucket."
