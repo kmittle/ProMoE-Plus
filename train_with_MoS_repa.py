@@ -22,6 +22,7 @@ import colorlog
 import glob
 import yaml
 import argparse
+import random
 from torch.utils.tensorboard import SummaryWriter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from torch.nn.parallel import DistributedDataParallel
@@ -39,6 +40,7 @@ from models.models_ProMoE_TC_repa_MoS_naive_choice import DiT as ProMoE_TC_REPA_
 from models.models_ProMoE_TC_repa_MoS_naive_choice_ import DiT as ProMoE_TC_REPA_MoS_Naive_Choice_Sep_DiT
 from models.models_ProMoE_TC_repa_multi_align import DiT as ProMoE_TC_REPA_Multi_Align_DiT
 from models.models_ProMoE_TC_repa_multi_align_affinity import DiT as ProMoE_TC_REPA_Multi_Align_Affinity_DiT
+from models.models_ProMoE_TC_repa_multi_align_spectral import DiT as ProMoE_TC_REPA_Multi_Align_SRSR_DiT
 from models.models_ProMoE_TC_repa_MoS_choice_per_block import DiT as ProMoE_TC_REPA_MoS_Choice_PerBlock_DiT
 from models.models_ProMoE_TC_repa_MoS_naive_choice_blockwise import DiT as ProMoE_TC_REPA_MoS_Naive_Choice_Blockwise_DiT
 from models.models_ProMoE_TC_repa_cross_global_pre import DiT as ProMoE_TC_REPA_CrossGlobalPre_DiT
@@ -64,6 +66,7 @@ model_dict = {
     "ProMoE_TC_REPA_MoS_Naive_Choice_Sep_B": (ProMoE_TC_REPA_MoS_Naive_Choice_Sep_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_Multi_Align_B": (ProMoE_TC_REPA_Multi_Align_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_Multi_Align_Affinity_B": (ProMoE_TC_REPA_Multi_Align_Affinity_DiT, "DiT_B_config"),
+    "ProMoE_TC_REPA_Multi_Align_SRSR_B": (ProMoE_TC_REPA_Multi_Align_SRSR_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_MoS_Choice_PerBlock_B": (ProMoE_TC_REPA_MoS_Choice_PerBlock_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_MoS_Naive_Choice_Blockwise_B": (ProMoE_TC_REPA_MoS_Naive_Choice_Blockwise_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_CROSS_GLOBAL_PRE_B": (ProMoE_TC_REPA_CrossGlobalPre_DiT, "DiT_B_config"),
@@ -75,6 +78,13 @@ model_dict = {
     "ProMoE_TC_REPA_MoS_CROSS_EXPERT_LOCAL_B": (ProMoE_TC_REPA_MoS_CrossExpertLocal_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_MoS_CROSS_PROTO_B": (ProMoE_TC_REPA_MoS_CrossProto_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_MoS_Naive_Choice_Fused_B": (ProMoE_TC_REPA_MoS_Naive_Choice_Fused_DiT, "DiT_B_config"),
+}
+
+TEACHER_AFFINITY_MODELS = {
+    "ProMoE_TC_REPA_Multi_Align_Affinity_B",
+}
+SPECTRAL_RESPONSIBILITY_MODELS = {
+    "ProMoE_TC_REPA_Multi_Align_SRSR_B",
 }
 
 
@@ -441,6 +451,19 @@ def worker(gpu, cfg):
     cfg.output_dir = osp.join(cfg.output_dir, cfg.model_name, cfg.custom_cfg_name)
     setup_logging(cfg.output_dir, cfg.rank)
 
+    global_seed = int(getattr(cfg, 'global_seed', 0))
+    if global_seed < 0:
+        raise ValueError("global_seed must be non-negative")
+    cfg.seed = global_seed * cfg.world_size + cfg.rank
+    random.seed(cfg.seed)
+    np.random.seed(cfg.seed % (2 ** 32))
+    torch.manual_seed(cfg.seed)
+    torch.cuda.manual_seed(cfg.seed)
+    logging.info(
+        f"Training RNG seed: {cfg.seed} "
+        f"(global_seed={global_seed}, rank={cfg.rank}, world_size={cfg.world_size})"
+    )
+
     if cfg.param_dtype == torch.bfloat16:
         use_amp = True
         logging.info("Training with bfloat16 mixed precision.")
@@ -473,7 +496,8 @@ def worker(gpu, cfg):
     distributed_sampler = DistributedSampler(
         img_dataset,
         num_replicas=cfg.world_size,
-        rank=cfg.rank
+        rank=cfg.rank,
+        seed=global_seed
     )
     cfg.total_train_batch_size = getattr(cfg, 'total_train_batch_size', 256)
     cfg.train_batch_size = cfg.total_train_batch_size // cfg.world_size
@@ -515,13 +539,40 @@ def worker(gpu, cfg):
         enc_type = repa_config.get('enc_type', 'dinov2-vit-b')
         proj_coeff = repa_config.get('proj_coeff', 0.5)
         teacher_affinity_coeff = repa_config.get('teacher_affinity_coeff', 0.0)
+        spectral_responsibility_coeff = repa_config.get(
+            'spectral_responsibility_coeff', 0.0
+        )
+        if teacher_affinity_coeff < 0 or spectral_responsibility_coeff < 0:
+            raise ValueError("REPA auxiliary-loss coefficients must be non-negative")
+        uses_teacher_affinity = cfg.model_name in TEACHER_AFFINITY_MODELS
+        uses_spectral_responsibility = \
+            cfg.model_name in SPECTRAL_RESPONSIBILITY_MODELS
+        if teacher_affinity_coeff > 0 and not uses_teacher_affinity:
+            raise ValueError(
+                f"teacher_affinity_coeff is not supported by {cfg.model_name}"
+            )
+        if spectral_responsibility_coeff > 0 and not uses_spectral_responsibility:
+            raise ValueError(
+                f"spectral_responsibility_coeff is not supported by {cfg.model_name}"
+            )
+        if uses_teacher_affinity and spectral_responsibility_coeff > 0:
+            raise ValueError(
+                "Teacher-affinity and spectral-responsibility losses must be tested "
+                "as separate experiment arms"
+            )
+        if uses_spectral_responsibility and teacher_affinity_coeff > 0:
+            raise ValueError(
+                "Teacher-affinity and spectral-responsibility losses must be tested "
+                "as separate experiment arms"
+            )
         if cfg.rank == 0:
             logging.info(f'Rank 0: downloading/caching REPA teacher encoder: {enc_type}')
             load_teacher_encoder(enc_type, resolution=cfg.image_size, enc_path=repa_enc_path)
         dist.barrier()  # wait for rank 0 to finish caching
         logging.info(
             f'Initializing REPA teacher encoder: {enc_type}, proj_coeff={proj_coeff}, '
-            f'teacher_affinity_coeff={teacher_affinity_coeff}'
+            f'teacher_affinity_coeff={teacher_affinity_coeff}, '
+            f'spectral_responsibility_coeff={spectral_responsibility_coeff}'
         )
         teacher_encoder, teacher_embed_dim = load_teacher_encoder(
             enc_type, resolution=cfg.image_size, enc_path=repa_enc_path
@@ -680,7 +731,7 @@ def worker(gpu, cfg):
         # Handle model output: MoS REPA returns (pred, mos_repa_loss)
         if isinstance(model_output, tuple):
             model_pred, mos_repa_loss = model_output[0], model_output[1]
-            teacher_affinity_loss = model_output[2] if len(model_output) == 3 else None
+            auxiliary_repa_loss = model_output[2] if len(model_output) == 3 else None
 
             if model_pred.shape[1] != noised_z_in.shape[1]:
                 model_pred, _ = model_pred.chunk(2, dim=1)
@@ -693,13 +744,27 @@ def worker(gpu, cfg):
                 loss_dict["mos_repa_loss_weighted"] = mos_repa_loss_weighted
                 loss_dict["loss"] += mos_repa_loss_weighted
 
-            if use_repa and torch.is_tensor(teacher_affinity_loss):
-                loss_dict["teacher_affinity_loss"] = teacher_affinity_loss
-                teacher_affinity_loss_weighted = (
-                    teacher_affinity_loss * teacher_affinity_coeff
-                )
-                loss_dict["teacher_affinity_loss_weighted"] = teacher_affinity_loss_weighted
-                loss_dict["loss"] += teacher_affinity_loss_weighted
+            if use_repa and torch.is_tensor(auxiliary_repa_loss):
+                if cfg.model_name in SPECTRAL_RESPONSIBILITY_MODELS:
+                    loss_dict["spectral_responsibility_loss"] = auxiliary_repa_loss
+                    spectral_responsibility_loss_weighted = (
+                        auxiliary_repa_loss * spectral_responsibility_coeff
+                    )
+                    loss_dict["spectral_responsibility_loss_weighted"] = \
+                        spectral_responsibility_loss_weighted
+                    loss_dict["loss"] += spectral_responsibility_loss_weighted
+                elif cfg.model_name in TEACHER_AFFINITY_MODELS:
+                    loss_dict["teacher_affinity_loss"] = auxiliary_repa_loss
+                    teacher_affinity_loss_weighted = (
+                        auxiliary_repa_loss * teacher_affinity_coeff
+                    )
+                    loss_dict["teacher_affinity_loss_weighted"] = \
+                        teacher_affinity_loss_weighted
+                    loss_dict["loss"] += teacher_affinity_loss_weighted
+                else:
+                    raise ValueError(
+                        f"Unexpected third model loss from {cfg.model_name}"
+                    )
 
         elif model_output.shape[1] != noised_z_in.shape[1]:
             ########## DiT loss

@@ -1,0 +1,8 @@
+实验 / Experiment: 1.1-B_repa_multi_align_srsr
+model_name: ProMoE_TC_REPA_Multi_Align_SRSR_B  |  config: configs/004_ProMoE_B_repa_multi_align_srsr.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分流、learnable `cluster_centers` cosine prototypical routing、shared expert 与 routing contrastive guidance）；直接父变体 / Parent: Multi-Align（blocks `[2, 3, 4]` 对齐 DINOv2 final patch tokens，并由 `AlignCoefficientPredictor` 产生 per-token sigmoid 权重）
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. Shared-Routed Spectral Responsibility（SRSR）：在 zero-based MoE block `3` 对 DINOv2 final patch tokens 做逐图空间标准化，再用 reflected `3x3` average filter 分解为 low-pass 与 high-pass residual；shared branch 对齐 low-pass，routed branch 对齐 high-pass，且只监督 `label != 1000` 的 conditional samples。
+2. 高通可靠性与损失权重：`spectral_residual_min_ratio: 0.1` 屏蔽 residual norm 低于逐图均值 10% 的弱 high-pass tokens；两条 branch loss 复用 block-3 projector 和 Multi-Align dynamic coefficient，平均后由 top-level `spectral_responsibility_coeff: 0.25` 加权，同时保留父变体的三点 Multi-Align（`proj_coeff: 0.5`）及 routing contrastive guidance。
+3. 训练期限定 / training-only：变体不新增 trainable parameters；eval 直接复用 Multi-Align forward，branch outputs 仅在责任损失所需的训练 block 返回，因此 sampling architecture 与 inference FLOPs 不变。配套 reverse arm 仅交换 low/high targets，用作因果方向对照。

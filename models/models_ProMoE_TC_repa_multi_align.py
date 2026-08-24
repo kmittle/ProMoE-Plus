@@ -285,7 +285,12 @@ class SparseMoeBlock(nn.Module):
 
         return router_weights, expert_indices, load_balance_loss
 
-    def forward(self, hidden_states: torch.Tensor, labels: torch.Tensor):
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        labels: torch.Tensor,
+        return_branches: bool = False,
+    ):
         ### token assignment
         router_weights, expert_indices, load_balance_loss = self.compute_router(hidden_states, labels)
         batch_size, seq_len, hidden_dim = hidden_states.shape
@@ -315,8 +320,10 @@ class SparseMoeBlock(nn.Module):
                 final_output[0] += dummy_output[0] * 0
 
         final_output = final_output.view(batch_size, seq_len, hidden_dim)
+        routed_output = final_output.clone() if return_branches else None
 
         ### process shared experts
+        shared_output = None
         if self.use_shared_expert:
             shared_output = self.shared_expert(hidden_states)
             final_output += shared_output
@@ -354,6 +361,8 @@ class SparseMoeBlock(nn.Module):
             else:
                 loss = routing_contrastive_loss
 
+        if return_branches:
+            return final_output, loss, routed_output, shared_output
         return final_output, loss
 
     def compute_routing_contrastive_loss(self, token_embeddings, cluster_assignments, use_top_k=False):

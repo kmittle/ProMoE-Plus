@@ -25,7 +25,7 @@ This document reflects the current REPA-related code in `ProMoE-Plus`. It covers
 | Entrypoint | Scope |
 | --- | --- |
 | `train_with_repa.py` | Standard REPA and most REPA-derived ProMoE variants |
-| `train_with_MoS_repa.py` | MoS-REPA, Multi-Align, Teacher-Affinity Routing, and cross-alignment variants |
+| `train_with_MoS_repa.py` | MoS-REPA, Multi-Align, Teacher-Affinity Routing, spectral responsibility, and cross-alignment variants |
 | `sample.py` | Shared sampling entrypoint for base, REPA, and MoS-REPA models |
 
 `sample.py` merges model registries from `train.py`, `train_with_repa.py`, and `train_with_MoS_repa.py`, so one script can sample all registered families.
@@ -52,6 +52,7 @@ Representative `train_with_MoS_repa.py` registry keys include:
 - `ProMoE_TC_REPA_MoS_Naive_{B,L}`
 - `ProMoE_TC_REPA_Multi_Align_B`
 - `ProMoE_TC_REPA_Multi_Align_Affinity_B`
+- `ProMoE_TC_REPA_Multi_Align_SRSR_B`
 
 See `train_with_MoS_repa.py:model_dict` for the complete current registry.
 
@@ -89,9 +90,10 @@ MoS-REPA and Multi-Align use a different training path:
 - the teacher encoder exposes features from all transformer blocks
 - standard models return `(pred, mos_repa_loss)`
 - Teacher-Affinity Multi-Align returns `(pred, mos_repa_loss, teacher_affinity_loss)`
-- the outer loop applies `mos_repa_loss * proj_coeff` and, when present, `teacher_affinity_loss * teacher_affinity_coeff`
+- SRSR Multi-Align returns `(pred, mos_repa_loss, spectral_responsibility_loss)`
+- the outer loop applies `mos_repa_loss * proj_coeff` and the configured third-loss coefficient when present
 
-MoS variants route among teacher blocks, making them block-to-block alignment methods. Multi-Align and Teacher-Affinity Multi-Align share the trainer but align selected DiT blocks only with the teacher's last layer.
+MoS variants route among teacher blocks, making them block-to-block alignment methods. Multi-Align, Teacher-Affinity Multi-Align, and SRSR share the trainer but align selected DiT blocks only with the teacher's last layer.
 
 ### Variant Summary
 
@@ -110,6 +112,7 @@ MoS variants route among teacher blocks, making them block-to-block alignment me
 - `MoS-REPA-Naive`: uses a global transformer-based block router.
 - `Multi-Align`: aligns several DiT blocks with the teacher's last layer using per-token dynamic coefficients.
 - `Teacher-Affinity Routing`: keeps Multi-Align and adds a parameter-free training loss that matches pooled DINO patch affinities to one MoE router's soft co-assignment affinities for conditional samples.
+- `SRSR`: keeps Multi-Align and adds a training-only responsibility loss at one MoE block. The existing shared branch is aligned with a fixed low-pass DINO target and the routed branch with the complementary high-pass residual; a reverse flag provides the causal control.
 
 ---
 
@@ -459,6 +462,7 @@ This block is read by `train_with_repa.py` or `train_with_MoS_repa.py`.
 | `enc_type` | Teacher encoder type, for example `dinov2-vit-b` |
 | `proj_coeff` | Global coefficient applied to REPA or MoS-REPA loss |
 | `teacher_affinity_coeff` | Global coefficient applied to Teacher-Affinity Routing loss; `0` disables its contribution |
+| `spectral_responsibility_coeff` | Global coefficient applied to the SRSR branch-responsibility loss; it cannot be enabled together with Teacher-Affinity Routing |
 
 Example:
 
@@ -490,15 +494,19 @@ Variant-specific fields:
 | `router_repa_coeff` | `Router` | Router alignment coefficient |
 | `router_loss_decay_steps` | `Router_Contra` | Steps for linear handoff from router REPA to routing contrastive loss |
 | `num_teacher_blocks` | `MoS` / `MoS_Naive` | Teacher depth used for block-level routing |
-| `router_hidden_dim` | `MoS_Naive`, `Multi-Align`, `Teacher-Affinity` | Hidden width of the transformer router or alignment coefficient predictor |
-| `num_router_blocks` | `MoS_Naive`, `Multi-Align`, `Teacher-Affinity` | Number of transformer blocks in the router or alignment coefficient predictor |
-| `router_num_heads` | `MoS_Naive`, `Multi-Align`, `Teacher-Affinity` | Attention heads in the router or alignment coefficient predictor |
-| `align_blocks` | `Multi-Align`, `Teacher-Affinity` | Zero-based DiT blocks aligned with the teacher's last layer |
+| `router_hidden_dim` | `MoS_Naive`, `Multi-Align`, `Teacher-Affinity`, `SRSR` | Hidden width of the transformer router or alignment coefficient predictor |
+| `num_router_blocks` | `MoS_Naive`, `Multi-Align`, `Teacher-Affinity`, `SRSR` | Number of transformer blocks in the router or alignment coefficient predictor |
+| `router_num_heads` | `MoS_Naive`, `Multi-Align`, `Teacher-Affinity`, `SRSR` | Attention heads in the router or alignment coefficient predictor |
+| `align_blocks` | `Multi-Align`, `Teacher-Affinity`, `SRSR` | Zero-based DiT blocks aligned with the teacher's last layer |
 | `teacher_affinity_block` | `Teacher-Affinity` | Zero-based MoE block whose router receives affinity supervision |
 | `teacher_affinity_grid_size` | `Teacher-Affinity` | Side length used to pool teacher tokens and soft routing probabilities |
 | `teacher_affinity_router_temperature` | `Teacher-Affinity` | Temperature for soft assignments to existing cluster centers |
 | `teacher_affinity_relation_temperature` | `Teacher-Affinity` | Temperature for row-wise teacher/router affinity distributions |
 | `teacher_affinity_eps` | `Teacher-Affinity` | Numerical epsilon for spatial teacher-feature normalization |
+| `spectral_responsibility_block` | `SRSR` | Zero-based aligned MoE block whose shared and routed outputs receive separate targets |
+| `spectral_responsibility_reverse` | `SRSR` | Swap the low/high targets to form the reversed causal control |
+| `spectral_residual_min_ratio` | `SRSR` | Mask high-pass tokens below this fraction of each image's mean residual norm |
+| `spectral_responsibility_eps` | `SRSR` | Numerical epsilon for spatial teacher-feature normalization |
 
 MoS-specific validation rules:
 
@@ -559,6 +567,10 @@ Useful directories:
 ---
 
 ## FAQ and Notes
+
+**Q: Does `global_seed` control MoS-REPA training randomness?**
+
+A: `train_with_MoS_repa.py` uses `global_seed * world_size + rank` for Python, NumPy, CPU/CUDA Torch, and passes `global_seed` to `DistributedSampler`. Matching experiments with the same world size and `global_seed` therefore use paired rank-specific random streams. This is not a cross-hardware bitwise-deterministic mode, and checkpoints do not restore RNG state. The sequential wrapper restarts the process after intermediate evaluation, so comparison arms must use the same phase boundaries; significant results still require multiple seeds.
 
 **Q: Does REPA work with precomputed latents?**  
 A: Yes, but raw images are still loaded for teacher feature extraction.
