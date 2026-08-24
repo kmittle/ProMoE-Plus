@@ -1,0 +1,4 @@
+interface:
+  display_name: "Check with Claude Code"
+  short_description: "Dual-model review of ProMoE-Plus WIP"
+  default_prompt: "Use $check-cc to cross-check all uncommitted ProMoE-Plus changes with Codex agents and Claude Code and report findings without editing or committing."

@@ -15,6 +15,7 @@ latent_paths_cache.txt
 ######################
 /pretrained_ckpt/
 /_previous_results/
+/_experiments_expansion/
 
 # Local ImageNet dataset + VAE latents materialised by preprocess/prepare_imagenet.py
 /datasets/

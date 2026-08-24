@@ -1,0 +1,4 @@
+interface:
+  display_name: "Inspect"
+  short_description: "Audit all ProMoE-Plus code with 3 agents"
+  default_prompt: "Use $inspect to audit the whole ProMoE-Plus repository and report verified findings without modifying files or Git state."

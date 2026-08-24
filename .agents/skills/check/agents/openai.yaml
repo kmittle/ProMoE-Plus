@@ -1,0 +1,4 @@
+interface:
+  display_name: "Check"
+  short_description: "Review uncommitted ProMoE-Plus changes"
+  default_prompt: "Use $check to review all current uncommitted ProMoE-Plus changes and report verified findings without editing, staging, or committing."

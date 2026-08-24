@@ -6,7 +6,7 @@ ProMoE-Plus implements ProMoE, a Mixture-of-Experts framework for scaling Diffus
 ## Project Structure & Module Organization
 Core entrypoints are at repository root:
 
-- `train.py`: baseline and non-REPA training (DiT, TCDiT, ECDiT, DiffMoE, ProMoE, hierarchical, expert-choice/batch-choice, structured-batch, proto-t, anchor, proto-choice, load-balance-contrastive, DAG-fuse, adaptive-depth, loss-free, noise-expert, and expert-contrastive variants).
+- `train.py`: baseline and non-REPA training (DiT, TCDiT, ECDiT, DiffMoE, ProMoE, hierarchical, expert-choice/batch-choice, structured-batch, proto-t, anchor, proto-choice, load-balance-contrastive, DAG-fuse, shared-expert DAG-fuse, adaptive-depth, loss-free, label-smoothing regularization, noise-expert, and expert-contrastive variants).
 - `train_with_repa.py`: REPA-enabled training (REPA / REPA-Shared / REPA-Cond / REPA-DYNA / REPA-DYNA-SELECT / REPA-DYNA-SCALE / REPA-DYNA-ONLY / REPA-Router / REPA-Router-Contra / REPA-Routed / REPA-Double-Share / heterogeneous-expert REPA-DYNA), including teacher-feature alignment loss.
 - `train_with_MoS_repa.py`: MoS-REPA, MoS-Naive / Naive-Choice, separate-projector / per-block / blockwise / fused / multi-align, and both standard-REPA + MoS cross-alignment training with teacher-block routing and per-block REPA projectors.
 - `train_with_mae.py`: MAE/group-alignment training for `group_align` and `group_align_proj` variants.
@@ -42,9 +42,11 @@ Main code layout:
 - `scripts/proto_choice/`: contrastive proto-choice ratio sweep train + sample + eval wrappers.
 - `scripts/lbcontra/`: load-balance-aware routing-contrastive reweight/logit-adjust/balance-term/soft-only train + sample + eval wrappers.
 - `scripts/dagfuse/`: DAG-MoE shared/conditional fusion train + sample + eval wrappers.
+- `scripts/dagfuse_shared/`: shared-expert augmentation wrappers (`dense`, `densenet`, `sharedroute`, and region attach/mechanism sweeps).
 - `scripts/adepth/`: adaptive routed-FFN depth fixed-quota train + sample + eval wrappers.
 - `scripts/lossfree/`: loss-free balancing-bias train + sample + eval wrappers.
-- `scripts/_run_times/`: timestamped launch indirection for scheduled experiment batches.
+- `scripts/lsreg/`: routing-contrastive label-smoothing and diagonal-correction sweeps.
+- `scripts/_run_times/`: timestamped launch indirection for scheduled experiment batches; date directories may also contain generated `commands.md`/`commands.csv` launch tables and `*-describe.txt` experiment notes.
 - `command-tables/`: CSV template assets for run-time command tables.
 - `collapse_smoking_test/`, `collapse_smoking_test_10k/`: crash-diagnosis smoke configs, logs, summaries, and rerun helpers for cross-alignment stability work.
 - `tb_smoke_200/`, `tb_smoke_500/`: TensorBoard/`TrainingMonitor` smoke harnesses for selected cross-alignment configs.
@@ -60,6 +62,8 @@ Companion documentation:
 - `ProMoE-REPA.md`: detailed REPA / MoS-REPA workflow, configuration reference, and FAQ.
 - `analyses/README.md`: analysis entrypoint overview; keep per-script usage in matching `analyses/<basename>.md` files.
 - `plans/`: implementation plans for standard REPA and MoS cross-alignment variants.
+- `contrastive-label-smoothing.md`: LS-Reg design, experiment matrix, and evaluation discipline.
+- `load-balance-design.md`: explicit load-balance intervention design notes (reference only).
 - `.claude/skills/`: project-local workflow descriptions for inspect/check/new-experiment/rerun-experiment/command-table/describe-experiment helpers; useful as procedural reference even when not running Claude slash commands.
 - `.codex/skills/`: project-local Codex helper skills.
 - `implementation-plan.md`: Chinese draft plan for a future attention-weighted same-expert same-image alignment family; reference only, not current code.
@@ -243,6 +247,10 @@ bash scripts/lbcontra/run_B_lbcontra_soft_only_train_sample_eval.sh
 bash scripts/dagfuse/run_B_dagfuse_condfromshared_train_sample_eval.sh
 bash scripts/dagfuse/run_B_dagfuse_sharedfromcond_train_sample_eval.sh
 bash scripts/dagfuse/run_B_dagfuse_bidirectional_train_sample_eval.sh
+bash scripts/dagfuse_shared/run_B_dagfuse_dense_all_train_sample_eval.sh
+bash scripts/dagfuse_shared/run_B_dagfuse_densenet_all_train_sample_eval.sh
+bash scripts/dagfuse_shared/run_B_dagfuse_sharedroute_all_top1_train_sample_eval.sh
+bash scripts/dagfuse_shared/run_B_dagfuse_region_shared_all_dag_train_sample_eval.sh
 bash scripts/adepth/run_B_adepth_q0p1_train_sample_eval.sh
 bash scripts/adepth/run_B_adepth_q0p2_train_sample_eval.sh
 bash scripts/adepth/run_B_adepth_q0p3_train_sample_eval.sh
@@ -250,6 +258,12 @@ bash scripts/adepth/run_B_adepth_q0p4_train_sample_eval.sh
 bash scripts/lossfree/run_B_lossfree_u1e2_train_sample_eval.sh
 bash scripts/lossfree/run_B_lossfree_u1e3_train_sample_eval.sh
 bash scripts/lossfree/run_B_lossfree_u1e4_train_sample_eval.sh
+bash scripts/lsreg/run_B_lsreg_fixed0p10_train_sample_eval.sh
+bash scripts/lsreg/run_B_lsreg_dynboth_train_sample_eval.sh
+bash scripts/lsreg/run_B_lsreg_diag_idea1_s0p30_train_sample_eval.sh
+bash scripts/lsreg/run_B_lsreg_diag_inv_s0p40_train_sample_eval.sh
+bash scripts/expert_contra/run_B_expert_contra_param_cos_train_sample_eval.sh
+bash scripts/expert_contra/run_B_expert_contra_param_shared_uncond_train_sample_eval.sh
 
 bash tb_smoke_200/run_all.sh
 bash tb_smoke_500/run_all.sh
@@ -271,6 +285,7 @@ Runtime GPU-slot grouping:
 - After creating a semantic experiment wrapper under `scripts/<family>/`, allocate its launch wrapper with `scripts/_run_times/new_run.sh --script scripts/<family>/run_<...>.sh [--date YYYY_MM_DD] [--gpus 4|8] [--dry-run]` rather than hand-editing `gpu_ids`.
 - `scripts/_run_times/new_run.sh` patches the experiment YAML `gpu_ids` and writes `scripts/_run_times/<date>/<slot>-<desc>.sh`; GPU assignment lives in YAML, not the wrapper.
 - Slot names map to one physical 8-GPU server: `X.1` means GPUs `0-3`, `X.2` means GPUs `4-7`, and full-slot `X` means GPUs `0-7`.
+- The allocator currently accepts only `--gpus 4` and `--gpus 8`; do not pass `--gpus 2` unless the allocator is changed at the same time. The checked-in `scripts/_run_times/2026_08_05/` batch is a historical, manually repacked exception: `X.1`/`X.2`/`X.3`/`X.4` use `[0,1]`/`[2,3]`/`[4,5]`/`[6,7]` (four 2-GPU jobs per 8-GPU server), while older date directories retain the 4-GPU layout.
 - Allocation is scoped to one date directory only. Do not run jobs from different date directories on the same physical GPUs unless you have checked the assignments manually.
 - Use `--dry-run` first when scheduling a new run-time wrapper so the slot and YAML patch are visible before writing.
 
@@ -310,7 +325,7 @@ For new model variants:
 5. Validate with `python -m py_compile <modified_python_files>` and `python scripts/check_output_dir.py --config <config>`.
 6. Allocate the launch wrapper with `scripts/_run_times/new_run.sh --script <wrapper> [--gpus 4|8]`.
 
-Before rerunning an experiment after model-code changes, do not reuse the old config name if an output directory already exists. Use `python scripts/check_output_dir.py --config <config> --suggest-version` and move the config, semantic script, and run-time wrapper together to a fresh `_vN` name so the new run writes to a clean `outputs/<model_name>/<custom_cfg_name>/` directory.
+Before rerunning an experiment after model-code changes, do not reuse the old config name if an output directory already exists. Use `python scripts/check_output_dir.py --suggest-version <config>` and move the config, semantic script, and run-time wrapper together to a fresh `_vN` name so the new run writes to a clean `outputs/<model_name>/<custom_cfg_name>/` directory.
 
 ## Testing Guidelines
 No dedicated `tests/` directory. Use smoke checks aligned to your change surface:
@@ -355,10 +370,11 @@ When the user asks to push, treat that as permission to commit relevant current 
 
 ## Configuration Notes
 - Set `cfg.data_path` (or the `PROMOE_DATA_PATH` env var, or a YAML override) to the ImageNet `train/` root before preprocess/train; it defaults to the shared `/lustre01/yujie/dataset/imagenet/train`. This absolute path is `train`-once-safe — no component but the `train/` dir contains the substring 'train' — which train.py's latent derivation via `str.replace('train', ...)` requires (keep any override the same way).
-- On a fresh server, run `preprocess/prepare_imagenet.sh` **once manually** before launching a batch (it is intentionally NOT auto-invoked by the run scripts — two co-scheduled 4-GPU slots would otherwise both trigger download/encode, and the second would idle-block on the `flock`). It auto-downloads full-resolution ImageNet-1K (HuggingFace→ModelScope), materialises it to `/lustre01/yujie/dataset/imagenet/train/<label:04d>/`, provisions the VAE, and VAE-encodes everything — idempotent, resume-safe, `flock`-locked as a safety net, and it verifies every image has a latent before finishing. Training then reads `/lustre01/yujie/dataset/imagenet/train` via `config.py`'s default. The data lives outside the repo (nothing to commit).
+- On a fresh server, run `preprocess/prepare_imagenet.sh` **once manually** before launching a batch (it is intentionally NOT auto-invoked by the run scripts — co-scheduled jobs would otherwise both trigger download/encode, and the later job would idle-block on the `flock`). It auto-downloads full-resolution ImageNet-1K (HuggingFace→ModelScope), materialises it to `/lustre01/yujie/dataset/imagenet/train/<label:04d>/`, provisions the VAE, and VAE-encodes everything — idempotent, resume-safe, `flock`-locked as a safety net, and it verifies every image has a latent before finishing. Training then reads `/lustre01/yujie/dataset/imagenet/train` via `config.py`'s default. The data lives outside the repo (nothing to commit).
 - Parquet-direct mode: if raw HF parquet shards already exist (default `/lustre01/qianyuan/data/ILSVRC/imagenet-1k/data`, override `PROMOE_PARQUET_DIR` / `--parquet-dir`), `prepare_imagenet.py` auto-detects them and encodes latents DIRECTLY from parquet via `preprocess/encode_latents_from_parquet.py` (shard-parallel, per-file resume), skipping re-download and the intermediate JPEG folder. Output `<latent_root>/<label:04d>/*.latent.npz` uses the same 8-channel `.latent_dist.parameters` format as `preprocess_vae.py`. Training reads it via the `LatentFolder` dataset when a config sets `use_encoded_latents: True` (label = `int(<label:04d> dir)`; no image folder, no `replace('train',...)`); latent path from `cfg.latent_data_path` / `PROMOE_LATENT_PATH`. The 2026_07_01 non-REPA configs set the flag; REPA still needs the JPEG path. `preprocess/latent_paths_cache.txt` is the LatentFolder equivalent of the image cache (prepare rebuilds it sorted).
 - `custom_cfg_name` is auto-injected from `--config` filename stem and used in output path construction.
 - Training uses `gpu_ids` from YAML to set `CUDA_VISIBLE_DEVICES` when provided.
+- `total_train_batch_size` is global; `train.py` derives `train_batch_size = total_train_batch_size // world_size`. Changing a run from four to two GPUs therefore changes the per-GPU batch but not the configured global batch (verify divisibility before launching).
 - Sampling uses `sample_gpu_ids` only if provided; otherwise it uses all visible GPUs.
 - `train_with_repa.py` and `train_with_MoS_repa.py` read REPA behavior from top-level `repa_config`; model-level REPA knobs live under `DiT_*_config.repa_config` in YAML.
 - MoS-REPA configs (for example `004_ProMoE_B_repa_MoS.yaml`) additionally set `DiT_*_config.repa_config.num_teacher_blocks`; keep it aligned with the chosen teacher encoder depth.
@@ -372,6 +388,9 @@ When the user asks to push, treat that as permission to commit relevant current 
 - Proto-choice ratio configs set `contrastive_proto_choice_ratio`; wrapper/config suffixes such as `083` and `125` refer to the ratio sweep values.
 - Load-balance-contrastive (lbcontra) configs set `lb_contra_mode` (`reweight`/`logit_adjust`/`balance_term`/`soft_only`) and the mode's scalar (`lb_reweight_beta` / `lb_logit_adj_tau` / `lb_balance_lambda`); only the routing-contrastive loss changes, so step-0-identical to base ProMoE.
 - DAG-Fuse (dagfuse) configs set `fusion_arm` (`cond_from_shared`/`shared_from_cond`/`bidirectional`) and `fusion_num_iter`; the fusion module's up_proj is zero-init, so step-0-identical (non-strict checkpoint load).
+- LS-Reg configs (`004_ProMoE_B_lsreg_*.yaml`) keep `model_name: ProMoE_TC_B_lsreg` and change only the routing-contrastive objective. `ls_apply: label` supports `ls_mode: fixed`, `dyn_both`, `dyn_under`, or `dyn_over` (with `ls_eps_base`, `ls_slope`, `ls_eps_cap`, `ls_load_map`, and optional `ls_warmup`); `ls_apply: diag` applies a detached load-proportional similarity-diagonal offset controlled by `ls_diag_strength` and `ls_diag_sign` (`+1` idea-1, `-1` inverse). The variant has no new parameters and is step-0-identical to base ProMoE; rank-0 logs realized `lsreg/mean_eps`.
+- Shared-expert DAG-Fuse configs (`004_ProMoE_B_dagfuse_{dense,densenet,sharedroute,region}_*.yaml`) use `fuse_apply: none|cond|all`, `fuse_mech: dag|softmax`, and `fuse_dim` (default 64). `sharedroute` adds `fuse_top_k: 1|2`; `region` adds `region_size` (default 3) and `region_attach: shared|resid`. The augmentation is zero-initialized, so these variants are step-0-identical and can load base checkpoints non-strictly. The four sources differ in whether they consume prior dense output, prior shared outputs, router-selected shared outputs, or fixed-size region representations.
+- Expert-Contra parameter ablations retain `model_name: ProMoE_TC_B_expert_contra`. `expert_contrastive_mode` is `output`, `param` (L2 RBF repulsion), or `param_cos` (magnitude-invariant cosine repulsion); parameter variants can set `expert_contrastive_include_bias`, `expert_contrastive_include_shared`, and `expert_contrastive_include_uncond`. Keep `expert_contrastive_blocks` restricted to MoE blocks. The v2 configs (`nobias`, `cos`, `shared`, `shared_uncond`, `tau0p07`, `tau7`) are one-factor-at-a-time ablations and remain backward-compatible with the baseline defaults.
 - Adaptive-depth (adepth) configs set `alloc_mode=fixed_q`, `depth_q`, and `depth_warmup`; requires `top_k==1`, and zero-init gates keep it step-0-identical (non-strict).
 - Loss-free (lossfree) configs set `use_lossfree_bias` and `bias_update_rate` (`u`); the per-prototype bias is a non-trainable buffer added only to top-1 selection, step-0-identical (non-strict).
 - Most provided YAMLs set `resume_checkpoint: True`; when no checkpoint exists the loader logs an error and training starts from step 0.
@@ -383,7 +402,8 @@ When the user asks to push, treat that as permission to commit relevant current 
 Model registry and forward conventions:
 
 - `train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, and `train_with_mae.py` each define a `model_dict` from `model_name` to `(ModelClass, config_key)`. Add new registrations in the training script that owns the family.
-- `train.py` hosts base DiT/baselines, ProMoE TC/EC, EC batch-choice, proto-t, anchor, proto-choice, lbcontra (load-balance-aware routing contrastive), dagfuse (DAG-MoE shared↔cond fusion), adepth (adaptive routed-FFN depth), lossfree (loss-free balancing bias), structured-batch, noise-expert, and expert-contrastive families.
+- The current `train.py` registrations include `ProMoE_TC_B_lsreg` (`models/models_ProMoE_TC_lsreg.py`) and the shared-expert DAG-Fuse keys `ProMoE_TC_B_dagfuse_{dense,densenet,sharedroute,region}` (`models/models_ProMoE_TC_dagfuse_*.py`). The LS-Reg files are config-only sweeps within that registered class; each shared-expert source has its own registered class.
+- `train.py` hosts base DiT/baselines, ProMoE TC/EC, EC batch-choice, proto-t, anchor, proto-choice, lbcontra (load-balance-aware routing contrastive), dagfuse (DAG-MoE shared↔cond fusion), dagfuse_shared (shared-expert augmentation), adepth (adaptive routed-FFN depth), lossfree (loss-free balancing bias), lsreg (routing-contrastive label smoothing), structured-batch, noise-expert, and expert-contrastive families.
 - `train_with_repa.py` hosts standard REPA, REPA shared/cond, dynamic REPA, router/routed/double-share REPA, and heterogeneous-expert REPA-DYNA families.
 - `train_with_MoS_repa.py` hosts MoS, naive/choice/separate/blockwise/per-block/fused variants, multi-align, and standard REPA + MoS cross-alignment families.
 - `train_with_mae.py` hosts `group_align` and `group_align_proj` families.

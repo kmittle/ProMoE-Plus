@@ -1,0 +1,4 @@
+interface:
+  display_name: "Inspect with Claude Code"
+  short_description: "Dual-model audit of all ProMoE-Plus"
+  default_prompt: "Use $inspect-cc to cross-check the whole ProMoE-Plus repository with Codex agents and Claude Code and report findings without modifying files or Git state."
