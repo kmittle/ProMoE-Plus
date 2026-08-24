@@ -65,6 +65,7 @@ Companion documentation:
 - `contrastive-label-smoothing.md`: LS-Reg design, experiment matrix, and evaluation discipline.
 - `load-balance-design.md`: explicit load-balance intervention design notes (reference only).
 - `.claude/skills/`: project-local workflow descriptions for inspect/check/new-experiment/rerun-experiment/command-table/describe-experiment helpers; useful as procedural reference even when not running Claude slash commands.
+- `.agents/skills/`: active Codex workflow definitions. For Codex experiment work, use `command-table`, `describe-experiment`, `new-experiment`, and `rerun-experiment` from this directory rather than translating Claude slash-command mechanics literally.
 - `.codex/skills/`: project-local Codex helper skills.
 - `implementation-plan.md`: Chinese draft plan for a future attention-weighted same-expert same-image alignment family; reference only, not current code.
 
@@ -326,6 +327,40 @@ For new model variants:
 6. Allocate the launch wrapper with `scripts/_run_times/new_run.sh --script <wrapper> [--gpus 4|8]`.
 
 Before rerunning an experiment after model-code changes, do not reuse the old config name if an output directory already exists. Use `python scripts/check_output_dir.py --suggest-version <config>` and move the config, semantic script, and run-time wrapper together to a fresh `_vN` name so the new run writes to a clean `outputs/<model_name>/<custom_cfg_name>/` directory.
+
+### Codex Experiment Workflow Skills
+
+Use the matching `.agents/skills/<name>/SKILL.md` for the four workflows below. They are one-shot experiment workflows rather than review loops. Preserve unrelated staged, unstaged, and untracked work. For Codex operation details, the `.agents/skills/` definition takes precedence over the analogous Claude slash-command text; for repository facts and experiment claims, use this `AGENTS.md` first, executable code/config next, and `CLAUDE.md` only as supplemental documentation. These workflows never launch training, sampling, evaluation, preprocessing, downloads, or GPU jobs; never modify runtime data under `outputs/`, `pretrained_ckpt/`, `training_logs/`, smoke/TensorBoard directories, or uppercase `REPA/`; and never stage, commit, push, force-push, amend, reset, or stash.
+
+#### `new-experiment`
+
+- Use for a new model variant, config-only ablation, experiment config, or all-in-one train + sample + eval wrapper. Distinguish variants that need model code and registry changes from ablations already supported by existing runtime code.
+- Inventory compatible partial work before editing. Reuse a valid partial chain, create only missing artifacts, and make repeated invocations idempotent; never overwrite incompatible files or create a second launcher for the same semantic script and output bucket.
+- Preserve template structure and validate consistency across the model/registry, numeric-prefixed YAML, semantic wrapper, and dated run-time wrapper. Run syntax checks plus `python scripts/check_output_dir.py --config <config>` before allocation.
+- Allocate only when no equivalent run-time wrapper exists. Preview `scripts/_run_times/new_run.sh` with `--dry-run`, inspect the date, slot, `gpu_ids`, script, config, and wrapper, then rerun the same command without `--dry-run`; only 4- and 8-GPU allocations are supported.
+- After the target wrapper validates, compose `describe-experiment` for its adjacent description. If its date directory already contains `commands.csv` or legacy `commands.md`, report those tables as stale but do not rewrite or delete them unless `command-table` was also requested.
+
+#### `rerun-experiment`
+
+- Use after model/config semantic changes, or when an unchanged `model_name` and config basename would collide with or resume an old output. Resolve the complete config, semantic-script, dated-wrapper, and description set before editing.
+- Enumerate existing version chains and use `python scripts/check_output_dir.py --suggest-version <config>` to choose a coordinated fresh `_vN` basename unless the user supplied one. Missing or stale descriptions are generated-sidecar repairs and never justify advancing `_vN`.
+- Rename text files with `apply_patch` add/delete operations, not `git mv`, so the Git index is untouched. Update exact `CONFIG=`, `LOG=`, and `exec bash` references in lock-step and preserve executable modes.
+- Keep every existing slot header and YAML `gpu_ids` unchanged, never call `new_run.sh`, and never alter or delete the old output directory. Regenerate each affected description in place after validation and report existing `commands.csv`/`commands.md` as stale.
+- A missing run-time wrapper cannot preserve a slot. Requests for a parallel seed/independent copy, or to keep both old and new launch definitions, also require an explicit handoff to `new-experiment`, which creates a distinct output bucket and allocates a distinct supported slot.
+
+#### `command-table`
+
+- For one dated batch, trace each launch wrapper through its semantic script and YAML config, and write or replace only `scripts/_run_times/<date>/commands.csv`.
+- Read `command-tables/command-table-template.csv` and preserve the exact columns `实验描述,git分支,启动命令,输出位置`. Use plain-text cells and RFC 4180 quoting.
+- Sort wrappers by slot in natural order, including historical `.3`/`.4` slots. Use the current Git branch unless the user specifies a per-experiment branch, and derive output as `{output_root}/{model_name}/{config_basename}/`; a top-level `output_dir` changes only `output_root`.
+- Report unresolved rows and any legacy `commands.md` as stale; never delete or rewrite `commands.md` and never launch any listed command.
+
+#### `describe-experiment`
+
+- Trace each dated wrapper through the semantic script, config, registry, model implementation, and relevant project documentation. Ground every claim in inspected code, config, or documentation rather than inferring behavior from filenames.
+- Write Chinese-first bilingual plain text beside the wrapper as `<wrapper-basename>-describe.txt`, with two to four numbered changes in importance order.
+- Compare the experiment with both the base ProMoE TC/EC design and its immediate inheritance parent or meaningful sibling/default flag setting. Claim step-0 equivalence, parameter changes, checkpoint-loading behavior, or train-fresh requirements only when the implementation or documentation proves them.
+- Descriptions are generated sidecars: write only the adjacent `*-describe.txt`, and regenerate a missing or stale description in place without changing the experiment suffix or GPU slot.
 
 ## Testing Guidelines
 No dedicated `tests/` directory. Use smoke checks aligned to your change surface:
