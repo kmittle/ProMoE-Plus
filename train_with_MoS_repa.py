@@ -40,6 +40,7 @@ from models.models_ProMoE_TC_repa_MoS_naive_choice import DiT as ProMoE_TC_REPA_
 from models.models_ProMoE_TC_repa_MoS_naive_choice_ import DiT as ProMoE_TC_REPA_MoS_Naive_Choice_Sep_DiT
 from models.models_ProMoE_TC_repa_multi_align import DiT as ProMoE_TC_REPA_Multi_Align_DiT
 from models.models_ProMoE_TC_repa_multi_align_affinity import DiT as ProMoE_TC_REPA_Multi_Align_Affinity_DiT
+from models.models_ProMoE_TC_repa_multi_align_expert_geometry import DiT as ProMoE_TC_REPA_Multi_Align_TCEG_DiT
 from models.models_ProMoE_TC_repa_multi_align_spectral import DiT as ProMoE_TC_REPA_Multi_Align_SRSR_DiT
 from models.models_ProMoE_TC_repa_MoS_choice_per_block import DiT as ProMoE_TC_REPA_MoS_Choice_PerBlock_DiT
 from models.models_ProMoE_TC_repa_MoS_naive_choice_blockwise import DiT as ProMoE_TC_REPA_MoS_Naive_Choice_Blockwise_DiT
@@ -66,6 +67,7 @@ model_dict = {
     "ProMoE_TC_REPA_MoS_Naive_Choice_Sep_B": (ProMoE_TC_REPA_MoS_Naive_Choice_Sep_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_Multi_Align_B": (ProMoE_TC_REPA_Multi_Align_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_Multi_Align_Affinity_B": (ProMoE_TC_REPA_Multi_Align_Affinity_DiT, "DiT_B_config"),
+    "ProMoE_TC_REPA_Multi_Align_TCEG_B": (ProMoE_TC_REPA_Multi_Align_TCEG_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_Multi_Align_SRSR_B": (ProMoE_TC_REPA_Multi_Align_SRSR_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_MoS_Choice_PerBlock_B": (ProMoE_TC_REPA_MoS_Choice_PerBlock_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_MoS_Naive_Choice_Blockwise_B": (ProMoE_TC_REPA_MoS_Naive_Choice_Blockwise_DiT, "DiT_B_config"),
@@ -85,6 +87,9 @@ TEACHER_AFFINITY_MODELS = {
 }
 SPECTRAL_RESPONSIBILITY_MODELS = {
     "ProMoE_TC_REPA_Multi_Align_SRSR_B",
+}
+EXPERT_GEOMETRY_MODELS = {
+    "ProMoE_TC_REPA_Multi_Align_TCEG_B",
 }
 
 
@@ -542,11 +547,17 @@ def worker(gpu, cfg):
         spectral_responsibility_coeff = repa_config.get(
             'spectral_responsibility_coeff', 0.0
         )
-        if teacher_affinity_coeff < 0 or spectral_responsibility_coeff < 0:
+        expert_geometry_coeff = repa_config.get('expert_geometry_coeff', 0.0)
+        if any(coeff < 0 for coeff in (
+            teacher_affinity_coeff,
+            spectral_responsibility_coeff,
+            expert_geometry_coeff,
+        )):
             raise ValueError("REPA auxiliary-loss coefficients must be non-negative")
         uses_teacher_affinity = cfg.model_name in TEACHER_AFFINITY_MODELS
         uses_spectral_responsibility = \
             cfg.model_name in SPECTRAL_RESPONSIBILITY_MODELS
+        uses_expert_geometry = cfg.model_name in EXPERT_GEOMETRY_MODELS
         if teacher_affinity_coeff > 0 and not uses_teacher_affinity:
             raise ValueError(
                 f"teacher_affinity_coeff is not supported by {cfg.model_name}"
@@ -555,15 +566,18 @@ def worker(gpu, cfg):
             raise ValueError(
                 f"spectral_responsibility_coeff is not supported by {cfg.model_name}"
             )
-        if uses_teacher_affinity and spectral_responsibility_coeff > 0:
+        if expert_geometry_coeff > 0 and not uses_expert_geometry:
             raise ValueError(
-                "Teacher-affinity and spectral-responsibility losses must be tested "
-                "as separate experiment arms"
+                f"expert_geometry_coeff is not supported by {cfg.model_name}"
             )
-        if uses_spectral_responsibility and teacher_affinity_coeff > 0:
+        if sum(coeff > 0 for coeff in (
+            teacher_affinity_coeff,
+            spectral_responsibility_coeff,
+            expert_geometry_coeff,
+        )) > 1:
             raise ValueError(
-                "Teacher-affinity and spectral-responsibility losses must be tested "
-                "as separate experiment arms"
+                "Teacher-affinity, spectral-responsibility, and expert-geometry "
+                "losses must be tested as separate experiment arms"
             )
         if cfg.rank == 0:
             logging.info(f'Rank 0: downloading/caching REPA teacher encoder: {enc_type}')
@@ -572,7 +586,8 @@ def worker(gpu, cfg):
         logging.info(
             f'Initializing REPA teacher encoder: {enc_type}, proj_coeff={proj_coeff}, '
             f'teacher_affinity_coeff={teacher_affinity_coeff}, '
-            f'spectral_responsibility_coeff={spectral_responsibility_coeff}'
+            f'spectral_responsibility_coeff={spectral_responsibility_coeff}, '
+            f'expert_geometry_coeff={expert_geometry_coeff}'
         )
         teacher_encoder, teacher_embed_dim = load_teacher_encoder(
             enc_type, resolution=cfg.image_size, enc_path=repa_enc_path
@@ -761,6 +776,14 @@ def worker(gpu, cfg):
                     loss_dict["teacher_affinity_loss_weighted"] = \
                         teacher_affinity_loss_weighted
                     loss_dict["loss"] += teacher_affinity_loss_weighted
+                elif cfg.model_name in EXPERT_GEOMETRY_MODELS:
+                    loss_dict["expert_geometry_loss"] = auxiliary_repa_loss
+                    expert_geometry_loss_weighted = (
+                        auxiliary_repa_loss * expert_geometry_coeff
+                    )
+                    loss_dict["expert_geometry_loss_weighted"] = \
+                        expert_geometry_loss_weighted
+                    loss_dict["loss"] += expert_geometry_loss_weighted
                 else:
                     raise ValueError(
                         f"Unexpected third model loss from {cfg.model_name}"

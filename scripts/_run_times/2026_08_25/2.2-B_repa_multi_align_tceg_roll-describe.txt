@@ -1,0 +1,8 @@
+实验 / Experiment: 2.2-B_repa_multi_align_tceg_roll
+model_name: ProMoE_TC_REPA_Multi_Align_TCEG_B  |  config: configs/004_ProMoE_B_repa_multi_align_tceg_roll.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分流、`cluster_centers` 余弦 top-1 路由、shared expert 和 routing contrastive guidance）；直接父变体 / Parent: Multi-Align 在 DiT blocks `[2, 3, 4]` 用逐 token 动态系数对齐 DINOv2 最后一层
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. TCEG 空间负对照：保留正向臂的 detached top-1 分组、原始 routed-expert 输出质心和中心化余弦 Gram Smooth-L1，但先在 16x16 teacher token 网格上固定 roll `[7, 11]`。这保留 teacher token 的整体分布和损失计算，同时破坏学生专家分组与正确 teacher 空间位置的对应。
+2. 与正向 TCEG 做单因素配对：`expert_geometry_block: 3`、`expert_geometry_min_tokens: 2`、`expert_geometry_min_experts: 3`、`expert_geometry_coeff: 0.25`、`align_blocks: [2, 3, 4]`、`proj_coeff: 0.5` 及所有 ProMoE 路由/专家设置均相同；两臂同为 `global_seed: 0` 且 wrapper phase 边界一致，用来检验收益是否真的依赖 teacher 空间对应。
+3. 不增加参数或采样 FLOPs：与 Multi-Align/TCEG 共享 338,002,976 参数和 499 个 state keys，eval 走父路径。本对照使用 GPU 4-7，与正向臂同样在 300K/500K 按 CFG 1.0/1.5 生成 50K ImageNet 样本并用 OpenAI evaluator 评估。

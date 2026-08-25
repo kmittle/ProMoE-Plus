@@ -290,7 +290,15 @@ class SparseMoeBlock(nn.Module):
         hidden_states: torch.Tensor,
         labels: torch.Tensor,
         return_branches: bool = False,
+        return_expert_trace: bool = False,
     ):
+        if return_branches and return_expert_trace:
+            raise ValueError(
+                "return_branches and return_expert_trace are mutually exclusive"
+            )
+        if return_expert_trace and self.top_k != 1:
+            raise ValueError("expert tracing currently requires top_k == 1")
+
         ### token assignment
         router_weights, expert_indices, load_balance_loss = self.compute_router(hidden_states, labels)
         batch_size, seq_len, hidden_dim = hidden_states.shape
@@ -301,6 +309,7 @@ class SparseMoeBlock(nn.Module):
         total_tokens = batch_size * seq_len
 
         final_output = torch.zeros(total_tokens, hidden_dim, device=hidden_states.device)
+        expert_trace = torch.zeros_like(final_output) if return_expert_trace else None
 
         ### process routed experts and unconditional expert
         for expert_id in range(self.num_experts):
@@ -314,6 +323,10 @@ class SparseMoeBlock(nn.Module):
                 expert_output = self.experts[expert_id](expert_input)
                 weighted_output = expert_output * combined_weights.unsqueeze(1)
                 final_output.index_add_(0, token_ids, weighted_output)
+                if return_expert_trace and expert_id < self.num_routed_experts:
+                    expert_trace.index_copy_(
+                        0, token_ids, expert_output.to(expert_trace.dtype)
+                    )
             else:
                 dummy_input = torch.zeros(1, hidden_dim, device=hidden_states.device)
                 dummy_output = self.experts[expert_id](dummy_input).float()
@@ -321,6 +334,8 @@ class SparseMoeBlock(nn.Module):
 
         final_output = final_output.view(batch_size, seq_len, hidden_dim)
         routed_output = final_output.clone() if return_branches else None
+        if return_expert_trace:
+            expert_trace = expert_trace + final_output.view(-1, hidden_dim) * 0.0
 
         ### process shared experts
         shared_output = None
@@ -363,6 +378,10 @@ class SparseMoeBlock(nn.Module):
 
         if return_branches:
             return final_output, loss, routed_output, shared_output
+        if return_expert_trace:
+            expert_trace = expert_trace.view(batch_size, seq_len, hidden_dim)
+            top1_assignments = expert_indices[:, :, 0].detach()
+            return final_output, loss, expert_trace, top1_assignments
         return final_output, loss
 
     def compute_routing_contrastive_loss(self, token_embeddings, cluster_assignments, use_top_k=False):

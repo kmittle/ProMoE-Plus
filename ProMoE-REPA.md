@@ -25,7 +25,7 @@ This document reflects the current REPA-related code in `ProMoE-Plus`. It covers
 | Entrypoint | Scope |
 | --- | --- |
 | `train_with_repa.py` | Standard REPA and most REPA-derived ProMoE variants |
-| `train_with_MoS_repa.py` | MoS-REPA, Multi-Align, Teacher-Affinity Routing, spectral responsibility, and cross-alignment variants |
+| `train_with_MoS_repa.py` | MoS-REPA, Multi-Align, Teacher-Affinity Routing, spectral responsibility, teacher-conditioned expert geometry, and cross-alignment variants |
 | `sample.py` | Shared sampling entrypoint for base, REPA, and MoS-REPA models |
 
 `sample.py` merges model registries from `train.py`, `train_with_repa.py`, and `train_with_MoS_repa.py`, so one script can sample all registered families.
@@ -53,6 +53,7 @@ Representative `train_with_MoS_repa.py` registry keys include:
 - `ProMoE_TC_REPA_Multi_Align_B`
 - `ProMoE_TC_REPA_Multi_Align_Affinity_B`
 - `ProMoE_TC_REPA_Multi_Align_SRSR_B`
+- `ProMoE_TC_REPA_Multi_Align_TCEG_B`
 
 See `train_with_MoS_repa.py:model_dict` for the complete current registry.
 
@@ -91,9 +92,10 @@ MoS-REPA and Multi-Align use a different training path:
 - standard models return `(pred, mos_repa_loss)`
 - Teacher-Affinity Multi-Align returns `(pred, mos_repa_loss, teacher_affinity_loss)`
 - SRSR Multi-Align returns `(pred, mos_repa_loss, spectral_responsibility_loss)`
+- TCEG Multi-Align returns `(pred, mos_repa_loss, expert_geometry_loss)`
 - the outer loop applies `mos_repa_loss * proj_coeff` and the configured third-loss coefficient when present
 
-MoS variants route among teacher blocks, making them block-to-block alignment methods. Multi-Align, Teacher-Affinity Multi-Align, and SRSR share the trainer but align selected DiT blocks only with the teacher's last layer.
+MoS variants route among teacher blocks, making them block-to-block alignment methods. Multi-Align, Teacher-Affinity Multi-Align, SRSR, and TCEG share the trainer but align selected DiT blocks only with the teacher's last layer.
 
 ### Variant Summary
 
@@ -113,6 +115,7 @@ MoS variants route among teacher blocks, making them block-to-block alignment me
 - `Multi-Align`: aligns several DiT blocks with the teacher's last layer using per-token dynamic coefficients.
 - `Teacher-Affinity Routing`: keeps Multi-Align and adds a parameter-free training loss that matches pooled DINO patch affinities to one MoE router's soft co-assignment affinities for conditional samples.
 - `SRSR`: keeps Multi-Align and adds a training-only responsibility loss at one MoE block. The existing shared branch is aligned with a fixed low-pass DINO target and the routed branch with the complementary high-pass residual; a reverse flag provides the causal control.
+- `TCEG`: keeps Multi-Align and, for conditional samples at one aligned top-1 MoE block, groups raw routed-expert outputs and frozen teacher tokens by the detached expert assignment. It matches the unique off-diagonal entries of their independently centered, normalized centroid Gram matrices. A fixed spatial roll of teacher tokens is the negative control.
 
 ---
 
@@ -462,7 +465,10 @@ This block is read by `train_with_repa.py` or `train_with_MoS_repa.py`.
 | `enc_type` | Teacher encoder type, for example `dinov2-vit-b` |
 | `proj_coeff` | Global coefficient applied to REPA or MoS-REPA loss |
 | `teacher_affinity_coeff` | Global coefficient applied to Teacher-Affinity Routing loss; `0` disables its contribution |
-| `spectral_responsibility_coeff` | Global coefficient applied to the SRSR branch-responsibility loss; it cannot be enabled together with Teacher-Affinity Routing |
+| `spectral_responsibility_coeff` | Global coefficient applied to the SRSR branch-responsibility loss |
+| `expert_geometry_coeff` | Global coefficient applied to the TCEG centroid-geometry loss |
+
+`teacher_affinity_coeff`, `spectral_responsibility_coeff`, and `expert_geometry_coeff` are separate experiment arms; `train_with_MoS_repa.py` rejects configurations with more than one positive coefficient.
 
 Example:
 
@@ -494,10 +500,10 @@ Variant-specific fields:
 | `router_repa_coeff` | `Router` | Router alignment coefficient |
 | `router_loss_decay_steps` | `Router_Contra` | Steps for linear handoff from router REPA to routing contrastive loss |
 | `num_teacher_blocks` | `MoS` / `MoS_Naive` | Teacher depth used for block-level routing |
-| `router_hidden_dim` | `MoS_Naive`, `Multi-Align`, `Teacher-Affinity`, `SRSR` | Hidden width of the transformer router or alignment coefficient predictor |
-| `num_router_blocks` | `MoS_Naive`, `Multi-Align`, `Teacher-Affinity`, `SRSR` | Number of transformer blocks in the router or alignment coefficient predictor |
-| `router_num_heads` | `MoS_Naive`, `Multi-Align`, `Teacher-Affinity`, `SRSR` | Attention heads in the router or alignment coefficient predictor |
-| `align_blocks` | `Multi-Align`, `Teacher-Affinity`, `SRSR` | Zero-based DiT blocks aligned with the teacher's last layer |
+| `router_hidden_dim` | `MoS_Naive`, `Multi-Align`, `Teacher-Affinity`, `SRSR`, `TCEG` | Hidden width of the transformer router or alignment coefficient predictor |
+| `num_router_blocks` | `MoS_Naive`, `Multi-Align`, `Teacher-Affinity`, `SRSR`, `TCEG` | Number of transformer blocks in the router or alignment coefficient predictor |
+| `router_num_heads` | `MoS_Naive`, `Multi-Align`, `Teacher-Affinity`, `SRSR`, `TCEG` | Attention heads in the router or alignment coefficient predictor |
+| `align_blocks` | `Multi-Align`, `Teacher-Affinity`, `SRSR`, `TCEG` | Zero-based DiT blocks aligned with the teacher's last layer |
 | `teacher_affinity_block` | `Teacher-Affinity` | Zero-based MoE block whose router receives affinity supervision |
 | `teacher_affinity_grid_size` | `Teacher-Affinity` | Side length used to pool teacher tokens and soft routing probabilities |
 | `teacher_affinity_router_temperature` | `Teacher-Affinity` | Temperature for soft assignments to existing cluster centers |
@@ -507,6 +513,11 @@ Variant-specific fields:
 | `spectral_responsibility_reverse` | `SRSR` | Swap the low/high targets to form the reversed causal control |
 | `spectral_residual_min_ratio` | `SRSR` | Mask high-pass tokens below this fraction of each image's mean residual norm |
 | `spectral_responsibility_eps` | `SRSR` | Numerical epsilon for spatial teacher-feature normalization |
+| `expert_geometry_block` | `TCEG` | Zero-based aligned top-1 MoE block whose routed-expert outputs define student centroids |
+| `expert_geometry_min_tokens` | `TCEG` | Minimum assigned tokens required for an expert centroid within one conditional image |
+| `expert_geometry_min_experts` | `TCEG` | Minimum valid expert centroids required to form a geometry loss for one image |
+| `expert_geometry_teacher_roll` | `TCEG` | Two integer shifts on the square teacher-token grid; `[0, 0]` is TCEG and `[7, 11]` is the fixed 16x16 negative control |
+| `expert_geometry_eps` | `TCEG` | Numerical epsilon for informative-centroid filtering and normalization |
 
 MoS-specific validation rules:
 

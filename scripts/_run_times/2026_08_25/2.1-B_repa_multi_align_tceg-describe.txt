@@ -1,0 +1,8 @@
+实验 / Experiment: 2.1-B_repa_multi_align_tceg
+model_name: ProMoE_TC_REPA_Multi_Align_TCEG_B  |  config: configs/004_ProMoE_B_repa_multi_align_tceg.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分流、`cluster_centers` 余弦 top-1 路由、shared expert 和 routing contrastive guidance）；直接父变体 / Parent: Multi-Align 在 DiT blocks `[2, 3, 4]` 用逐 token 动态系数对齐 DINOv2 最后一层
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. Teacher-Conditioned Expert Geometry（TCEG）：在零起始 block 3 上，用 detached top-1 assignment 将 conditional token 的原始、未乘路由权重的 routed-expert 输出与对应 DINO token 分组；每个专家至少 2 个 token、每图至少 3 个有效专家时，匹配两组独立中心化和 L2 归一后质心 Gram 矩阵的唯一非对角项（Smooth-L1）。
+2. 保留直接父变体的完整 Multi-Align 和 ProMoE 路由：`align_blocks: [2, 3, 4]`、`proj_coeff: 0.5`、12 个 top-1 routed experts、shared/unconditional experts 和 routing contrastive guidance 均不变；新几何损失使用 `expert_geometry_coeff: 0.25` 和正确空间对应 `expert_geometry_teacher_roll: [0, 0]`。
+3. 不增加参数或采样 FLOPs：TCEG 仅在训练且有 teacher features 时返回第三个 `expert_geometry_loss`，eval 直接走 Multi-Align 父路径；Base 模型为 338,002,976 参数和 499 个 state keys。本臂使用 `global_seed: 0`、GPU 0-3，在 300K/500K 按 CFG 1.0/1.5 生成 50K ImageNet 样本并用 OpenAI evaluator 评估。
