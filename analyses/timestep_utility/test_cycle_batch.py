@@ -74,7 +74,7 @@ def _plumbing_result(case_id, forced_drift=0.0):
 
 class CycleBatchTests(unittest.TestCase):
     def test_exact_batch_size_is_locked_for_numerical_fidelity(self):
-        self.assertEqual(EXACT_BATCH_SIZE, 8)
+        self.assertEqual(EXACT_BATCH_SIZE, 4)
 
     def test_checked_in_manifest_locks_all_splits(self):
         payload = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))

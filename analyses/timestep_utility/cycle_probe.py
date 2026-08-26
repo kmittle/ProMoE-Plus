@@ -37,7 +37,7 @@ from analyses.timestep_utility.probe import (
 )
 
 
-PROBE_VERSION = 3
+PROBE_VERSION = 4
 ARM_NAMES = (
     "four_cycle",
     "six_cycle",
@@ -1162,7 +1162,7 @@ def run_cycle_probe_case(
     seed,
     block_indices,
     sigmas,
-    exact_batch_size=8,
+    exact_batch_size=4,
     latent_key="latent",
 ):
     latent_path = Path(latent_path).resolve()
@@ -1244,7 +1244,7 @@ def run_cycle_probe(
     seed,
     block_indices,
     sigmas,
-    exact_batch_size=8,
+    exact_batch_size=4,
     latent_key="latent",
     device="cpu",
     num_threads=8,
