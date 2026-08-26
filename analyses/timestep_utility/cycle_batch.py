@@ -29,7 +29,7 @@ BLOCKS_BY_SPLIT = {
     "confirmatory": (1, 5, 11),
 }
 SPLIT_COUNTS = {"plumbing": 8, "discovery": 24, "confirmatory": 48}
-EXACT_BATCH_SIZE = 24
+EXACT_BATCH_SIZE = 8
 LOCKED_NUM_THREADS = 4
 BOOTSTRAP_RESAMPLES = 200_000
 BOOTSTRAP_SEEDS = {"discovery": 2026082611, "confirmatory": 2026082612}

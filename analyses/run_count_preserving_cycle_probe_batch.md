@@ -16,7 +16,7 @@
 
 所有 count-preserving 候选都逐项验证完整 12-expert count vector。每个候选保留各 token 的 native top-1 route weight，只改变 expert identity，因此激活 token 数、expert histogram 和 routed-expert FLOPs 不变。
 
-一阶标签来自目标 MoE block 输出处的 suffix gradient。候选的所有 token-expert changes 一起求和，再与一次 paired forced-route forward 得到的 exact MSE change 比较。不能把 token 当独立统计样本。
+一阶标签来自目标 MoE block 输出处的 suffix gradient。候选的所有 token-expert changes 一起求和，再与一次 paired forced-route forward 得到的 exact MSE change 比较。不能把 token 当独立统计样本。Exact forward 固定 batch size 为 8，使所有 368 个候选以四对一组整除执行，并避免 batch 24 相对 batch 1 的数值漂移超过预注册安全门限。
 
 ## 锁定顺序
 
@@ -40,7 +40,7 @@
   --ckpt outputs/ProMoE_TC_B/004_ProMoE_B_seed0_control/checkpoints/ckpt_step_200000.pth \
   --weights-ckpt /home/dev/promoe-probes/base-seed0-ckpt_step_200000.pth \
   --latent-root /home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz \
-  --output-dir /home/dev/promoe-probes/count-preserving-cycle-gate-base200k-v2 \
+  --output-dir /home/dev/promoe-probes/count-preserving-cycle-gate-base200k-v3 \
   --prepare-only
 ```
 
@@ -56,7 +56,7 @@
   --ckpt outputs/ProMoE_TC_B/004_ProMoE_B_seed0_control/checkpoints/ckpt_step_200000.pth \
   --weights-ckpt /home/dev/promoe-probes/base-seed0-ckpt_step_200000.pth \
   --latent-root /home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz \
-  --output-dir /home/dev/promoe-probes/count-preserving-cycle-gate-base200k-v2 \
+  --output-dir /home/dev/promoe-probes/count-preserving-cycle-gate-base200k-v3 \
   --split plumbing
 ```
 
