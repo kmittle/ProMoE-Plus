@@ -36,7 +36,8 @@ from analyses.timestep_utility.probe import (
 )
 
 
-PROBE_VERSION = 5
+PROBE_VERSION = 6
+CANDIDATE_SAMPLER_VERSION = 2
 ARM_NAMES = (
     "four_cycle",
     "six_cycle",
@@ -330,6 +331,44 @@ def _validate_candidate(candidate, native_experts, num_experts):
     return candidate
 
 
+def _sample_distinct_source_tokens_exact(native_experts, count, generator):
+    active_experts, expert_counts = np.unique(
+        native_experts,
+        return_counts=True,
+    )
+    if active_experts.size < count:
+        raise RuntimeError(
+            f"Could not sample {count} tokens with distinct native experts"
+        )
+
+    expert_subsets = tuple(combinations(range(active_experts.size), count))
+    subset_weights = []
+    for subset in expert_subsets:
+        weight = 1
+        for expert_index in subset:
+            weight *= int(expert_counts[expert_index])
+        subset_weights.append(weight)
+    draw = _random_below(generator, sum(subset_weights))
+    cumulative = 0
+    selected_subset = None
+    for subset, weight in zip(expert_subsets, subset_weights):
+        cumulative += weight
+        if draw < cumulative:
+            selected_subset = subset
+            break
+    if selected_subset is None:
+        raise RuntimeError("Distinct-source subset draw exceeded its support")
+
+    tokens = []
+    for expert_index in selected_subset:
+        expert = active_experts[expert_index]
+        token_pool = np.flatnonzero(native_experts == expert)
+        tokens.append(token_pool[_random_below(generator, token_pool.size)])
+    tokens = np.asarray(tokens, dtype=np.int64)
+    generator.shuffle(tokens)
+    return tokens, native_experts[tokens].astype(np.int64)
+
+
 def _sample_distinct_source_tokens(native_experts, count, generator):
     num_tokens = native_experts.size
     for _ in range(MAX_CANDIDATE_ATTEMPTS):
@@ -337,8 +376,12 @@ def _sample_distinct_source_tokens(native_experts, count, generator):
         sources = native_experts[tokens]
         if np.unique(sources).size == count:
             return tokens.astype(np.int64), sources.astype(np.int64)
-    raise RuntimeError(
-        f"Could not sample {count} tokens with distinct native experts"
+    # Preserve every legacy-success sequence, then remove the retry cutoff for
+    # highly imbalanced routes by sampling uniformly from the legal tuples.
+    return _sample_distinct_source_tokens_exact(
+        native_experts,
+        count,
+        generator,
     )
 
 
@@ -1264,6 +1307,7 @@ def run_cycle_probe_case(
             capture.close()
     result = {
         "cycle_probe_version": PROBE_VERSION,
+        "candidate_sampler_version": CANDIDATE_SAMPLER_VERSION,
         "diagnostic_scope": (
             "frozen-checkpoint exact denoising-utility and first-order fidelity "
             "gate; not a training, sampling, FID, or novelty claim"

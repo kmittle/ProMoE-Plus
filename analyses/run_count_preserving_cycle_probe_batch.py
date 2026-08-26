@@ -58,6 +58,7 @@ from analyses.timestep_utility.cycle_probe import (
     ARM_CANDIDATES,
     ARM_NAMES,
     AUDITED_SIX_CANDIDATES,
+    CANDIDATE_SAMPLER_VERSION,
     COUNT_PRESERVING_ARMS,
     PROBE_VERSION,
     RANDOM_JOINT_TOKENS,
@@ -319,6 +320,7 @@ def _build_protocol(
             "arm_names": list(ARM_NAMES),
             "count_preserving_arms": list(COUNT_PRESERVING_ARMS),
             "candidates_per_arm": ARM_CANDIDATES,
+            "candidate_sampler_version": CANDIDATE_SAMPLER_VERSION,
             "random_joint_tokens": RANDOM_JOINT_TOKENS,
             "audited_six_candidates": AUDITED_SIX_CANDIDATES,
             "exact_batch_size": EXACT_BATCH_SIZE,
@@ -328,10 +330,17 @@ def _build_protocol(
             ),
             "route_weight": "native top-1 identity weight",
             "candidate_generation": (
-                "locked RNG samples without replacement from the complete legal "
-                "eight-token fixed-count random-joint signature space using only "
-                "native route IDs; no VJP, exact loss, or teacher feature may "
-                "influence candidate banks"
+                "Short-cycle components retain the v5 uniform token-rejection "
+                "sequence whenever it succeeds within 1024 attempts, then use an "
+                "exact uniform draw over legal distinct-source token tuples. The "
+                "random-joint arm samples without replacement from the complete "
+                "legal eight-token fixed-count signature space. Only native route "
+                "IDs and locked RNG seeds may influence candidate banks; VJP, exact "
+                "loss, and teacher features are forbidden."
+            ),
+            "authorization_rule": (
+                "Confirmatory authorized arms equal discovery authorized arms "
+                "intersected with confirmatory passing arms."
             ),
             "requirements": {
                 split: requirements_for_split(split) for split in SPLIT_COUNTS
@@ -439,6 +448,8 @@ def _seal_payload(result, protocol_sha256, case_id):
 def _validate_result(result, case, split, protocol_sha256):
     if result.get("cycle_probe_version") != PROBE_VERSION:
         raise RuntimeError("Case result probe version changed")
+    if result.get("candidate_sampler_version") != CANDIDATE_SAMPLER_VERSION:
+        raise RuntimeError("Case result candidate sampler version changed")
     if result.get("protocol_sha256") != protocol_sha256:
         raise RuntimeError("Case result belongs to another protocol")
     if result.get("batch_case") != _case_protocol_view(case):
@@ -602,7 +613,7 @@ def _load_prior_summary(output_dir, split, protocol_sha256):
 
 def _require_split_unlock(output_dir, split, protocol_sha256, manifest):
     if split == "plumbing":
-        return
+        return None
     prerequisite = "plumbing" if split == "discovery" else "discovery"
     summary = _load_prior_summary(output_dir, prerequisite, protocol_sha256)
     prerequisite_cases = [
@@ -627,6 +638,7 @@ def _require_split_unlock(output_dir, split, protocol_sha256, manifest):
         raise RuntimeError(f"Required {prerequisite} summary failed recomputation")
     if not recomputed_gate["passed"]:
         raise RuntimeError(f"{prerequisite} gate did not unlock {split}")
+    return recomputed_gate
 
 
 def _load_split_results(
@@ -741,7 +753,7 @@ def main():
             fcntl.flock(lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise RuntimeError("Another cycle-gate orchestrator is running") from error
-        _require_split_unlock(
+        prerequisite_gate = _require_split_unlock(
             output_dir,
             args.split,
             protocol_sha256,
@@ -788,7 +800,16 @@ def main():
             split_cases,
             protocol_sha256,
         )
-        gate = aggregate_case_results(results, args.split)
+        prerequisite_authorized_arms = (
+            prerequisite_gate["authorized_arms"]
+            if args.split == "confirmatory"
+            else None
+        )
+        gate = aggregate_case_results(
+            results,
+            args.split,
+            prerequisite_authorized_arms=prerequisite_authorized_arms,
+        )
         if _load_locked_protocol(protocol_path, protocol_sha256) != protocol:
             raise RuntimeError("On-disk protocol changed before summary publication")
         summary_path = _publish_summary(

@@ -1,3 +1,5 @@
+import hashlib
+import json
 import unittest
 
 import numpy as np
@@ -100,6 +102,29 @@ class CycleProbeTests(unittest.TestCase):
             len(first_audits),
             AUDITED_SIX_CANDIDATES * 3,
         )
+
+    def test_v6_amendment_preserves_v5_balanced_candidate_sequence(self):
+        banks, audits = build_candidate_banks(self.native, 12, 123)
+        payload = json.dumps(
+            {"banks": banks, "audits": audits},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        self.assertEqual(
+            hashlib.sha256(payload).hexdigest(),
+            "6286f6809e2b7555e4e6ea4365a6fa556d7c54705a30313abb76b70c13eece8b",
+        )
+
+    def test_candidate_banks_handle_extreme_route_imbalance(self):
+        native = np.repeat(np.arange(3, dtype=np.int64), [252, 2, 2])
+        first_banks, first_audits = build_candidate_banks(native, 3, 123)
+        second_banks, second_audits = build_candidate_banks(native, 3, 123)
+        self.assertEqual(first_banks, second_banks)
+        self.assertEqual(first_audits, second_audits)
+        self.assertTrue(all(
+            len(set(candidate["source_experts"])) == 3
+            for candidate in first_banks["six_cycle"]
+        ))
 
     def test_cycle_sizes_match_bipartite_graph_names(self):
         banks, _ = build_candidate_banks(self.native, 12, 456)

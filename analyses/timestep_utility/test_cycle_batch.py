@@ -11,6 +11,7 @@ from analyses.timestep_utility.cycle_batch import (
     MANIFEST_NAME,
     SPLIT_COUNTS,
     _arm_gate,
+    _authorize_arms,
     _bh_fdr,
     _bootstrap_ratio,
     _bootstrap_summary,
@@ -80,6 +81,22 @@ def _plumbing_result(case_id, forced_drift=0.0, reference_drift=0.0):
 
 
 class CycleBatchTests(unittest.TestCase):
+    def test_confirmatory_authorization_intersects_discovery_arms(self):
+        arm_gates = {
+            arm: {"passed": True}
+            for arm in ("four_cycle", "six_cycle", "mixed_cycle")
+        }
+        passed, authorized = _authorize_arms(
+            arm_gates,
+            {"passed": True},
+            prerequisite_authorized_arms=["four_cycle"],
+        )
+        self.assertEqual(
+            passed,
+            ["four_cycle", "six_cycle", "mixed_cycle"],
+        )
+        self.assertEqual(authorized, ["four_cycle"])
+
     def test_exact_batch_size_is_locked_for_numerical_fidelity(self):
         self.assertEqual(EXACT_BATCH_SIZE, 2)
         self.assertEqual(

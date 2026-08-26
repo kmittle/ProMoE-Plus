@@ -18,6 +18,8 @@
 
 一阶标签来自目标 MoE block 输出处的 suffix gradient。候选的所有 token-expert changes 一起求和，再与一次 paired forced-route forward 得到的 exact MSE change 比较。不能把 token 当独立统计样本。v5 把一阶 native reference 改成 batch size 2 的两个相同样本，并只使用 row 0 的 loss、suffix gradient、router state 和 prediction；每个 exact forward 同样固定为 `[native, candidate]` 两行。另有同形状 forced-native 和 duplicate-reference 控制。候选、未见样本、统计 gate 以及 `5e-6` 输出误差阈值均未改变。v4 的 batch-1 reference 与 batch-4 exact forward 之间最大输出漂移为 `6.013e-6`，因此其 plumbing 结果保持失败，不能重新解释。
 
+v5 confirmatory 因极端负载偏斜触发候选采样器的固定重试上限，进程在生成 confirmatory summary 前退出。v6 是针对这个机械失败的修订：先完整保留 v5 的 1024 次均匀 token 拒绝采样；只有旧实现会报错时，才从所有合法的 distinct-source token tuple 中做精确均匀抽样。因此，v5 能完整生成候选库的 cell 在 v6 中序列逐字不变；触发上限的 cell 只在失败点后使用 fallback。v5 输出保持原样且不被 v6 加载、迁移或复用，v6 使用新目录从 plumbing 开始完整重跑。v6 还把最终授权明确收紧为 `discovery authorized arms ∩ confirmatory passed arms`，不会在 confirmatory 中复活 discovery 未授权的 arm。
+
 ## 锁定顺序
 
 协议固定 Base seed-0 step-200K EMA、sigmas `0.2/0.5/0.8` 和以下三阶段：
@@ -40,7 +42,7 @@
   --ckpt outputs/ProMoE_TC_B/004_ProMoE_B_seed0_control/checkpoints/ckpt_step_200000.pth \
   --weights-ckpt /home/dev/promoe-probes/base-seed0-ckpt_step_200000.pth \
   --latent-root /home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz \
-  --output-dir /home/dev/promoe-probes/count-preserving-cycle-gate-base200k-v5 \
+  --output-dir /home/dev/promoe-probes/count-preserving-cycle-gate-base200k-v6 \
   --prepare-only
 ```
 
@@ -56,7 +58,7 @@
   --ckpt outputs/ProMoE_TC_B/004_ProMoE_B_seed0_control/checkpoints/ckpt_step_200000.pth \
   --weights-ckpt /home/dev/promoe-probes/base-seed0-ckpt_step_200000.pth \
   --latent-root /home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz \
-  --output-dir /home/dev/promoe-probes/count-preserving-cycle-gate-base200k-v5 \
+  --output-dir /home/dev/promoe-probes/count-preserving-cycle-gate-base200k-v6 \
   --split plumbing
 ```
 

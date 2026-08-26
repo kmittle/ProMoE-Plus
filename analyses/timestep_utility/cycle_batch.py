@@ -12,7 +12,7 @@ from scipy.stats import wilcoxon
 from .cycle_probe import ARM_NAMES, COUNT_PRESERVING_ARMS, PROBE_VERSION
 
 
-BATCH_VERSION = 1
+BATCH_VERSION = 2
 MANIFEST_NAME = "count_preserving_cycle_gate_v1"
 SELECTION_SALT = "promoe-count-preserving-cycle-gate-v1-20260826"
 MODEL_NAME = "ProMoE_TC_B"
@@ -179,6 +179,31 @@ def requirements_for_split(split):
             "expected_case_count": SPLIT_COUNTS[split],
         }
     raise ValueError(f"Unknown split: {split}")
+
+
+def _authorize_arms(arm_gates, six_retention, prerequisite_authorized_arms=None):
+    gated_arms = ("four_cycle", "six_cycle", "mixed_cycle")
+    passed_arms = []
+    if arm_gates["four_cycle"]["passed"]:
+        passed_arms.append("four_cycle")
+    for arm in ("six_cycle", "mixed_cycle"):
+        if arm_gates[arm]["passed"] and six_retention["passed"]:
+            passed_arms.append(arm)
+
+    if prerequisite_authorized_arms is None:
+        return passed_arms, passed_arms
+    prerequisite_authorized_arms = tuple(prerequisite_authorized_arms)
+    if (
+        len(prerequisite_authorized_arms)
+        != len(set(prerequisite_authorized_arms))
+        or any(arm not in gated_arms for arm in prerequisite_authorized_arms)
+    ):
+        raise ValueError("Prerequisite authorized arms are invalid")
+    prerequisite_set = set(prerequisite_authorized_arms)
+    authorized_arms = [
+        arm for arm in passed_arms if arm in prerequisite_set
+    ]
+    return passed_arms, authorized_arms
 
 
 def sha256_file(path, chunk_size=8 * 1024 * 1024):
@@ -858,13 +883,26 @@ def _secondary_stratum_tests(metrics, arm):
     }
 
 
-def aggregate_case_results(case_results, split, requirements=None):
+def aggregate_case_results(
+    case_results,
+    split,
+    requirements=None,
+    prerequisite_authorized_arms=None,
+):
     expected_requirements = requirements_for_split(split)
     requirements = dict(requirements or expected_requirements)
     if requirements != expected_requirements:
         raise ValueError("Gate requirements differ from the locked protocol")
     if len(case_results) != requirements["expected_case_count"]:
         raise ValueError("Case count does not match the locked split")
+    if split == "confirmatory" and prerequisite_authorized_arms is None:
+        raise ValueError(
+            "Confirmatory aggregation requires discovery-authorized arms"
+        )
+    if split != "confirmatory" and prerequisite_authorized_arms is not None:
+        raise ValueError(
+            "Only confirmatory aggregation accepts prerequisite arms"
+        )
     metrics = [_case_metrics(result, split) for result in case_results]
     if len({metric["case_id"] for metric in metrics}) != len(metrics):
         raise ValueError("Duplicate case IDs in aggregate")
@@ -901,13 +939,11 @@ def aggregate_case_results(case_results, split, requirements=None):
         resamples,
         seed + 500,
     )
-    authorized = []
-    if arm_gates["four_cycle"]["passed"]:
-        authorized.append("four_cycle")
-    if arm_gates["six_cycle"]["passed"] and six_retention["passed"]:
-        authorized.append("six_cycle")
-    if arm_gates["mixed_cycle"]["passed"] and six_retention["passed"]:
-        authorized.append("mixed_cycle")
+    passed_arms, authorized = _authorize_arms(
+        arm_gates,
+        six_retention,
+        prerequisite_authorized_arms,
+    )
     recommended = (
         "mixed_cycle" if "mixed_cycle" in authorized
         else "four_cycle" if "four_cycle" in authorized
@@ -927,6 +963,12 @@ def aggregate_case_results(case_results, split, requirements=None):
         "safety_passed": safety_passed,
         "arm_gates": arm_gates,
         "six_cycle_retention": six_retention,
+        "passed_arms": passed_arms,
+        "prerequisite_authorized_arms": (
+            list(prerequisite_authorized_arms)
+            if prerequisite_authorized_arms is not None
+            else None
+        ),
         "authorized_arms": authorized,
         "recommended_arm": recommended,
         "secondary_stratum_tests": secondary,
@@ -935,8 +977,10 @@ def aggregate_case_results(case_results, split, requirements=None):
         "passed": route_passed,
         "interpretation": (
             "A passing discovery gate authorizes only the locked confirmatory "
-            "probe. A passing confirmatory gate authorizes a small router-fitting "
-            "prototype, not ImageNet long training or a generation claim; a second "
-            "checkpoint or seed replication remains required."
+            "probe. Confirmatory authorization is the intersection of discovery-"
+            "authorized and confirmatory-passing arms. A passing confirmatory gate "
+            "authorizes a small router-fitting prototype, not ImageNet long training "
+            "or a generation claim; a second checkpoint or seed replication remains "
+            "required."
         ),
     }

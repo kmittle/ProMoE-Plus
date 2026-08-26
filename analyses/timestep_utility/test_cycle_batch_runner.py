@@ -13,7 +13,10 @@ from analyses.run_count_preserving_cycle_probe_batch import (
     _write_or_validate_protocol,
 )
 from analyses.timestep_utility.cycle_batch import BATCH_VERSION, SIGMAS
-from analyses.timestep_utility.cycle_probe import PROBE_VERSION
+from analyses.timestep_utility.cycle_probe import (
+    CANDIDATE_SAMPLER_VERSION,
+    PROBE_VERSION,
+)
 
 
 def _case():
@@ -32,6 +35,7 @@ def _case():
 def _result(case, protocol_sha256):
     return {
         "cycle_probe_version": PROBE_VERSION,
+        "candidate_sampler_version": CANDIDATE_SAMPLER_VERSION,
         "protocol_sha256": protocol_sha256,
         "batch_case": {
             key: case[key]
