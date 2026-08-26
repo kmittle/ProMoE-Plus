@@ -29,7 +29,7 @@ BLOCKS_BY_SPLIT = {
     "confirmatory": (1, 5, 11),
 }
 SPLIT_COUNTS = {"plumbing": 8, "discovery": 24, "confirmatory": 48}
-EXACT_BATCH_SIZE = 4
+EXACT_BATCH_SIZE = 2
 LOCKED_NUM_THREADS = 4
 BOOTSTRAP_RESAMPLES = 200_000
 BOOTSTRAP_SEEDS = {"discovery": 2026082611, "confirmatory": 2026082612}
@@ -144,6 +144,8 @@ CONFIRMATORY_REQUIREMENTS = {
     "minimum_mixed_minus_four_lcb": 0.0,
 }
 SAFETY_REQUIREMENTS = {
+    "maximum_reference_duplicate_relative_mse_drift": 1e-7,
+    "maximum_reference_duplicate_output_drift": 5e-6,
     "maximum_noop_relative_mse_change": 1e-7,
     "maximum_noop_output_change": 5e-6,
     "maximum_forced_unforced_relative_mse_change": 1e-7,
@@ -456,6 +458,8 @@ def _case_metrics(result, split):
         }
 
     safety = {
+        "reference_duplicate_relative_mse_drift": 0.0,
+        "reference_duplicate_output_drift": 0.0,
         "noop_relative_mse_change": 0.0,
         "noop_output_change": 0.0,
         "forced_unforced_relative_mse_change": 0.0,
@@ -467,6 +471,14 @@ def _case_metrics(result, split):
     for cell in cells:
         controls = cell["numerical_controls"]
         native_mse = float(cell["native_mse"])
+        safety["reference_duplicate_relative_mse_drift"] = max(
+            safety["reference_duplicate_relative_mse_drift"],
+            controls["max_abs_reference_duplicate_mse_drift"] / native_mse,
+        )
+        safety["reference_duplicate_output_drift"] = max(
+            safety["reference_duplicate_output_drift"],
+            controls["max_abs_reference_duplicate_output_drift"],
+        )
         safety["noop_relative_mse_change"] = max(
             safety["noop_relative_mse_change"],
             controls["max_abs_noop_mse_change"] / native_mse,
@@ -514,6 +526,8 @@ def _safety_gate(metrics, requirements):
     maxima = {
         name: max(metric["safety"][name] for metric in metrics)
         for name in (
+            "reference_duplicate_relative_mse_drift",
+            "reference_duplicate_output_drift",
             "noop_relative_mse_change",
             "noop_output_change",
             "forced_unforced_relative_mse_change",
@@ -526,6 +540,18 @@ def _safety_gate(metrics, requirements):
         metric["safety"]["count_mismatches"] for metric in metrics
     )
     checks = {
+        "reference_duplicate_relative_mse": _check(
+            maxima["reference_duplicate_relative_mse_drift"],
+            f"<={requirements['maximum_reference_duplicate_relative_mse_drift']}",
+            maxima["reference_duplicate_relative_mse_drift"]
+            <= requirements["maximum_reference_duplicate_relative_mse_drift"],
+        ),
+        "reference_duplicate_output": _check(
+            maxima["reference_duplicate_output_drift"],
+            f"<={requirements['maximum_reference_duplicate_output_drift']}",
+            maxima["reference_duplicate_output_drift"]
+            <= requirements["maximum_reference_duplicate_output_drift"],
+        ),
         "noop_relative_mse": _check(
             maxima["noop_relative_mse_change"],
             f"<={requirements['maximum_noop_relative_mse_change']}",

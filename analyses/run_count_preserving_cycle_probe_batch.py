@@ -322,6 +322,10 @@ def _build_protocol(
             "random_joint_tokens": RANDOM_JOINT_TOKENS,
             "audited_six_candidates": AUDITED_SIX_CANDIDATES,
             "exact_batch_size": EXACT_BATCH_SIZE,
+            "native_reference": (
+                "duplicate native rows at the exact batch shape; row 0 alone "
+                "defines loss, suffix gradient, router state, and prediction"
+            ),
             "route_weight": "native top-1 identity weight",
             "candidate_generation": (
                 "locked RNG samples without replacement from the complete legal "

@@ -31,13 +31,12 @@ from analyses.t_SNE.checkpoint_utils import (
     resolve_config_from_checkpoint,
 )
 from analyses.timestep_utility.probe import (
-    _forced_native_control,
     _forced_route_state,
     _validate_moe_block_contract,
 )
 
 
-PROBE_VERSION = 4
+PROBE_VERSION = 5
 ARM_NAMES = (
     "four_cycle",
     "six_cycle",
@@ -725,15 +724,21 @@ def _exact_candidate_changes(
     target,
     native_route_ids,
     native_route_weights,
-    native_prediction,
-    native_loss,
+    reference_predictions,
+    reference_losses,
     candidates,
     exact_batch_size,
 ):
     if exact_batch_size < 2 or exact_batch_size % 2:
         raise ValueError("exact_batch_size must be a positive even number")
+    if reference_predictions.shape[0] != exact_batch_size:
+        raise ValueError("Reference predictions must use the exact batch shape")
+    if reference_losses.shape != (exact_batch_size,):
+        raise ValueError("Reference losses must use the exact batch shape")
     candidates_per_forward = exact_batch_size // 2
     target_channels = target.shape[1]
+    native_prediction = reference_predictions[0:1]
+    native_loss = reference_losses[0]
     records = []
     max_native_mse_drift = 0.0
     max_native_output_drift = 0.0
@@ -824,34 +829,61 @@ def _exact_candidate_changes(
                 "full_count_match": bool(candidate["count_preserving"]),
             })
 
-    no_op_ids = native_route_ids.unsqueeze(0).expand(2, -1).clone()
-    no_op_weights = native_route_weights.unsqueeze(0).expand(2, -1).clone()
+    no_op_ids = native_route_ids.unsqueeze(0).expand(
+        exact_batch_size, -1
+    ).clone()
+    no_op_weights = native_route_weights.unsqueeze(0).expand(
+        exact_batch_size, -1
+    ).clone()
     with torch.inference_mode(), _forced_route_state(
         moe_layer,
         no_op_ids,
         no_op_weights,
     ):
         no_op_output = model(
-            noised_latent.repeat(2, 1, 1, 1, 1),
-            timestep.repeat(2),
-            context=label.repeat(2),
+            noised_latent.repeat(exact_batch_size, 1, 1, 1, 1),
+            timestep.repeat(exact_batch_size),
+            context=label.repeat(exact_batch_size),
         )
     no_op_prediction = _extract_prediction(no_op_output, target_channels)
     no_op_losses = _per_sample_mse(
         no_op_prediction,
-        target.repeat(2, 1, 1, 1),
+        target.repeat(exact_batch_size, 1, 1, 1),
     )
     controls = {
         "max_abs_paired_native_mse_drift": max_native_mse_drift,
         "max_abs_paired_native_output_drift": max_native_output_drift,
         "max_abs_noop_mse_change": float(
-            abs(no_op_losses[1].item() - no_op_losses[0].item())
+            (no_op_losses - no_op_losses[0]).abs().max().item()
         ),
-        "max_abs_noop_output_change": float((
-            no_op_prediction[1] - no_op_prediction[0]
-        ).abs().max().item()),
+        "max_abs_noop_output_change": float(
+            (no_op_prediction - no_op_prediction[0:1]).abs().max().item()
+        ),
+        "max_abs_forced_unforced_mse_change": float(
+            (no_op_losses - reference_losses).abs().max().item()
+        ),
+        "max_abs_forced_unforced_output_change": float(
+            (no_op_prediction - reference_predictions).abs().max().item()
+        ),
     }
     return records, controls
+
+
+def _duplicate_reference_control(reference_predictions, reference_losses):
+    if reference_predictions.shape[0] < 2:
+        raise ValueError("A duplicate reference requires at least two rows")
+    if reference_losses.shape != (reference_predictions.shape[0],):
+        raise ValueError("Reference predictions and losses must align")
+    return {
+        "max_abs_reference_duplicate_mse_drift": float(
+            (reference_losses - reference_losses[0]).abs().max().item()
+        ),
+        "max_abs_reference_duplicate_output_drift": float(
+            (
+                reference_predictions - reference_predictions[0:1]
+            ).abs().max().item()
+        ),
+    }
 
 
 def _pair_concordance(predicted, exact):
@@ -1010,11 +1042,24 @@ def _probe_cell(
     noised_latent = (1.0 - sigma_tensor) * clean_latent + sigma_tensor * noise
     target = (noise - clean_latent).squeeze(2)
 
+    reference_batch_size = int(exact_batch_size)
+    reference_target = target.repeat(reference_batch_size, 1, 1, 1)
     capture.start()
     try:
-        model_output = model(noised_latent, timestep, context=label)
-        native_prediction = _extract_prediction(model_output, target.shape[1])
-        native_loss = _per_sample_mse(native_prediction, target).mean()
+        model_output = model(
+            noised_latent.repeat(reference_batch_size, 1, 1, 1, 1),
+            timestep.repeat(reference_batch_size),
+            context=label.repeat(reference_batch_size),
+        )
+        reference_predictions = _extract_prediction(
+            model_output,
+            target.shape[1],
+        )
+        reference_losses = _per_sample_mse(
+            reference_predictions,
+            reference_target,
+        )
+        native_loss = reference_losses[0]
         if capture.moe_output is None:
             raise RuntimeError("The cycle probe did not capture the MoE output")
         moe_gradient, = torch.autograd.grad(native_loss, capture.moe_output)
@@ -1031,6 +1076,14 @@ def _probe_cell(
             labels,
         )
         router_scores = _all_router_weights(moe_layer, hidden_states)
+    if not torch.equal(
+        native_indices,
+        native_indices[0:1].expand_as(native_indices),
+    ) or not torch.equal(
+        native_weights,
+        native_weights[0:1].expand_as(native_weights),
+    ):
+        raise RuntimeError("Duplicate native references produced different routes")
     native_route_ids = native_indices[0, :, 0]
     native_route_weights = native_weights[0, :, 0]
     if not torch.equal(router_scores[0].argmax(dim=-1), native_route_ids):
@@ -1077,8 +1130,8 @@ def _probe_cell(
         target=target,
         native_route_ids=native_route_ids,
         native_route_weights=native_route_weights,
-        native_prediction=native_prediction.detach(),
-        native_loss=native_loss.detach(),
+        reference_predictions=reference_predictions.detach(),
+        reference_losses=reference_losses.detach(),
         candidates=flat_scored,
         exact_batch_size=exact_batch_size,
     )
@@ -1091,17 +1144,9 @@ def _probe_cell(
     }
     final_audits = [exact_by_id[record["id"]] for record in scored_audits]
 
-    forced_control = _forced_native_control(
-        model=model,
-        moe_layer=moe_layer,
-        noised_latent=noised_latent,
-        timestep=timestep,
-        label=label,
-        target=target,
-        native_route_ids=native_route_ids,
-        native_route_weights=native_route_weights,
-        unforced_prediction=native_prediction.detach(),
-        unforced_loss=native_loss.item(),
+    reference_control = _duplicate_reference_control(
+        reference_predictions.detach(),
+        reference_losses.detach(),
     )
     no_op_relative = (
         exact_controls["max_abs_noop_mse_change"] / native_loss.item()
@@ -1147,8 +1192,8 @@ def _probe_cell(
             epsilon_num,
         ),
         "numerical_controls": {
+            **reference_control,
             **exact_controls,
-            **forced_control,
             "count_mismatches": int(count_mismatches),
         },
     }
@@ -1162,7 +1207,7 @@ def run_cycle_probe_case(
     seed,
     block_indices,
     sigmas,
-    exact_batch_size=4,
+    exact_batch_size=2,
     latent_key="latent",
 ):
     latent_path = Path(latent_path).resolve()
@@ -1244,7 +1289,7 @@ def run_cycle_probe(
     seed,
     block_indices,
     sigmas,
-    exact_batch_size=4,
+    exact_batch_size=2,
     latent_key="latent",
     device="cpu",
     num_threads=8,

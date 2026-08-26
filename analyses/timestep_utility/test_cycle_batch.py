@@ -1,3 +1,4 @@
+import inspect
 import json
 import unittest
 from pathlib import Path
@@ -16,6 +17,10 @@ from analyses.timestep_utility.cycle_batch import (
     _canonical_selection,
     aggregate_case_results,
     requirements_for_split,
+)
+from analyses.timestep_utility.cycle_probe import (
+    run_cycle_probe,
+    run_cycle_probe_case,
 )
 
 
@@ -37,7 +42,7 @@ def _arm_summary(selected_gain=0.0):
     }
 
 
-def _plumbing_result(case_id, forced_drift=0.0):
+def _plumbing_result(case_id, forced_drift=0.0, reference_drift=0.0):
     arms = {
         arm: {"summary": _arm_summary(1e-4), "records": []}
         for arm in (
@@ -60,6 +65,8 @@ def _plumbing_result(case_id, forced_drift=0.0):
                 "has_unique_six": True,
             },
             "numerical_controls": {
+                "max_abs_reference_duplicate_mse_drift": reference_drift,
+                "max_abs_reference_duplicate_output_drift": 0.0,
                 "max_abs_noop_mse_change": 0.0,
                 "max_abs_noop_output_change": 0.0,
                 "max_abs_forced_unforced_mse_change": forced_drift,
@@ -74,7 +81,19 @@ def _plumbing_result(case_id, forced_drift=0.0):
 
 class CycleBatchTests(unittest.TestCase):
     def test_exact_batch_size_is_locked_for_numerical_fidelity(self):
-        self.assertEqual(EXACT_BATCH_SIZE, 4)
+        self.assertEqual(EXACT_BATCH_SIZE, 2)
+        self.assertEqual(
+            inspect.signature(run_cycle_probe_case).parameters[
+                "exact_batch_size"
+            ].default,
+            EXACT_BATCH_SIZE,
+        )
+        self.assertEqual(
+            inspect.signature(run_cycle_probe).parameters[
+                "exact_batch_size"
+            ].default,
+            EXACT_BATCH_SIZE,
+        )
 
     def test_checked_in_manifest_locks_all_splits(self):
         payload = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
@@ -131,6 +150,22 @@ class CycleBatchTests(unittest.TestCase):
         self.assertFalse(gate["passed"])
         self.assertFalse(
             gate["safety_checks"]["forced_unforced_relative_mse"]["passed"]
+        )
+
+    def test_plumbing_fails_closed_on_duplicate_reference_drift(self):
+        results = [
+            _plumbing_result(
+                f"case-{index}",
+                reference_drift=2e-7 if index == 0 else 0.0,
+            )
+            for index in range(SPLIT_COUNTS["plumbing"])
+        ]
+        gate = aggregate_case_results(results, "plumbing")
+        self.assertFalse(gate["passed"])
+        self.assertFalse(
+            gate["safety_checks"][
+                "reference_duplicate_relative_mse"
+            ]["passed"]
         )
 
     def test_requirements_are_locked_per_split(self):

@@ -9,6 +9,7 @@ from analyses.timestep_utility.cycle_probe import (
     AUDITED_SIX_CANDIDATES,
     _build_random_joint_arm,
     _count_deranged_assignments,
+    _duplicate_reference_control,
     _edge_first_order_grid,
     _exact_candidate_changes,
     _score_candidates,
@@ -248,10 +249,14 @@ class CycleProbeTests(unittest.TestCase):
         native_ids = torch.tensor([0, 1], dtype=torch.long)
         native_weights = torch.tensor([0.5, 0.25])
         with torch.inference_mode():
-            native_prediction = model(latent, timestep, context=label)
-        native_loss = (
-            native_prediction.double() - target.double()
-        ).square().flatten(1).mean(dim=1)[0]
+            reference_predictions = model(
+                latent.repeat(2, 1, 1, 1, 1),
+                timestep.repeat(2),
+                context=label.repeat(2),
+            )
+        reference_losses = (
+            reference_predictions.double() - target.repeat(2, 1, 1, 1).double()
+        ).square().flatten(1).mean(dim=1)
         candidate = {
             "id": "four_cycle:000",
             "arm": "four_cycle",
@@ -276,8 +281,8 @@ class CycleProbeTests(unittest.TestCase):
             target=target,
             native_route_ids=native_ids,
             native_route_weights=native_weights,
-            native_prediction=native_prediction,
-            native_loss=native_loss,
+            reference_predictions=reference_predictions,
+            reference_losses=reference_losses,
             candidates=[candidate],
             exact_batch_size=2,
         )
@@ -285,6 +290,55 @@ class CycleProbeTests(unittest.TestCase):
         self.assertNotEqual(records[0]["exact_mse_change"], 0.0)
         self.assertEqual(controls["max_abs_noop_mse_change"], 0.0)
         self.assertEqual(controls["max_abs_noop_output_change"], 0.0)
+        self.assertEqual(
+            controls["max_abs_forced_unforced_mse_change"],
+            0.0,
+        )
+        self.assertEqual(
+            controls["max_abs_forced_unforced_output_change"],
+            0.0,
+        )
+
+    def test_duplicate_reference_control_compares_every_row_to_row_zero(self):
+        predictions = torch.tensor([
+            [[[1.0, 2.0]]],
+            [[[1.0, 2.0]]],
+            [[[1.0, 2.5]]],
+        ])
+        losses = torch.tensor([0.25, 0.25, 0.5])
+        controls = _duplicate_reference_control(predictions, losses)
+        self.assertEqual(
+            controls["max_abs_reference_duplicate_mse_drift"],
+            0.25,
+        )
+        self.assertEqual(
+            controls["max_abs_reference_duplicate_output_drift"],
+            0.5,
+        )
+
+    def test_exact_evaluator_rejects_mismatched_reference_batch(self):
+        model = _ToyModel()
+        latent = torch.tensor([[[[[2.0, 3.0]]]]])
+        timestep = torch.tensor([0.5])
+        label = torch.tensor([1])
+        target = torch.zeros(1, 1, 1, 2)
+        with torch.inference_mode():
+            prediction = model(latent, timestep, context=label)
+        with self.assertRaisesRegex(ValueError, "exact batch shape"):
+            _exact_candidate_changes(
+                model=model,
+                moe_layer=model.moe,
+                noised_latent=latent,
+                timestep=timestep,
+                label=label,
+                target=target,
+                native_route_ids=torch.tensor([0, 1], dtype=torch.long),
+                native_route_weights=torch.tensor([0.5, 0.25]),
+                reference_predictions=prediction,
+                reference_losses=torch.tensor([1.0]),
+                candidates=[],
+                exact_batch_size=2,
+            )
 
     def test_arm_summary_keeps_native_when_prediction_has_no_gain(self):
         records = []
