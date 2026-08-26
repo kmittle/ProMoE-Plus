@@ -1,4 +1,6 @@
 import copy
+import io
+import pickle
 import random
 import tempfile
 import unittest
@@ -104,29 +106,94 @@ class TrainResumeTests(unittest.TestCase):
             for paths, labels, latents in loader
         ]
 
-    def test_rng_state_round_trip(self):
+    @staticmethod
+    def _seed_rng_streams():
         random.seed(7)
         np.random.seed(11)
         torch.manual_seed(13)
-        state = _capture_rng_state()
-        expected = (
-            random.random(),
-            float(np.random.random()),
-            torch.rand(4),
-        )
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(17)
 
+    @staticmethod
+    def _draw_rng_streams():
+        values = {
+            'python': random.random(),
+            'numpy': float(np.random.random()),
+            'torch': torch.rand(4),
+        }
+        if torch.cuda.is_available():
+            values['cuda'] = torch.rand(4, device='cuda').cpu()
+        return values
+
+    @staticmethod
+    def _disturb_rng_streams():
         random.seed(101)
         np.random.seed(103)
         torch.manual_seed(107)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(109)
+
+    def _assert_rng_continuation(self, state):
+        expected = self._draw_rng_streams()
+        self._disturb_rng_streams()
         _restore_rng_state(state)
-        actual = (
-            random.random(),
-            float(np.random.random()),
-            torch.rand(4),
+        actual = self._draw_rng_streams()
+        self.assertEqual(actual['python'], expected['python'])
+        self.assertEqual(actual['numpy'], expected['numpy'])
+        torch.testing.assert_close(
+            actual['torch'], expected['torch'], rtol=0, atol=0
         )
-        self.assertEqual(actual[0], expected[0])
-        self.assertEqual(actual[1], expected[1])
-        torch.testing.assert_close(actual[2], expected[2], rtol=0, atol=0)
+        if 'cuda' in expected:
+            torch.testing.assert_close(
+                actual['cuda'], expected['cuda'], rtol=0, atol=0
+            )
+
+    def test_rng_state_round_trip(self):
+        self._seed_rng_streams()
+        state = _capture_rng_state()
+        self.assertEqual(state['numpy']['state'].dtype, torch.int64)
+        self._assert_rng_continuation(state)
+
+    def test_rng_state_pickle_round_trip(self):
+        self._seed_rng_streams()
+        state = _capture_rng_state()
+        deserialized = pickle.loads(pickle.dumps(state))
+        self._assert_rng_continuation(deserialized)
+
+    def test_rng_state_torch_save_round_trip(self):
+        self._seed_rng_streams()
+        state = _capture_rng_state()
+        buffer = io.BytesIO()
+        torch.save(state, buffer)
+        buffer.seek(0)
+        deserialized = torch.load(buffer, weights_only=False)
+        self._assert_rng_continuation(deserialized)
+
+    def test_rng_state_restores_legacy_uint32_numpy_state(self):
+        self._seed_rng_streams()
+        state = _capture_rng_state()
+        state['numpy']['state'] = state['numpy']['state'].to(torch.uint32)
+        self._assert_rng_continuation(state)
+
+    def test_v2_checkpoint_accepts_legacy_uint32_numpy_state(self):
+        checkpoint = {
+            'step': 8,
+            'trainer_state': self._trainer_state(8),
+        }
+        rng_state = checkpoint['trainer_state']['rank_states'][0]['rng_state']
+        rng_state['numpy']['state'] = rng_state['numpy']['state'].to(
+            torch.uint32
+        )
+        resumed = _resume_state_from_checkpoint(
+            checkpoint,
+            rank=0,
+            world_size=1,
+            grad_mix=1,
+            batches_per_epoch=3,
+            fallback_seed=0,
+            sampler_contract=self._sampler_contract(),
+        )
+        self.assertEqual(resumed['next_step'], 9)
 
     def test_legacy_checkpoint_resumes_after_saved_step(self):
         state = _legacy_resume_state(

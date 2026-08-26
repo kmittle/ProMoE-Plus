@@ -709,7 +709,9 @@ def _capture_rng_state():
         'python': random.getstate(),
         'numpy': {
             'bit_generator': numpy_state[0],
-            'state': torch.from_numpy(numpy_state[1].copy()),
+            'state': torch.from_numpy(
+                numpy_state[1].astype(np.int64, copy=True)
+            ),
             'position': int(numpy_state[2]),
             'has_gauss': int(numpy_state[3]),
             'cached_gaussian': float(numpy_state[4]),
@@ -721,6 +723,21 @@ def _capture_rng_state():
     return state
 
 
+def _numpy_rng_state_array(state):
+    if not torch.is_tensor(state):
+        raise TypeError("NumPy RNG state vector must be a tensor")
+    if state.dtype not in {torch.int64, torch.uint32}:
+        raise TypeError("NumPy RNG state vector must use int64 or uint32")
+    if state.ndim != 1 or state.numel() == 0:
+        raise TypeError("NumPy RNG state must be a nonempty vector")
+    state = state.detach().cpu()
+    if state.dtype == torch.int64:
+        max_uint32 = np.iinfo(np.uint32).max
+        if torch.any(state < 0) or torch.any(state > max_uint32):
+            raise ValueError("NumPy RNG state vector is outside uint32 range")
+    return state.numpy().astype(np.uint32, copy=True)
+
+
 def _restore_rng_state(state):
     required = {'python', 'numpy', 'torch'}
     if not isinstance(state, dict) or not required.issubset(state):
@@ -729,7 +746,7 @@ def _restore_rng_state(state):
     numpy_state = state['numpy']
     np.random.set_state((
         numpy_state['bit_generator'],
-        numpy_state['state'].cpu().numpy(),
+        _numpy_rng_state_array(numpy_state['state']),
         int(numpy_state['position']),
         int(numpy_state['has_gauss']),
         float(numpy_state['cached_gaussian']),
@@ -752,13 +769,10 @@ def _validate_rng_state(state):
         numpy_state = state['numpy']
         if not isinstance(numpy_state, dict):
             raise TypeError("NumPy RNG state must be a mapping")
-        numpy_tensor = numpy_state['state']
-        if not torch.is_tensor(numpy_tensor):
-            raise TypeError("NumPy RNG state vector must be a tensor")
         numpy_rng = np.random.RandomState()
         numpy_rng.set_state((
             numpy_state['bit_generator'],
-            numpy_tensor.cpu().numpy(),
+            _numpy_rng_state_array(numpy_state['state']),
             int(numpy_state['position']),
             int(numpy_state['has_gauss']),
             float(numpy_state['cached_gaussian']),
