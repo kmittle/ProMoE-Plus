@@ -324,8 +324,10 @@ def _build_protocol(
             "exact_batch_size": EXACT_BATCH_SIZE,
             "route_weight": "native top-1 identity weight",
             "candidate_generation": (
-                "stateless locked RNG using only native route IDs; no VJP, "
-                "exact loss, or teacher feature may influence candidate banks"
+                "locked RNG samples without replacement from the complete legal "
+                "eight-token fixed-count random-joint signature space using only "
+                "native route IDs; no VJP, exact loss, or teacher feature may "
+                "influence candidate banks"
             ),
             "requirements": {
                 split: requirements_for_split(split) for split in SPLIT_COUNTS

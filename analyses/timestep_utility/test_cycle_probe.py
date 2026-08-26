@@ -7,10 +7,13 @@ from analyses.timestep_utility.cycle_probe import (
     ARM_CANDIDATES,
     ARM_NAMES,
     AUDITED_SIX_CANDIDATES,
+    _build_random_joint_arm,
+    _count_deranged_assignments,
     _edge_first_order_grid,
     _exact_candidate_changes,
     _score_candidates,
     _summarize_six_audit,
+    _unrank_multiset_derangement,
     build_candidate_banks,
     summarize_arm,
 )
@@ -115,6 +118,77 @@ class CycleProbeTests(unittest.TestCase):
             sum(candidate["kind"] == "six_cycle" for candidate in banks["mixed_cycle"]),
             32,
         )
+
+    def test_random_joint_handles_extreme_route_imbalance(self):
+        native = np.repeat(np.arange(3, dtype=np.int64), [252, 2, 2])
+        first = _build_random_joint_arm(native, 3, 789)
+        second = _build_random_joint_arm(native, 3, 789)
+        different_seed = _build_random_joint_arm(native, 3, 790)
+        self.assertEqual(first, second)
+        self.assertNotEqual(first, different_seed)
+        self.assertEqual(len(first), ARM_CANDIDATES)
+        signatures = {
+            tuple(sorted(zip(
+                candidate["tokens"],
+                candidate["destination_experts"],
+            )))
+            for candidate in first
+        }
+        self.assertEqual(len(signatures), ARM_CANDIDATES)
+        for candidate in first:
+            self.assertEqual(candidate["changed_tokens"], 8)
+            self.assertEqual(
+                candidate["source_count_vector"],
+                candidate["destination_count_vector"],
+            )
+            self.assertTrue(all(
+                source != destination
+                for source, destination in zip(
+                    candidate["source_experts"],
+                    candidate["destination_experts"],
+                )
+            ))
+
+    def test_random_joint_rejects_mathematically_infeasible_routes(self):
+        native = np.repeat(np.arange(3, dtype=np.int64), [254, 1, 1])
+        with self.assertRaisesRegex(RuntimeError, "do not admit"):
+            _build_random_joint_arm(native, 3, 123)
+
+    def test_derangement_unranking_covers_all_feasible_partitions(self):
+        def partitions(total, maximum):
+            if total == 0:
+                yield ()
+                return
+            for part in range(min(total, maximum), 0, -1):
+                for tail in partitions(total - part, part):
+                    yield (part,) + tail
+
+        for counts in partitions(8, 4):
+            sources = tuple(
+                expert
+                for expert, count in enumerate(counts)
+                for _ in range(count)
+            )
+            total = _count_deranged_assignments(counts)
+            self.assertGreater(total, 0, counts)
+            assignments = set()
+            for rank in range(total):
+                destinations = tuple(_unrank_multiset_derangement(
+                    sources,
+                    counts,
+                    rank,
+                ).tolist())
+                self.assertTrue(all(
+                    source != destination
+                    for source, destination in zip(sources, destinations)
+                ))
+                self.assertEqual(
+                    np.bincount(destinations, minlength=len(counts)).tolist(),
+                    list(counts),
+                )
+                assignments.add(destinations)
+            self.assertEqual(len(assignments), total, counts)
+        self.assertEqual(_count_deranged_assignments((5, 3)), 0)
 
     def test_edge_first_order_grid_uses_native_weight(self):
         moe = _ToyMoe()

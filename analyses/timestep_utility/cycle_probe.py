@@ -5,7 +5,10 @@ from __future__ import annotations
 import gc
 import hashlib
 import time
+from bisect import bisect_right
+from functools import lru_cache
 from itertools import combinations
+from math import comb
 from pathlib import Path
 
 import numpy as np
@@ -34,7 +37,7 @@ from analyses.timestep_utility.probe import (
 )
 
 
-PROBE_VERSION = 1
+PROBE_VERSION = 2
 ARM_NAMES = (
     "four_cycle",
     "six_cycle",
@@ -73,6 +76,219 @@ def _count_vector(experts, num_experts):
         np.asarray(experts, dtype=np.int64),
         minlength=int(num_experts),
     )
+
+
+def _random_below(generator, upper):
+    upper = int(upper)
+    if upper <= 0:
+        raise ValueError("Random upper bound must be positive")
+    if upper == 1:
+        return 0
+    bit_count = (upper - 1).bit_length()
+    word_count = (bit_count + 63) // 64
+    mask = (1 << bit_count) - 1
+    while True:
+        value = 0
+        for word_index in range(word_count):
+            value |= (
+                int(generator.bit_generator.random_raw()) << (64 * word_index)
+            )
+        value &= mask
+        if value < upper:
+            return value
+
+
+def _sample_unique_ranks(generator, population_size, sample_size):
+    population_size = int(population_size)
+    sample_size = int(sample_size)
+    if sample_size < 0 or sample_size > population_size:
+        raise ValueError("Cannot sample the requested number of unique ranks")
+    selected = set()
+    ranks = []
+    for upper in range(population_size - sample_size, population_size):
+        rank = _random_below(generator, upper + 1)
+        if rank in selected:
+            rank = upper
+        selected.add(rank)
+        ranks.append(rank)
+    generator.shuffle(ranks)
+    return ranks
+
+
+@lru_cache(maxsize=None)
+def _count_deranged_pattern(count_pattern):
+    sources = tuple(
+        expert
+        for expert, count in enumerate(count_pattern)
+        for _ in range(count)
+    )
+
+    @lru_cache(maxsize=None)
+    def count_from(position, remaining):
+        if position == len(sources):
+            return int(not any(remaining))
+        total = 0
+        for destination, count in enumerate(remaining):
+            if count == 0 or destination == sources[position]:
+                continue
+            next_remaining = list(remaining)
+            next_remaining[destination] -= 1
+            total += count_from(position + 1, tuple(next_remaining))
+        return total
+
+    return count_from(0, tuple(count_pattern))
+
+
+def _count_deranged_assignments(counts):
+    count_pattern = tuple(sorted(
+        (int(count) for count in counts if count),
+        reverse=True,
+    ))
+    return _count_deranged_pattern(count_pattern)
+
+
+def _unrank_combination(pool, selected_count, rank):
+    pool = np.asarray(pool, dtype=np.int64)
+    selected_count = int(selected_count)
+    rank = int(rank)
+    total = comb(pool.size, selected_count)
+    if rank < 0 or rank >= total:
+        raise ValueError("Combination rank lies outside its population")
+    selected = []
+    next_index = 0
+    for remaining_slots in range(selected_count, 0, -1):
+        for index in range(next_index, pool.size):
+            block_size = comb(pool.size - index - 1, remaining_slots - 1)
+            if rank < block_size:
+                selected.append(int(pool[index]))
+                next_index = index + 1
+                break
+            rank -= block_size
+    if len(selected) != selected_count or rank != 0:
+        raise RuntimeError("Combination unranking failed")
+    return selected
+
+
+def _unrank_token_subset(token_pools, counts, rank):
+    radices = [
+        comb(pool.size, int(count))
+        for pool, count in zip(token_pools, counts)
+    ]
+    suffix_products = [1] * (len(radices) + 1)
+    for index in range(len(radices) - 1, -1, -1):
+        suffix_products[index] = suffix_products[index + 1] * radices[index]
+    rank = int(rank)
+    if rank < 0 or rank >= suffix_products[0]:
+        raise ValueError("Token-subset rank lies outside its population")
+
+    tokens = []
+    for index, (pool, count) in enumerate(zip(token_pools, counts)):
+        tail_size = suffix_products[index + 1]
+        combination_rank, rank = divmod(rank, tail_size)
+        tokens.extend(_unrank_combination(pool, count, combination_rank))
+    if rank != 0:
+        raise RuntimeError("Token-subset unranking did not consume its rank")
+    return np.asarray(tokens, dtype=np.int64)
+
+
+def _unrank_multiset_derangement(sources, counts, rank):
+    sources = tuple(int(source) for source in sources)
+    counts = tuple(int(count) for count in counts)
+
+    @lru_cache(maxsize=None)
+    def count_from(position, remaining):
+        if position == len(sources):
+            return int(not any(remaining))
+        total = 0
+        for destination, count in enumerate(remaining):
+            if count == 0 or destination == sources[position]:
+                continue
+            next_remaining = list(remaining)
+            next_remaining[destination] -= 1
+            total += count_from(position + 1, tuple(next_remaining))
+        return total
+
+    rank = int(rank)
+    total = count_from(0, counts)
+    if rank < 0 or rank >= total:
+        raise ValueError("Derangement rank lies outside its population")
+
+    remaining = counts
+    destinations = []
+    for position, source in enumerate(sources):
+        for destination, count in enumerate(remaining):
+            if count == 0 or destination == source:
+                continue
+            next_remaining = list(remaining)
+            next_remaining[destination] -= 1
+            next_remaining = tuple(next_remaining)
+            block_size = count_from(position + 1, next_remaining)
+            if rank < block_size:
+                destinations.append(destination)
+                remaining = next_remaining
+                break
+            rank -= block_size
+        else:
+            raise RuntimeError("Derangement unranking reached an empty branch")
+    if rank != 0 or any(remaining):
+        raise RuntimeError("Derangement unranking did not consume its rank")
+    return np.asarray(destinations, dtype=np.int64)
+
+
+def _random_joint_signature_space(native_experts, num_experts):
+    capacities = _count_vector(native_experts, num_experts)
+    limits = np.minimum(capacities, RANDOM_JOINT_TOKENS // 2).astype(np.int64)
+    if int(limits.sum()) < RANDOM_JOINT_TOKENS:
+        raise RuntimeError(
+            "Native routes do not admit an eight-token fixed-count derangement"
+        )
+    token_pools = tuple(
+        np.flatnonzero(native_experts == expert).astype(np.int64)
+        for expert in range(num_experts)
+    )
+    suffix_limits = np.zeros(num_experts + 1, dtype=np.int64)
+    for index in range(num_experts - 1, -1, -1):
+        suffix_limits[index] = suffix_limits[index + 1] + limits[index]
+
+    blocks = []
+    cumulative_ends = []
+    counts = [0] * num_experts
+    total_signatures = 0
+
+    def visit(expert_index, remaining_tokens, subset_count):
+        nonlocal total_signatures
+        if expert_index == num_experts:
+            if remaining_tokens != 0:
+                return
+            count_tuple = tuple(counts)
+            derangement_count = _count_deranged_assignments(count_tuple)
+            if derangement_count == 0:
+                return
+            block_size = int(subset_count) * derangement_count
+            total_signatures += block_size
+            blocks.append((count_tuple, int(subset_count), derangement_count))
+            cumulative_ends.append(total_signatures)
+            return
+
+        minimum = max(
+            0,
+            int(remaining_tokens - suffix_limits[expert_index + 1]),
+        )
+        maximum = min(int(limits[expert_index]), int(remaining_tokens))
+        for selected_count in range(minimum, maximum + 1):
+            counts[expert_index] = selected_count
+            visit(
+                expert_index + 1,
+                remaining_tokens - selected_count,
+                subset_count * comb(
+                    int(capacities[expert_index]),
+                    selected_count,
+                ),
+            )
+        counts[expert_index] = 0
+
+    visit(0, RANDOM_JOINT_TOKENS, 1)
+    return token_pools, blocks, cumulative_ends, total_signatures
 
 
 def _validate_candidate(candidate, native_experts, num_experts):
@@ -266,45 +482,58 @@ def _build_single_token_arm(native_experts, num_experts, seed):
 
 def _build_random_joint_arm(native_experts, num_experts, seed):
     generator = np.random.default_rng(seed)
+    token_pools, blocks, cumulative_ends, total_signatures = (
+        _random_joint_signature_space(native_experts, num_experts)
+    )
+    if total_signatures < ARM_CANDIDATES:
+        raise RuntimeError(
+            "Random-joint signature space contains "
+            f"{total_signatures} candidates; {ARM_CANDIDATES} are required"
+        )
+    signature_ranks = _sample_unique_ranks(
+        generator,
+        total_signatures,
+        ARM_CANDIDATES,
+    )
     candidates = []
     seen = set()
-    num_tokens = native_experts.size
-    for candidate_index in range(ARM_CANDIDATES):
-        for _ in range(MAX_CANDIDATE_ATTEMPTS):
-            tokens = generator.choice(
-                num_tokens,
-                size=RANDOM_JOINT_TOKENS,
-                replace=False,
-            ).astype(np.int64)
-            sources = native_experts[tokens].astype(np.int64)
-            if np.unique(sources).size < 2:
-                continue
-            destinations = generator.permutation(sources)
-            if np.any(destinations == sources):
-                continue
-            signature = _candidate_signature(tokens, destinations)
-            if signature in seen:
-                continue
-            seen.add(signature)
-            candidate = {
-                "id": f"random_joint:{candidate_index:03d}",
-                "arm": "random_joint",
-                "kind": "random_joint",
-                "tokens": tokens.tolist(),
-                "source_experts": sources.tolist(),
-                "destination_experts": destinations.tolist(),
-                "count_preserving": True,
-            }
-            candidates.append(_validate_candidate(
-                candidate,
-                native_experts,
-                num_experts,
-            ))
-            break
-        else:
-            raise RuntimeError(
-                f"Could not construct random-joint candidate {candidate_index}"
-            )
+    for candidate_index, signature_rank in enumerate(signature_ranks):
+        block_index = bisect_right(cumulative_ends, signature_rank)
+        previous_end = 0 if block_index == 0 else cumulative_ends[block_index - 1]
+        counts, subset_count, derangement_count = blocks[block_index]
+        local_rank = signature_rank - previous_end
+        subset_rank, destination_rank = divmod(
+            local_rank,
+            derangement_count,
+        )
+        if subset_rank >= subset_count:
+            raise RuntimeError("Random-joint signature rank selected the wrong block")
+        tokens = _unrank_token_subset(token_pools, counts, subset_rank)
+        sources = native_experts[tokens].astype(np.int64)
+        destinations = _unrank_multiset_derangement(
+            sources,
+            counts,
+            destination_rank,
+        )
+        signature = _candidate_signature(tokens, destinations)
+        if signature in seen:
+            raise RuntimeError("Random-joint rank unranking produced a collision")
+        seen.add(signature)
+        candidate = {
+            "id": f"random_joint:{candidate_index:03d}",
+            "arm": "random_joint",
+            "kind": "random_joint",
+            "tokens": tokens.tolist(),
+            "source_experts": sources.tolist(),
+            "destination_experts": destinations.tolist(),
+            "count_preserving": True,
+            "joint_signature_rank": int(signature_rank),
+        }
+        candidates.append(_validate_candidate(
+            candidate,
+            native_experts,
+            num_experts,
+        ))
     return candidates
 
 

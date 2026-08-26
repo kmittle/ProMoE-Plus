@@ -12,7 +12,7 @@
 - `six_cycle`：三个 native expert 两两不同的 token 做一次有向轮换。这是二部图中的 6-cycle，只改变三个 token。
 - `mixed_cycle`：32 个独立 4-cycle 和 32 个独立 6-cycle。
 - `single_token`：从独立 cycle component 中取一条边，作为不保持 expert count 的 EPO 类对照。
-- `random_joint`：八个 token 随机打乱其 native expert multiset，要求八个 token 全部改变且完整 expert-count vector 不变，作为更一般的联合扰动对照。
+- `random_joint`：从完整合法的八-token joint signature 空间无放回抽样。每个 source expert 最多提供四个 token，再对 native expert multiset 做无固定点排列，因此八个 token 全部改变且完整 expert-count vector 不变。该 arm 是更一般的联合扰动对照，不固定为若干 pair swap。
 
 所有 count-preserving 候选都逐项验证完整 12-expert count vector。每个候选保留各 token 的 native top-1 route weight，只改变 expert identity，因此激活 token 数、expert histogram 和 routed-expert FLOPs 不变。
 
@@ -40,7 +40,7 @@
   --ckpt outputs/ProMoE_TC_B/004_ProMoE_B_seed0_control/checkpoints/ckpt_step_200000.pth \
   --weights-ckpt /home/dev/promoe-probes/base-seed0-ckpt_step_200000.pth \
   --latent-root /home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz \
-  --output-dir /home/dev/promoe-probes/count-preserving-cycle-gate-base200k-v1 \
+  --output-dir /home/dev/promoe-probes/count-preserving-cycle-gate-base200k-v2 \
   --prepare-only
 ```
 
@@ -56,7 +56,7 @@
   --ckpt outputs/ProMoE_TC_B/004_ProMoE_B_seed0_control/checkpoints/ckpt_step_200000.pth \
   --weights-ckpt /home/dev/promoe-probes/base-seed0-ckpt_step_200000.pth \
   --latent-root /home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz \
-  --output-dir /home/dev/promoe-probes/count-preserving-cycle-gate-base200k-v1 \
+  --output-dir /home/dev/promoe-probes/count-preserving-cycle-gate-base200k-v2 \
   --split plumbing
 ```
 
