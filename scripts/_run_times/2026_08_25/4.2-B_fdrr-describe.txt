@@ -1,0 +1,8 @@
+实验 / Experiment: 4.2-B_fdrr
+model_name: ProMoE_TC_B_FDRR  |  config: configs/004_ProMoE_B_fdrr.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分流、静态 `cluster_centers` 余弦 top-1 路由、shared expert、routing contrastive guidance）；直接父变体 / Parent: `models_ProMoE_TC.DiT`，FDRR 子类直接继承并保留其推理路径
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 一阶去噪后悔路由 / First-Order Denoising-Regret Routing：用 diffusion MSE 对目标 MoE 输出的 VJP 估计 current/challenger 专家替换的局部效用，再对两者的 cosine router score 做 pairwise BCE；标签和专家输出 detach，新增损失只直接训练零起始 block 3 的已有 `cluster_centers`。
+2. 稀疏、受控的训练期探测：10K warm-up 后每 16 step 探测一次，每张 conditional 图像取 1/16 token，challenger 在 runner-up 与随机其他专家间各占一半，只保留绝对置信度前 50%；`denoising_regret_coeff: 0.05` 再经过 10K-step ramp。内层 VJP 屏蔽 routing auxiliary gradient，正常外层 backward 仍保留原 routing contrastive guidance。
+3. 与 Base 严格配对：FDRR 不注册新增 parameter 或 buffer，eval 直接走父模型 forward，因此推理参数和路径不变；`global_seed: 0`、本地 latent-only 数据、Base 规模、global batch 256、lr 1e-4、501K steps，以及 300K/500K、CFG 1.0/1.5、50K OpenAI-style evaluation 均与 `4.1-B_seed0_control` 相同。

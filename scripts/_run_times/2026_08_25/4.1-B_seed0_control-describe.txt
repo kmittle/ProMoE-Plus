@@ -1,0 +1,8 @@
+实验 / Experiment: 4.1-B_seed0_control
+model_name: ProMoE_TC_B  |  config: configs/004_ProMoE_B_seed0_control.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分流、静态 `cluster_centers` 余弦 top-1 路由、shared expert、routing contrastive guidance）；直接父变体 / Parent: 基础 ProMoE-TC 本身，本实验是无算法改动的 fresh control
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 严格 seed-0 对照 / seeded control：模型仍注册为原始 `ProMoE_TC_B`，12 个 routed experts、`router_weight_mode: identity`、`top_k: 1`、shared expert 和 `routing_contrastive_lam: 1` 均不变；新增的是被 `train.py` 实际消费的 `global_seed: 0` 配对协议。
+2. 本地 latent-only 输入：设置 `use_pre_latents: True`、`use_encoded_latents: True`，只读取 `/home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz`，不依赖 ImageNet 原图或 REPA 表征输入。
+3. 公平评估协议：Base 规模、global batch 256、lr 1e-4、501K steps；在 300K/500K 分别以 CFG 1.0/1.5 生成 50K 样本，并使用项目 OpenAI-style evaluator。该结果是同批 FDRR 的直接比较基线，历史非配对 FID 只作背景参考。

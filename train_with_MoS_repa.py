@@ -40,6 +40,7 @@ from models.models_ProMoE_TC_repa_MoS_naive_choice import DiT as ProMoE_TC_REPA_
 from models.models_ProMoE_TC_repa_MoS_naive_choice_ import DiT as ProMoE_TC_REPA_MoS_Naive_Choice_Sep_DiT
 from models.models_ProMoE_TC_repa_multi_align import DiT as ProMoE_TC_REPA_Multi_Align_DiT
 from models.models_ProMoE_TC_repa_multi_align_affinity import DiT as ProMoE_TC_REPA_Multi_Align_Affinity_DiT
+from models.models_ProMoE_TC_repa_multi_align_denoising_regret import DiT as ProMoE_TC_REPA_Multi_Align_FDRR_DiT
 from models.models_ProMoE_TC_repa_multi_align_expert_geometry import DiT as ProMoE_TC_REPA_Multi_Align_TCEG_DiT
 from models.models_ProMoE_TC_repa_multi_align_spectral import DiT as ProMoE_TC_REPA_Multi_Align_SRSR_DiT
 from models.models_ProMoE_TC_repa_MoS_choice_per_block import DiT as ProMoE_TC_REPA_MoS_Choice_PerBlock_DiT
@@ -67,6 +68,7 @@ model_dict = {
     "ProMoE_TC_REPA_MoS_Naive_Choice_Sep_B": (ProMoE_TC_REPA_MoS_Naive_Choice_Sep_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_Multi_Align_B": (ProMoE_TC_REPA_Multi_Align_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_Multi_Align_Affinity_B": (ProMoE_TC_REPA_Multi_Align_Affinity_DiT, "DiT_B_config"),
+    "ProMoE_TC_REPA_Multi_Align_FDRR_B": (ProMoE_TC_REPA_Multi_Align_FDRR_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_Multi_Align_TCEG_B": (ProMoE_TC_REPA_Multi_Align_TCEG_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_Multi_Align_SRSR_B": (ProMoE_TC_REPA_Multi_Align_SRSR_DiT, "DiT_B_config"),
     "ProMoE_TC_REPA_MoS_Choice_PerBlock_B": (ProMoE_TC_REPA_MoS_Choice_PerBlock_DiT, "DiT_B_config"),
@@ -90,6 +92,9 @@ SPECTRAL_RESPONSIBILITY_MODELS = {
 }
 EXPERT_GEOMETRY_MODELS = {
     "ProMoE_TC_REPA_Multi_Align_TCEG_B",
+}
+DENOISING_REGRET_MODELS = {
+    "ProMoE_TC_REPA_Multi_Align_FDRR_B",
 }
 
 
@@ -548,16 +553,21 @@ def worker(gpu, cfg):
             'spectral_responsibility_coeff', 0.0
         )
         expert_geometry_coeff = repa_config.get('expert_geometry_coeff', 0.0)
+        denoising_regret_coeff = repa_config.get(
+            'denoising_regret_coeff', 0.0
+        )
         if any(coeff < 0 for coeff in (
             teacher_affinity_coeff,
             spectral_responsibility_coeff,
             expert_geometry_coeff,
+            denoising_regret_coeff,
         )):
             raise ValueError("REPA auxiliary-loss coefficients must be non-negative")
         uses_teacher_affinity = cfg.model_name in TEACHER_AFFINITY_MODELS
         uses_spectral_responsibility = \
             cfg.model_name in SPECTRAL_RESPONSIBILITY_MODELS
         uses_expert_geometry = cfg.model_name in EXPERT_GEOMETRY_MODELS
+        uses_denoising_regret = cfg.model_name in DENOISING_REGRET_MODELS
         if teacher_affinity_coeff > 0 and not uses_teacher_affinity:
             raise ValueError(
                 f"teacher_affinity_coeff is not supported by {cfg.model_name}"
@@ -570,14 +580,20 @@ def worker(gpu, cfg):
             raise ValueError(
                 f"expert_geometry_coeff is not supported by {cfg.model_name}"
             )
+        if denoising_regret_coeff > 0 and not uses_denoising_regret:
+            raise ValueError(
+                f"denoising_regret_coeff is not supported by {cfg.model_name}"
+            )
         if sum(coeff > 0 for coeff in (
             teacher_affinity_coeff,
             spectral_responsibility_coeff,
             expert_geometry_coeff,
+            denoising_regret_coeff,
         )) > 1:
             raise ValueError(
-                "Teacher-affinity, spectral-responsibility, and expert-geometry "
-                "losses must be tested as separate experiment arms"
+                "Teacher-affinity, spectral-responsibility, expert-geometry, "
+                "and denoising-regret losses must be tested as separate "
+                "experiment arms"
             )
         if cfg.rank == 0:
             logging.info(f'Rank 0: downloading/caching REPA teacher encoder: {enc_type}')
@@ -587,7 +603,8 @@ def worker(gpu, cfg):
             f'Initializing REPA teacher encoder: {enc_type}, proj_coeff={proj_coeff}, '
             f'teacher_affinity_coeff={teacher_affinity_coeff}, '
             f'spectral_responsibility_coeff={spectral_responsibility_coeff}, '
-            f'expert_geometry_coeff={expert_geometry_coeff}'
+            f'expert_geometry_coeff={expert_geometry_coeff}, '
+            f'denoising_regret_coeff={denoising_regret_coeff}'
         )
         teacher_encoder, teacher_embed_dim = load_teacher_encoder(
             enc_type, resolution=cfg.image_size, enc_path=repa_enc_path
@@ -735,7 +752,12 @@ def worker(gpu, cfg):
             arg_c['teacher_all_z'] = teacher_all_z
 
         noise = torch.randn_like(z)
+        target = noise - z
         noised_z_in = (1.0 - sigmas.squeeze()).view(z.shape[0], 1, 1, 1, 1) * z + sigmas.squeeze().view(z.shape[0], 1, 1, 1, 1) * noise
+
+        if cfg.model_name in DENOISING_REGRET_MODELS:
+            arg_c['denoising_target'] = target
+            arg_c['training_step'] = step
 
         with amp.autocast(dtype=cfg.param_dtype, enabled=use_amp):
             model_output = model(noised_z_in, t, **arg_c)
@@ -784,6 +806,22 @@ def worker(gpu, cfg):
                     loss_dict["expert_geometry_loss_weighted"] = \
                         expert_geometry_loss_weighted
                     loss_dict["loss"] += expert_geometry_loss_weighted
+                    for stat_name, stat_value in getattr(
+                        model.module, 'expert_geometry_stats', {}
+                    ).items():
+                        loss_dict[f"expert_geometry_{stat_name}"] = stat_value
+                elif cfg.model_name in DENOISING_REGRET_MODELS:
+                    loss_dict["denoising_regret_loss"] = auxiliary_repa_loss
+                    denoising_regret_loss_weighted = (
+                        auxiliary_repa_loss * denoising_regret_coeff
+                    )
+                    loss_dict["denoising_regret_loss_weighted"] = \
+                        denoising_regret_loss_weighted
+                    loss_dict["loss"] += denoising_regret_loss_weighted
+                    for stat_name, stat_value in getattr(
+                        model.module, 'denoising_regret_stats', {}
+                    ).items():
+                        loss_dict[f"denoising_regret_{stat_name}"] = stat_value
                 else:
                     raise ValueError(
                         f"Unexpected third model loss from {cfg.model_name}"
@@ -795,8 +833,6 @@ def worker(gpu, cfg):
             model_pred = model_pred.unsqueeze(2)
         else:
             model_pred = model_output
-
-        target = noise - z
 
         mse_loss = (model_pred - target) ** 2
         mse_loss = torch.stack([u.mean() for u in mse_loss])

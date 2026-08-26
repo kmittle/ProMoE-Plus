@@ -1,0 +1,8 @@
+实验 / Experiment: 3.2-B_repa_multi_align_fdrr_roll
+model_name: ProMoE_TC_REPA_Multi_Align_FDRR_B  |  config: configs/004_ProMoE_B_repa_multi_align_fdrr_roll.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分流、静态 learnable `cluster_centers`、cosine top-1 prototypical routing、shared expert 与 routing contrastive guidance）；直接父变体 / Parent: 正向 Base Multi-Align FDRR（使用 diffusion-MSE 一阶反事实偏好监督 block-3 router）
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. Roll 因果对照：设置 `denoising_regret_label_roll: 1`，在每张图像的已采样 token 内把归一化后悔标签循环移动一位，再用移动后的符号和置信度训练原 token-challenger 对；这会破坏效用标签与对应路由对的关系，同时保留每图标签值及正负比例。
+2. 与正向 FDRR 使用相同的 block 3、10K warm-up、每 16 step 探测、1/16 token 比例、mixed challenger、固定 selected route weight、top-50% 置信度筛选、pairwise BCE、step/rank-local RNG，以及 `0.05` 系数和 10K-step ramp；算法层面的唯一开关是上述 label roll。
+3. 其余 Base Multi-Align 训练与评估设置保持不变：12 routed experts、top-1 identity routing、routing contrastive guidance、`proj_coeff: 0.5`、501K steps，以及 300K/500K、CFG 1.0/1.5、50K images。该对照与正向 FDRR 共享参数结构和父模型 eval 路径，不增加推理 FLOPs。

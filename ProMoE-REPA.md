@@ -25,7 +25,7 @@ This document reflects the current REPA-related code in `ProMoE-Plus`. It covers
 | Entrypoint | Scope |
 | --- | --- |
 | `train_with_repa.py` | Standard REPA and most REPA-derived ProMoE variants |
-| `train_with_MoS_repa.py` | MoS-REPA, Multi-Align, Teacher-Affinity Routing, spectral responsibility, teacher-conditioned expert geometry, and cross-alignment variants |
+| `train_with_MoS_repa.py` | MoS-REPA, Multi-Align, Teacher-Affinity Routing, spectral responsibility, teacher-conditioned expert geometry, first-order denoising-regret routing, and cross-alignment variants |
 | `sample.py` | Shared sampling entrypoint for base, REPA, and MoS-REPA models |
 
 `sample.py` merges model registries from `train.py`, `train_with_repa.py`, and `train_with_MoS_repa.py`, so one script can sample all registered families.
@@ -54,6 +54,7 @@ Representative `train_with_MoS_repa.py` registry keys include:
 - `ProMoE_TC_REPA_Multi_Align_Affinity_B`
 - `ProMoE_TC_REPA_Multi_Align_SRSR_B`
 - `ProMoE_TC_REPA_Multi_Align_TCEG_B`
+- `ProMoE_TC_REPA_Multi_Align_FDRR_B`
 
 See `train_with_MoS_repa.py:model_dict` for the complete current registry.
 
@@ -93,9 +94,10 @@ MoS-REPA and Multi-Align use a different training path:
 - Teacher-Affinity Multi-Align returns `(pred, mos_repa_loss, teacher_affinity_loss)`
 - SRSR Multi-Align returns `(pred, mos_repa_loss, spectral_responsibility_loss)`
 - TCEG Multi-Align returns `(pred, mos_repa_loss, expert_geometry_loss)`
+- FDRR Multi-Align returns `(pred, mos_repa_loss, denoising_regret_loss)`
 - the outer loop applies `mos_repa_loss * proj_coeff` and the configured third-loss coefficient when present
 
-MoS variants route among teacher blocks, making them block-to-block alignment methods. Multi-Align, Teacher-Affinity Multi-Align, SRSR, and TCEG share the trainer but align selected DiT blocks only with the teacher's last layer.
+MoS variants route among teacher blocks, making them block-to-block alignment methods. Multi-Align, Teacher-Affinity Multi-Align, SRSR, TCEG, and FDRR share the trainer but align selected DiT blocks only with the teacher's last layer.
 
 ### Variant Summary
 
@@ -116,6 +118,7 @@ MoS variants route among teacher blocks, making them block-to-block alignment me
 - `Teacher-Affinity Routing`: keeps Multi-Align and adds a parameter-free training loss that matches pooled DINO patch affinities to one MoE router's soft co-assignment affinities for conditional samples.
 - `SRSR`: keeps Multi-Align and adds a training-only responsibility loss at one MoE block. The existing shared branch is aligned with a fixed low-pass DINO target and the routed branch with the complementary high-pass residual; a reverse flag provides the causal control.
 - `TCEG`: keeps Multi-Align and, for conditional samples at one aligned top-1 MoE block, groups raw routed-expert outputs and frozen teacher tokens by the detached expert assignment. It matches the unique off-diagonal entries of their independently centered, normalized centroid Gram matrices. A fixed spatial roll of teacher tokens is the negative control.
+- `FDRR`: keeps Multi-Align and, after a warm-up, periodically samples conditional tokens at one top-1 MoE block. It holds the selected route weight fixed, estimates the diffusion-MSE change for a runner-up or random equal-compute challenger from the suffix gradient, keeps the highest-confidence half, and applies pairwise BCE only to the existing `cluster_centers`. Its inner diffusion-MSE gradient query suppresses `AddAuxiliaryLoss` injection; the normal outer backward still includes routing contrastive gradients. A within-image roll of the utility labels is the matched negative control; evaluation adds no parameters or FLOPs. Launch remains blocked until the canonical probe-v4 10K gate and the separate Base-shape overhead/memory gate both pass.
 
 ---
 
@@ -467,8 +470,9 @@ This block is read by `train_with_repa.py` or `train_with_MoS_repa.py`.
 | `teacher_affinity_coeff` | Global coefficient applied to Teacher-Affinity Routing loss; `0` disables its contribution |
 | `spectral_responsibility_coeff` | Global coefficient applied to the SRSR branch-responsibility loss |
 | `expert_geometry_coeff` | Global coefficient applied to the TCEG centroid-geometry loss |
+| `denoising_regret_coeff` | Global coefficient applied to the FDRR pairwise router loss |
 
-`teacher_affinity_coeff`, `spectral_responsibility_coeff`, and `expert_geometry_coeff` are separate experiment arms; `train_with_MoS_repa.py` rejects configurations with more than one positive coefficient.
+`teacher_affinity_coeff`, `spectral_responsibility_coeff`, `expert_geometry_coeff`, and `denoising_regret_coeff` are separate experiment arms; `train_with_MoS_repa.py` rejects configurations with more than one positive coefficient.
 
 Example:
 
@@ -500,10 +504,10 @@ Variant-specific fields:
 | `router_repa_coeff` | `Router` | Router alignment coefficient |
 | `router_loss_decay_steps` | `Router_Contra` | Steps for linear handoff from router REPA to routing contrastive loss |
 | `num_teacher_blocks` | `MoS` / `MoS_Naive` | Teacher depth used for block-level routing |
-| `router_hidden_dim` | `MoS_Naive`, `Multi-Align`, `Teacher-Affinity`, `SRSR`, `TCEG` | Hidden width of the transformer router or alignment coefficient predictor |
-| `num_router_blocks` | `MoS_Naive`, `Multi-Align`, `Teacher-Affinity`, `SRSR`, `TCEG` | Number of transformer blocks in the router or alignment coefficient predictor |
-| `router_num_heads` | `MoS_Naive`, `Multi-Align`, `Teacher-Affinity`, `SRSR`, `TCEG` | Attention heads in the router or alignment coefficient predictor |
-| `align_blocks` | `Multi-Align`, `Teacher-Affinity`, `SRSR`, `TCEG` | Zero-based DiT blocks aligned with the teacher's last layer |
+| `router_hidden_dim` | `MoS_Naive`, `Multi-Align`, `Teacher-Affinity`, `SRSR`, `TCEG`, `FDRR` | Hidden width of the transformer router or alignment coefficient predictor |
+| `num_router_blocks` | `MoS_Naive`, `Multi-Align`, `Teacher-Affinity`, `SRSR`, `TCEG`, `FDRR` | Number of transformer blocks in the router or alignment coefficient predictor |
+| `router_num_heads` | `MoS_Naive`, `Multi-Align`, `Teacher-Affinity`, `SRSR`, `TCEG`, `FDRR` | Attention heads in the router or alignment coefficient predictor |
+| `align_blocks` | `Multi-Align`, `Teacher-Affinity`, `SRSR`, `TCEG`, `FDRR` | Zero-based DiT blocks aligned with the teacher's last layer |
 | `teacher_affinity_block` | `Teacher-Affinity` | Zero-based MoE block whose router receives affinity supervision |
 | `teacher_affinity_grid_size` | `Teacher-Affinity` | Side length used to pool teacher tokens and soft routing probabilities |
 | `teacher_affinity_router_temperature` | `Teacher-Affinity` | Temperature for soft assignments to existing cluster centers |
@@ -518,6 +522,17 @@ Variant-specific fields:
 | `expert_geometry_min_experts` | `TCEG` | Minimum valid expert centroids required to form a geometry loss for one image |
 | `expert_geometry_teacher_roll` | `TCEG` | Two integer shifts on the square teacher-token grid; `[0, 0]` is TCEG and `[7, 11]` is the fixed 16x16 negative control |
 | `expert_geometry_eps` | `TCEG` | Numerical epsilon for informative-centroid filtering and normalization |
+| `denoising_regret_block` | `FDRR` | Zero-based top-1 MoE block whose existing router receives regret supervision |
+| `denoising_regret_probe_interval` | `FDRR` | Training-step interval between sparse regret probes |
+| `denoising_regret_token_ratio` | `FDRR` | Fraction of conditional tokens sampled per probed image |
+| `denoising_regret_candidate_mode` | `FDRR` | Challenger policy: `runner-up`, `random`, or alternating `mixed` probe slots |
+| `denoising_regret_confidence_quantile` | `FDRR` | Quantile of absolute normalized first-order change below which labels are discarded |
+| `denoising_regret_temperature` | `FDRR` | Temperature applied to current-versus-challenger router-score margins in pairwise BCE |
+| `denoising_regret_warmup_steps` | `FDRR` | First step at which regret probes may become active |
+| `denoising_regret_ramp_steps` | `FDRR` | Linear ramp duration for the model-returned regret loss |
+| `denoising_regret_label_roll` | `FDRR` | Within-image shift of utility labels; `0` is the positive arm and `1` is the matched roll control |
+| `denoising_regret_seed` | `FDRR` | Base seed for the dedicated step/rank-local probe generator |
+| `denoising_regret_eps` | `FDRR` | Numerical epsilon for normalized utility and confidence filtering |
 
 MoS-specific validation rules:
 

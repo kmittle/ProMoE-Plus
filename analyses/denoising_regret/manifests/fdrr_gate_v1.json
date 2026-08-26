@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "name": "fdrr_gate_v1",
+  "cases": [
+    {
+      "id": "class000_n01440764_10027",
+      "label": 0,
+      "seed": 11,
+      "synset": "n01440764",
+      "latent": "n01440764/n01440764_10027.latent.npz"
+    },
+    {
+      "id": "class100_n01860187_10016",
+      "label": 100,
+      "seed": 23,
+      "synset": "n01860187",
+      "latent": "n01860187/n01860187_10016.latent.npz"
+    },
+    {
+      "id": "class250_n02110185_10002",
+      "label": 250,
+      "seed": 37,
+      "synset": "n02110185",
+      "latent": "n02110185/n02110185_10002.latent.npz"
+    },
+    {
+      "id": "class500_n03042490_10010",
+      "label": 500,
+      "seed": 53,
+      "synset": "n03042490",
+      "latent": "n03042490/n03042490_10010.latent.npz"
+    },
+    {
+      "id": "class750_n04033995_10001",
+      "label": 750,
+      "seed": 71,
+      "synset": "n04033995",
+      "latent": "n04033995/n04033995_10001.latent.npz"
+    },
+    {
+      "id": "class999_n15075141_10080",
+      "label": 999,
+      "seed": 89,
+      "synset": "n15075141",
+      "latent": "n15075141/n15075141_10080.latent.npz"
+    }
+  ]
+}

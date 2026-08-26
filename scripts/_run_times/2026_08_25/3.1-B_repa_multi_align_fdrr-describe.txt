@@ -1,0 +1,8 @@
+实验 / Experiment: 3.1-B_repa_multi_align_fdrr
+model_name: ProMoE_TC_REPA_Multi_Align_FDRR_B  |  config: configs/004_ProMoE_B_repa_multi_align_fdrr.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分流、静态 learnable `cluster_centers`、cosine top-1 prototypical routing、shared expert 与 routing contrastive guidance）；直接父变体 / Parent: Base Multi-Align（在 blocks `[2, 3, 4]` 对齐 DINOv2 最后一层，并用 `AlignCoefficientPredictor` 产生逐 token 系数）
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. First-Order Denoising-Regret Routing（FDRR）：只在零起始 block 3，从 step 10000 起每 16 step 对每张 conditional 图像抽取 1/16 token；challenger 按 probe slot 交替采用 router runner-up 与随机其他专家，并保持当前 selected route weight 不变，以 diffusion MSE 对该 MoE 输出的梯度和专家输出差构造一阶反事实偏好。
+2. 稀疏路由监督：以一阶变化的符号判断 current/challenger 优劣，以 `abs(cos(gradient, output_delta))` 过滤置信度前 50%，再对二者的 cosine router score 施加 pairwise BCE。标签、MoE 输入、梯度和专家输出均 detach，因此该项只向 block-3 `cluster_centers` 传递梯度；`denoising_regret_coeff: 0.05` 从 10K 起在 10K step 内线性 ramp。
+3. 保留 Base Multi-Align 的 12 routed experts、top-1 identity routing、原 routing contrastive loss、`proj_coeff: 0.5` 及 501K/50K 采样评估设置。FDRR 不新增 Parameter，使用 step/rank-local generator，DDP 按全局有效标签数归一化；eval 直接复用父模型 forward，因此不增加推理路径或 FLOPs。

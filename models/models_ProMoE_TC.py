@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 import torch
 import torch.nn as nn
 from timm.models.vision_transformer import PatchEmbed
@@ -8,6 +10,20 @@ from .modules import get_2d_sincos_pos_embed, Attention, modulate, TimestepEmbed
 #################################################################################
 #                                ProMoE Layer                                  #
 #################################################################################
+_AUXILIARY_LOSS_BACKWARD_SUPPRESSION_DEPTH = 0
+
+
+@contextmanager
+def suppress_auxiliary_loss_backward():
+    """Temporarily pass gradients through without injecting auxiliary losses."""
+    global _AUXILIARY_LOSS_BACKWARD_SUPPRESSION_DEPTH
+    _AUXILIARY_LOSS_BACKWARD_SUPPRESSION_DEPTH += 1
+    try:
+        yield
+    finally:
+        _AUXILIARY_LOSS_BACKWARD_SUPPRESSION_DEPTH -= 1
+
+
 class AddAuxiliaryLoss(torch.autograd.Function):
     """
     The trick function of adding auxiliary (aux) loss, 
@@ -23,7 +39,10 @@ class AddAuxiliaryLoss(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         grad_loss = None
-        if ctx.required_aux_loss:
+        if (
+            ctx.required_aux_loss
+            and _AUXILIARY_LOSS_BACKWARD_SUPPRESSION_DEPTH == 0
+        ):
             grad_loss = torch.ones(1, dtype=ctx.dtype, device=grad_output.device)
         return grad_output, grad_loss
 
@@ -469,7 +488,8 @@ class DiT(nn.Module):
         half = x[: len(x) // 2]
         combined = torch.cat([half, half], dim=0)
         model_out = self.forward(combined, t, y)
-        model_out = model_out[0]
+        if isinstance(model_out, tuple):
+            model_out = model_out[0]
         # For exact reproducibility reasons, we apply classifier-free guidance on only
         # three channels by default. The standard approach to cfg applies it to all channels.
         # This can be done by uncommenting the following line and commenting-out the line following that.

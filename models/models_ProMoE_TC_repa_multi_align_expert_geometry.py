@@ -1,6 +1,7 @@
 import math
 
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 
 from .models_ProMoE_TC_repa_multi_align import AddAuxiliaryLoss, DiT as MultiAlignDiT
@@ -82,6 +83,7 @@ class DiT(MultiAlignDiT):
             f"min_experts={self.expert_geometry_min_experts}, "
             f"teacher_roll={self.expert_geometry_teacher_roll}"
         )
+        self.expert_geometry_stats = {}
 
     def _roll_teacher_tokens(self, teacher):
         shift_y, shift_x = self.expert_geometry_teacher_roll
@@ -116,84 +118,151 @@ class DiT(MultiAlignDiT):
                 f"{expert_assignments.shape} and {expert_outputs.shape[:2]}"
             )
 
-        zero = expert_outputs.float().sum() * 0.0
-        cond_indices = torch.where(labels != 1000)[0]
-        if cond_indices.numel() == 0:
-            return zero
+        # Keep the centroid/Gram path in fp32 even under the outer bf16 autocast.
+        # Flattening image/expert IDs avoids per-image host synchronizations.
+        with torch.autocast(device_type=expert_outputs.device.type, enabled=False):
+            batch_size, num_tokens, student_dim = expert_outputs.shape
+            teacher = self._roll_teacher_tokens(teacher_z.detach().float())
+            assignments = expert_assignments.detach()
+            conditional = labels != 1000
+            token_is_conditional = conditional[:, None].expand(-1, num_tokens)
+            num_experts = self.blocks[
+                self.expert_geometry_block
+            ].mlp.num_routed_experts
 
-        teacher = self._roll_teacher_tokens(teacher_z.detach().float())
-        num_experts = self.blocks[
-            self.expert_geometry_block
-        ].mlp.num_routed_experts
-        image_losses = []
-
-        for image_idx in cond_indices.tolist():
-            assignments = expert_assignments[image_idx].detach()
-            if ((assignments < 0) | (assignments >= num_experts)).any():
+            conditional_assignments = assignments[token_is_conditional]
+            if conditional_assignments.numel() > 0 and (
+                (conditional_assignments < 0)
+                | (conditional_assignments >= num_experts)
+            ).any():
                 raise ValueError("conditional expert assignment is out of range")
 
-            counts = torch.bincount(assignments, minlength=num_experts)
-            valid = counts >= self.expert_geometry_min_tokens
-            if valid.sum().item() < self.expert_geometry_min_experts:
-                continue
+            image_offsets = (
+                torch.arange(batch_size, device=assignments.device) * num_experts
+            )[:, None]
+            group_ids = (assignments + image_offsets)[token_is_conditional]
 
             student_sums = torch.zeros(
-                num_experts,
-                expert_outputs.shape[-1],
+                batch_size * num_experts,
+                student_dim,
                 dtype=torch.float32,
                 device=expert_outputs.device,
             )
             teacher_sums = torch.zeros(
-                num_experts,
+                batch_size * num_experts,
                 teacher.shape[-1],
                 dtype=torch.float32,
                 device=teacher.device,
             )
+            counts = torch.zeros(
+                batch_size * num_experts,
+                dtype=torch.float32,
+                device=expert_outputs.device,
+            )
             student_sums.index_add_(
-                0, assignments, expert_outputs[image_idx].float()
+                0, group_ids, expert_outputs.float()[token_is_conditional]
             )
-            teacher_sums.index_add_(0, assignments, teacher[image_idx])
+            teacher_sums.index_add_(0, group_ids, teacher[token_is_conditional])
+            counts.index_add_(
+                0, group_ids, torch.ones_like(group_ids, dtype=torch.float32)
+            )
 
-            denominators = counts[valid].float().unsqueeze(1)
-            student_centroids = student_sums[valid] / denominators
-            teacher_centroids = teacher_sums[valid] / denominators
-            student_centroids = student_centroids - student_centroids.mean(
-                dim=0, keepdim=True
+            student_sums = student_sums.view(batch_size, num_experts, student_dim)
+            teacher_sums = teacher_sums.view(
+                batch_size, num_experts, teacher.shape[-1]
             )
-            teacher_centroids = teacher_centroids - teacher_centroids.mean(
-                dim=0, keepdim=True
-            )
+            counts = counts.view(batch_size, num_experts)
+            valid_experts = counts >= self.expert_geometry_min_tokens
+            denominators = counts.clamp_min(1.0).unsqueeze(-1)
+            student_centroids = student_sums / denominators
+            teacher_centroids = teacher_sums / denominators
+
+            valid_weights = valid_experts.unsqueeze(-1).float()
+            valid_counts = valid_experts.sum(dim=1, keepdim=True).clamp_min(1)
+            student_mean = (
+                (student_centroids * valid_weights).sum(dim=1)
+                / valid_counts.float()
+            ).unsqueeze(1)
+            teacher_mean = (
+                (teacher_centroids * valid_weights).sum(dim=1)
+                / valid_counts.float()
+            ).unsqueeze(1)
+            student_centroids = student_centroids - student_mean
+            teacher_centroids = teacher_centroids - teacher_mean
 
             informative = torch.linalg.vector_norm(
                 teacher_centroids, dim=-1
             ) > self.expert_geometry_eps
-            if informative.sum().item() < self.expert_geometry_min_experts:
-                continue
-            student_centroids = student_centroids[informative]
-            teacher_centroids = teacher_centroids[informative]
-
+            valid_experts = valid_experts & informative & conditional[:, None]
             student_centroids = F.normalize(
                 student_centroids, dim=-1, eps=self.expert_geometry_eps
             )
             teacher_centroids = F.normalize(
                 teacher_centroids, dim=-1, eps=self.expert_geometry_eps
             )
-            student_gram = student_centroids @ student_centroids.T
-            teacher_gram = teacher_centroids @ teacher_centroids.T
-            pair_mask = torch.triu(
-                torch.ones_like(student_gram, dtype=torch.bool), diagonal=1
-            )
-            image_losses.append(
-                F.smooth_l1_loss(
-                    student_gram[pair_mask],
-                    teacher_gram[pair_mask],
-                    reduction='mean',
-                )
-            )
+            student_gram = torch.bmm(
+                student_centroids, student_centroids.transpose(1, 2)
+            ).clamp(-1.0, 1.0)
+            teacher_gram = torch.bmm(
+                teacher_centroids, teacher_centroids.transpose(1, 2)
+            ).clamp(-1.0, 1.0)
 
-        if not image_losses:
-            return zero
-        return torch.stack(image_losses).mean()
+            upper_triangle = torch.triu(
+                torch.ones(
+                    num_experts,
+                    num_experts,
+                    dtype=torch.bool,
+                    device=expert_outputs.device,
+                ),
+                diagonal=1,
+            )
+            pair_mask = (
+                valid_experts[:, :, None]
+                & valid_experts[:, None, :]
+                & upper_triangle[None]
+            )
+            pair_losses = F.smooth_l1_loss(
+                student_gram, teacher_gram, reduction='none'
+            )
+            pair_counts = pair_mask.sum(dim=(1, 2))
+            image_losses = (
+                (pair_losses * pair_mask).sum(dim=(1, 2))
+                / pair_counts.clamp_min(1).float()
+            )
+            valid_images = (
+                valid_experts.sum(dim=1) >= self.expert_geometry_min_experts
+            )
+            local_loss_sum = (image_losses * valid_images).sum()
+
+            # DDP averages rank losses. Scaling each differentiable local sum by
+            # world_size/global_count gives a true global valid-image mean gradient.
+            stats = torch.stack([
+                valid_images.sum().float(),
+                conditional.sum().float(),
+                valid_experts.sum().float(),
+                pair_counts[valid_images].sum().float(),
+                local_loss_sum.detach(),
+            ])
+            world_size = 1
+            if dist.is_available() and dist.is_initialized():
+                dist.all_reduce(stats, op=dist.ReduceOp.SUM)
+                world_size = dist.get_world_size()
+
+            global_valid = stats[0]
+            global_conditional = stats[1]
+            denominator = global_valid.clamp_min(1.0)
+            local_loss = local_loss_sum * world_size / denominator
+            global_mean = stats[4] / denominator
+            geometry_loss = local_loss + (global_mean - local_loss.detach())
+
+            self.expert_geometry_stats = {
+                'coverage': global_valid / global_conditional.clamp_min(1.0),
+                'valid_experts_per_conditional_image': (
+                    stats[2] / global_conditional.clamp_min(1.0)
+                ),
+                'pairs_per_valid_image': stats[3] / denominator,
+            }
+            return geometry_loss
 
     @staticmethod
     def _forward_geometry_block(block, x, c, labels):

@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 import torch
 import torch.nn as nn
 from timm.models.vision_transformer import PatchEmbed
@@ -135,6 +137,20 @@ class AlignCoefficientPredictor(nn.Module):
 #################################################################################
 #                                ProMoE Layer                                  #
 #################################################################################
+_AUXILIARY_LOSS_BACKWARD_SUPPRESSION_DEPTH = 0
+
+
+@contextmanager
+def suppress_auxiliary_loss_backward():
+    """Temporarily pass gradients through without injecting auxiliary losses."""
+    global _AUXILIARY_LOSS_BACKWARD_SUPPRESSION_DEPTH
+    _AUXILIARY_LOSS_BACKWARD_SUPPRESSION_DEPTH += 1
+    try:
+        yield
+    finally:
+        _AUXILIARY_LOSS_BACKWARD_SUPPRESSION_DEPTH -= 1
+
+
 class AddAuxiliaryLoss(torch.autograd.Function):
     """
     The trick function of adding auxiliary (aux) loss,
@@ -150,7 +166,10 @@ class AddAuxiliaryLoss(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         grad_loss = None
-        if ctx.required_aux_loss:
+        if (
+            ctx.required_aux_loss
+            and _AUXILIARY_LOSS_BACKWARD_SUPPRESSION_DEPTH == 0
+        ):
             grad_loss = torch.ones(1, dtype=ctx.dtype, device=grad_output.device)
         return grad_output, grad_loss
 

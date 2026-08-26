@@ -1,0 +1,277 @@
+{
+  "version": 1,
+  "name": "natural_timestep_utility_gate_v1",
+  "selection": {
+    "locked_before_discovery_results": true,
+    "salt": "promoe-natural-timestep-utility-v1-20260826",
+    "class_rule": "Exclude every label used by earlier routing probes, sort SHA256(salt|label03|synset), use the first 8 for discovery and the next 24 for confirmation.",
+    "latent_rule": "Sort latent basenames and select int(SHA256(salt|latent|label03|synset)[0:8],16) modulo class count.",
+    "seed_rule": "int(SHA256(salt|latent|label03|synset)[8:16],16) modulo 2147483647.",
+    "excluded_labels": [
+      0, 36, 69, 78, 96, 100, 106, 113, 120, 131, 142, 144, 150, 156,
+      159, 169, 188, 211, 224, 238, 250, 300, 301, 316, 346, 351, 381,
+      384, 416, 421, 442, 445, 451, 465, 489, 500, 527, 532, 545, 588,
+      589, 594, 599, 604, 615, 620, 656, 658, 683, 710, 724, 725, 735,
+      738, 748, 750, 764, 774, 780, 788, 815, 833, 853, 870, 884, 887,
+      902, 914, 945, 954, 956, 971, 983, 987, 992, 995, 998, 999
+    ]
+  },
+  "cases": [
+    {
+      "split": "discovery",
+      "id": "class964_n07875152_3851",
+      "label": 964,
+      "seed": 1696443630,
+      "synset": "n07875152",
+      "latent": "n07875152/n07875152_3851.latent.npz"
+    },
+    {
+      "split": "discovery",
+      "id": "class883_n04522168_24190",
+      "label": 883,
+      "seed": 334859841,
+      "synset": "n04522168",
+      "latent": "n04522168/n04522168_24190.latent.npz"
+    },
+    {
+      "split": "discovery",
+      "id": "class802_n04252077_12055",
+      "label": 802,
+      "seed": 447632200,
+      "synset": "n04252077",
+      "latent": "n04252077/n04252077_12055.latent.npz"
+    },
+    {
+      "split": "discovery",
+      "id": "class595_n03496892_19393",
+      "label": 595,
+      "seed": 1407849624,
+      "synset": "n03496892",
+      "latent": "n03496892/n03496892_19393.latent.npz"
+    },
+    {
+      "split": "discovery",
+      "id": "class531_n03197337_1595",
+      "label": 531,
+      "seed": 913202717,
+      "synset": "n03197337",
+      "latent": "n03197337/n03197337_1595.latent.npz"
+    },
+    {
+      "split": "discovery",
+      "id": "class363_n02454379_17222",
+      "label": 363,
+      "seed": 448293921,
+      "synset": "n02454379",
+      "latent": "n02454379/n02454379_17222.latent.npz"
+    },
+    {
+      "split": "discovery",
+      "id": "class441_n02823750_12110",
+      "label": 441,
+      "seed": 755077779,
+      "synset": "n02823750",
+      "latent": "n02823750/n02823750_12110.latent.npz"
+    },
+    {
+      "split": "discovery",
+      "id": "class377_n02490219_4892",
+      "label": 377,
+      "seed": 1807852609,
+      "synset": "n02490219",
+      "latent": "n02490219/n02490219_4892.latent.npz"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class222_n02104029_3265",
+      "label": 222,
+      "seed": 1826590574,
+      "synset": "n02104029",
+      "latent": "n02104029/n02104029_3265.latent.npz"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class963_n07873807_4287",
+      "label": 963,
+      "seed": 1816669826,
+      "synset": "n07873807",
+      "latent": "n07873807/n07873807_4287.latent.npz"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class915_n04613696_1213",
+      "label": 915,
+      "seed": 756290935,
+      "synset": "n04613696",
+      "latent": "n04613696/n04613696_1213.latent.npz"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class323_n02279972_12546",
+      "label": 323,
+      "seed": 1272794821,
+      "synset": "n02279972",
+      "latent": "n02279972/n02279972_12546.latent.npz"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class115_n01950731_12857",
+      "label": 115,
+      "seed": 1674156191,
+      "synset": "n01950731",
+      "latent": "n01950731/n01950731_12857.latent.npz"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class674_n03794056_8645",
+      "label": 674,
+      "seed": 1168316926,
+      "synset": "n03794056",
+      "latent": "n03794056/n03794056_8645.latent.npz"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class691_n03868863_5423",
+      "label": 691,
+      "seed": 2057208421,
+      "synset": "n03868863",
+      "latent": "n03868863/n03868863_5423.latent.npz"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class778_n04141975_1915",
+      "label": 778,
+      "seed": 1149665890,
+      "synset": "n04141975",
+      "latent": "n04141975/n04141975_1915.latent.npz"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class361_n02445715_12255",
+      "label": 361,
+      "seed": 88440847,
+      "synset": "n02445715",
+      "latent": "n02445715/n02445715_12255.latent.npz"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class582_n03461385_52987",
+      "label": 582,
+      "seed": 822667258,
+      "synset": "n03461385",
+      "latent": "n03461385/n03461385_52987.latent.npz"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class095_n01843065_2374",
+      "label": 95,
+      "seed": 549772581,
+      "synset": "n01843065",
+      "latent": "n01843065/n01843065_2374.latent.npz"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class721_n03938244_25168",
+      "label": 721,
+      "seed": 1070927288,
+      "synset": "n03938244",
+      "latent": "n03938244/n03938244_25168.latent.npz"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class901_n04579145_716",
+      "label": 901,
+      "seed": 1270268255,
+      "synset": "n04579145",
+      "latent": "n04579145/n04579145_716.latent.npz"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class251_n02110341_8895",
+      "label": 251,
+      "seed": 1631316656,
+      "synset": "n02110341",
+      "latent": "n02110341/n02110341_8895.latent.npz"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class643_n03724870_23335",
+      "label": 643,
+      "seed": 1520986796,
+      "synset": "n03724870",
+      "latent": "n03724870/n03724870_23335.latent.npz"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class152_n02085782_12115",
+      "label": 152,
+      "seed": 344421954,
+      "synset": "n02085782",
+      "latent": "n02085782/n02085782_12115.latent.npz"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class587_n03481172_12574",
+      "label": 587,
+      "seed": 233282881,
+      "synset": "n03481172",
+      "latent": "n03481172/n03481172_12574.latent.npz"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class732_n03976467_1964",
+      "label": 732,
+      "seed": 1859025778,
+      "synset": "n03976467",
+      "latent": "n03976467/n03976467_1964.latent.npz"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class637_n03710193_22420",
+      "label": 637,
+      "seed": 831911911,
+      "synset": "n03710193",
+      "latent": "n03710193/n03710193_22420.latent.npz"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class864_n04461696_2113",
+      "label": 864,
+      "seed": 1103970964,
+      "synset": "n04461696",
+      "latent": "n04461696/n04461696_2113.latent.npz"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class398_n02666196_13165",
+      "label": 398,
+      "seed": 1187148197,
+      "synset": "n02666196",
+      "latent": "n02666196/n02666196_13165.latent.npz"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class432_n02804610_17851",
+      "label": 432,
+      "seed": 1675054919,
+      "synset": "n02804610",
+      "latent": "n02804610/n02804610_17851.latent.npz"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class050_n01698640_8208",
+      "label": 50,
+      "seed": 1840026052,
+      "synset": "n01698640",
+      "latent": "n01698640/n01698640_8208.latent.npz"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class081_n01796340_17381",
+      "label": 81,
+      "seed": 1462267277,
+      "synset": "n01796340",
+      "latent": "n01796340/n01796340_17381.latent.npz"
+    }
+  ]
+}

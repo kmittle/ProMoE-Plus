@@ -13,3 +13,4 @@ tensorboard
 accelerate==1.5.1
 matplotlib==3.10.1
 scikit-learn==1.6.1
+scipy==1.15.3
