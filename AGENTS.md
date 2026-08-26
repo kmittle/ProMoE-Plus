@@ -301,6 +301,11 @@ conda install -c conda-forge cudatoolkit=11.2 cudnn=8.1.0
 python run_eval.py /path/to/generated/images --count 50000
 ```
 
+The pinned environment preserves the historical OpenAI evaluation stack. The
+`run_eval.py` default `--eval-device auto` uses a visible GPU only when this
+TensorFlow build covers its compute capability; on newer architectures such as
+Hopper it falls back to CPU rather than emitting invalid activations.
+
 Pack PNGs to NPZ without running evaluator:
 
 ```bash
@@ -490,7 +495,7 @@ Analysis notes:
 
 Evaluation notes:
 
-- `evaluation/run_eval.py` always calls `ensure_ref_batches()` to auto-download missing reference NPZs.
-- It expects generated PNG names containing class suffix like `_class123.png`.
+- `evaluation/run_eval.py` calls `ensure_ref_batches()` before evaluation, but skips reference downloads with `--no-eval`.
+- It accepts sampling's rounded-up output count, requires contiguous unique names `img<index>_class<label>.png` from index zero, and packs exactly the requested `--count`; a missing image, malformed index, or invalid ImageNet label is a hard error.
 - It writes `<image_folder>.npz`, and when evaluation runs it also writes `<image_folder>_eval_openai.txt`.
-- Run it from inside `evaluation/` so relative `evaluator.py` lookup succeeds.
+- Evaluator subprocess failures are logged and propagated as nonzero exits. `run_eval.py` resolves `evaluator.py` relative to its own file, so it may be launched from the repository root or `evaluation/`.

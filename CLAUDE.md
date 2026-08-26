@@ -94,11 +94,19 @@ conda create -n fid_eval python=3.9 -y && conda activate fid_eval
 cd evaluation && pip install -r requirements.txt
 conda install -c conda-forge cudatoolkit=11.2 cudnn=8.1.0
 
-# Run from inside evaluation/ directory
+# The default auto mode uses GPU only when TensorFlow covers its architecture.
 CUDA_VISIBLE_DEVICES=0 python run_eval.py /path/to/generated/images
 # Pack PNGs to NPZ without running evaluator
 python run_eval.py /path/to/generated/images --count 50000 --no-eval
 ```
+
+`run_eval.py` requires contiguous `img<index>_class<label>.png` names starting
+at zero, packs exactly `--count` images even when distributed sampling rounds
+the directory up to a larger batch multiple, and propagates evaluator failures
+as nonzero exits. Its paths are script-relative, so invoking it from the
+repository root also works. The pinned historical TensorFlow build preserves
+the prior metric stack and automatically falls back to CPU on newer
+incompatible GPU architectures in `--eval-device auto`.
 
 ## Architecture
 

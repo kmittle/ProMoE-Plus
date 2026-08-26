@@ -18,22 +18,99 @@ from scipy import linalg
 from tqdm.auto import tqdm
 
 INCEPTION_V3_URL = "https://openaipublic.blob.core.windows.net/diffusion/jul-2021/ref_batches/classify_image_graph_def.pb"
-INCEPTION_V3_PATH = "classify_image_graph_def.pb"
+INCEPTION_V3_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "classify_image_graph_def.pb",
+)
 
 FID_POOL_NAME = "pool_3:0"
 FID_SPATIAL_NAME = "mixed_6/conv:0"
+
+
+def _parse_compute_capability(value):
+    prefix, separator, digits = value.partition("_")
+    if separator != "_" or prefix not in {"sm", "compute"}:
+        return None
+    if not digits.isdigit() or len(digits) < 2:
+        return None
+    return int(digits[:-1]), int(digits[-1])
+
+
+def _select_evaluation_device(requested, visible_capabilities, built_capabilities):
+    if requested not in {"auto", "cpu", "gpu"}:
+        raise ValueError(f"Unsupported evaluation device: {requested}")
+    if requested == "cpu":
+        return "cpu", "CPU evaluation was requested"
+    if not visible_capabilities:
+        if requested == "gpu":
+            raise RuntimeError("GPU evaluation was requested, but no GPU is visible")
+        return "cpu", "no GPU is visible"
+    if requested == "gpu":
+        return "gpu", "GPU evaluation was requested"
+
+    parsed_builds = [
+        parsed
+        for value in built_capabilities
+        if (parsed := _parse_compute_capability(value)) is not None
+    ]
+    if not parsed_builds:
+        return "cpu", "the TensorFlow build capability is unknown"
+    if any(value is None for value in visible_capabilities):
+        return "cpu", "a visible GPU compute capability is unknown"
+
+    supported_capabilities = set(parsed_builds)
+    unsupported = [
+        value
+        for value in visible_capabilities
+        if value not in supported_capabilities
+    ]
+    if unsupported:
+        maximum_unsupported = max(unsupported)
+        return (
+            "cpu",
+            "visible GPU compute capability "
+            f"{maximum_unsupported[0]}.{maximum_unsupported[1]} is absent from "
+            "the TensorFlow build capability list",
+        )
+    return "gpu", "the TensorFlow build covers the visible GPU architecture"
+
+
+def _create_session_config(requested_device):
+    physical_gpus = tf.config.list_physical_devices("GPU")
+    visible_capabilities = []
+    for device in physical_gpus:
+        details = tf.config.experimental.get_device_details(device)
+        capability = details.get("compute_capability")
+        visible_capabilities.append(tuple(capability) if capability is not None else None)
+    build_info = tf.sysconfig.get_build_info()
+    built_capabilities = build_info.get("cuda_compute_capabilities", [])
+    selected_device, reason = _select_evaluation_device(
+        requested_device,
+        visible_capabilities,
+        built_capabilities,
+    )
+    kwargs = {"allow_soft_placement": True}
+    if selected_device == "cpu":
+        kwargs["device_count"] = {"GPU": 0}
+    config = tf.ConfigProto(**kwargs)
+    config.gpu_options.allow_growth = True
+    return config, selected_device, reason
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("ref_batch", help="path to reference batch npz file")
     parser.add_argument("sample_batch", help="path to sample batch npz file")
+    parser.add_argument(
+        "--device",
+        choices=("auto", "cpu", "gpu"),
+        default="auto",
+        help="activation device; auto avoids unsupported GPU architectures",
+    )
     args = parser.parse_args()
 
-    config = tf.ConfigProto(
-        allow_soft_placement=True  # allows DecodeJpeg to run on CPU in Inception graph
-    )
-    config.gpu_options.allow_growth = True
+    config, selected_device, reason = _create_session_config(args.device)
+    print(f"TensorFlow activation device: {selected_device.upper()} ({reason})")
     evaluator = Evaluator(tf.Session(config=config))
 
     print("warming up TensorFlow...")
@@ -154,6 +231,10 @@ class Evaluator:
             pred, spatial_pred = self.sess.run(
                 [self.pool_features, self.spatial_features], {self.image_input: batch}
             )
+            if not np.isfinite(pred).all() or not np.isfinite(spatial_pred).all():
+                raise FloatingPointError(
+                    "Inception activations are not finite; do not use the resulting metrics"
+                )
             preds.append(pred.reshape([pred.shape[0], -1]))
             spatial_preds.append(spatial_pred.reshape([spatial_pred.shape[0], -1]))
         return (
