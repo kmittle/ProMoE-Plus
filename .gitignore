@@ -15,7 +15,14 @@ latent_paths_cache.txt
 ######################
 /pretrained_ckpt/
 /_previous_results/
-/_experiments_expansion/
+/_experiments_expansion/*
+# !/_experiments_expansion/task-description.md
+# !/_experiments_expansion/rethinking/
+# /_experiments_expansion/rethinking/*
+# !/_experiments_expansion/rethinking/*.md
+# !/_experiments_expansion/rethinking/archived/
+# /_experiments_expansion/rethinking/archived/*
+# !/_experiments_expansion/rethinking/archived/*.md
 
 # Local ImageNet dataset + VAE latents materialised by preprocess/prepare_imagenet.py
 /datasets/
