@@ -26,12 +26,16 @@ import random
 import operator
 import hashlib
 import numbers
+from pathlib import Path
 from torch.utils.tensorboard import SummaryWriter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from torch.nn.parallel import DistributedDataParallel
 from collections import OrderedDict
 from utils import deep_update, find_free_port, load_vae
 from torch.nn.utils import clip_grad_norm_
+from credit_redistribution import CreditRedistributionController
+from credit_redistribution.benchmark import DistributedThroughputTimer
+from credit_redistribution.transcript import TranscriptOnlyRecorder
 
 os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
 
@@ -121,6 +125,21 @@ SAMPLER_CONTRACT_VERSION = 1
 DATASET_IDENTITY_VERSION = 1
 IMAGENET_NUM_CLASSES = 1000
 _UINT64_MASK = (1 << 64) - 1
+
+
+def _synchronize_sealed_error(local_error, phase, world_size):
+    errors = [None] * int(world_size)
+    if dist.is_initialized():
+        dist.all_gather_object(errors, local_error)
+    else:
+        errors[0] = local_error
+    failures = [
+        f"rank {rank}: {error}"
+        for rank, error in enumerate(errors)
+        if error is not None
+    ]
+    if failures:
+        raise RuntimeError(f"{phase} failed; " + "; ".join(failures))
 
 
 def _build_latent_class_to_idx(observed_class_names, root_class_names):
@@ -531,13 +550,35 @@ class LatentFolder(Dataset):
         if os.path.exists(self.CACHE_FILE) and os.path.getsize(self.CACHE_FILE) > 0:
             with open(self.CACHE_FILE, 'r') as f:
                 latent_paths = f.read().splitlines()
-            # Guard against a STALE cache pointing at a different latent_data_path (e.g. after
-            # changing PROMOE_LATENT_PATH): only trust it if its entries are under latent_dir.
-            root = os.path.normpath(self.latent_dir)
-            if latent_paths and os.path.normpath(latent_paths[0]).startswith(root + os.sep):
+            # Guard every entry against a stale or mixed-root cache.  Checking
+            # only the first line can silently route later samples to another
+            # dataset (or to a missing file).
+            root = Path(self.latent_dir).resolve()
+            cache_valid = bool(latent_paths)
+            resolved_paths = []
+            seen_paths = set()
+            for cached_path in latent_paths:
+                try:
+                    resolved = Path(cached_path).resolve()
+                    resolved.relative_to(root)
+                except (OSError, ValueError):
+                    cache_valid = False
+                    break
+                if (
+                    resolved in seen_paths
+                    or resolved.suffixes[-2:] != ['.latent', '.npz']
+                    or not resolved.is_file()
+                ):
+                    cache_valid = False
+                    break
+                seen_paths.add(resolved)
+                resolved_paths.append(str(resolved))
+            if cache_valid and resolved_paths == sorted(resolved_paths):
                 logging.info(f"****************Loaded latent paths from cache: {self.CACHE_FILE}")
-                return latent_paths
-            logging.info(f"****************Stale latent cache (not under {self.latent_dir}); regenerating")
+                return resolved_paths
+            logging.info(
+                f"****************Stale or invalid latent cache for {self.latent_dir}; regenerating"
+            )
 
         latent_paths = self._get_latent_paths(self.latent_dir)
         os.makedirs(osp.dirname(self.CACHE_FILE), exist_ok=True)
@@ -1225,6 +1266,8 @@ def load_latest_checkpoint(
     fallback_seed=0,
     global_seed=0,
     sampler_contract=None,
+    initial_checkpoint_path=None,
+    checkpoint_extension=None,
 ):
     if resume_checkpoint_step is not None:
         checkpoint_path = os.path.join(checkpoint_dir, f'ckpt_step_{resume_checkpoint_step}.pth')
@@ -1232,19 +1275,31 @@ def load_latest_checkpoint(
             raise FileNotFoundError(
                 f"Specified checkpoint not found: {checkpoint_path}"
             )
-        checkpoints_to_try = [checkpoint_path]
+        checkpoints_to_try = [(checkpoint_path, False)]
     else:
-        checkpoints_to_try = sorted(
+        local_checkpoints = sorted(
             glob.glob(os.path.join(checkpoint_dir, 'ckpt_step_*.pth')), 
             key=os.path.getmtime, 
             reverse=True
         )
-        if not checkpoints_to_try:
+        if local_checkpoints:
+            checkpoints_to_try = [
+                (checkpoint_path, False)
+                for checkpoint_path in local_checkpoints
+            ]
+        elif initial_checkpoint_path is not None:
+            initial_checkpoint_path = os.path.abspath(initial_checkpoint_path)
+            if not os.path.isfile(initial_checkpoint_path):
+                raise FileNotFoundError(
+                    f"Initial checkpoint not found: {initial_checkpoint_path}"
+                )
+            checkpoints_to_try = [(initial_checkpoint_path, True)]
+        else:
             logging.error(f"No checkpoints found in directory: {checkpoint_dir}")
             return _fresh_resume_state()
     
     prepared = None
-    for i, checkpoint_path in enumerate(checkpoints_to_try):
+    for i, (checkpoint_path, is_initial) in enumerate(checkpoints_to_try):
         try:
             logging.info(f"Loading checkpoint: {checkpoint_path}")
             checkpoint = torch.load(
@@ -1290,6 +1345,14 @@ def load_latest_checkpoint(
                 'ema_model_state_dict',
             )
             _validate_optimizer_state_dict(optimizer, optimizer_state)
+            prepared_extension_state = None
+            if checkpoint_extension is not None:
+                prepared_extension_state = (
+                    checkpoint_extension.prepare_checkpoint_state(
+                        checkpoint,
+                        is_initial=is_initial,
+                    )
+                )
             prepared = {
                 'checkpoint': checkpoint,
                 'resume_state': resume_state,
@@ -1298,6 +1361,8 @@ def load_latest_checkpoint(
                 'optimizer_state': optimizer_state,
                 'unexpected_keys': unexpected_keys,
                 'unexpected_ema': unexpected_ema,
+                'extension_state': prepared_extension_state,
+                'is_initial': is_initial,
             }
             break
         
@@ -1343,6 +1408,10 @@ def load_latest_checkpoint(
             f"{committed_unexpected_ema[:5]}"
         )
     optimizer.load_state_dict(prepared['optimizer_state'])
+    if checkpoint_extension is not None:
+        checkpoint_extension.commit_checkpoint_state(
+            prepared['extension_state']
+        )
     logging.info("EMA model loaded")
     logging.info("Optimizer loaded")
     checkpoint = prepared['checkpoint']
@@ -1364,6 +1433,7 @@ def save_checkpoint(
     *,
     global_seed=0,
     sampler_contract=None,
+    checkpoint_extension=None,
 ):
     global_seed = _require_nonnegative_index(global_seed, 'global_seed')
     if not isinstance(sampler_contract, dict):
@@ -1381,29 +1451,67 @@ def save_checkpoint(
     else:
         rank_states[0] = local_state
 
-    if local_state['rank'] != 0:
-        return
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    checkpoint_path = os.path.join(checkpoint_dir, f'ckpt_step_{step}.pth')
-    temporary_path = checkpoint_path + '.tmp'
-    trainer_state = {
-        **trainer_progress,
-        'version': TRAINER_STATE_VERSION,
-        'augmentation_seed_version': AUGMENTATION_SEED_VERSION,
-        'global_seed': global_seed,
-        'sampler_contract': copy.deepcopy(sampler_contract),
-        'world_size': world_size,
-        'rank_states': sorted(rank_states, key=lambda state: state['rank']),
-    }
-    torch.save({
-        'step': step,
-        'model_state_dict': model.module.state_dict(),
-        'ema_model_state_dict': ema_model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'trainer_state': trainer_state,
-    }, temporary_path)
-    os.replace(temporary_path, checkpoint_path)
-    logging.info(f'********************* Checkpoint saved at {checkpoint_path}')
+    extension_state = None
+    extension_key = None
+    if checkpoint_extension is not None:
+        extension_error = None
+        try:
+            extension_state = checkpoint_extension.checkpoint_state_dict()
+        except Exception as error:
+            extension_error = f"{type(error).__name__}: {error}"
+        extension_errors = [None] * world_size
+        if dist.is_initialized():
+            dist.all_gather_object(extension_errors, extension_error)
+        else:
+            extension_errors[0] = extension_error
+        failures = [
+            f"rank {rank}: {error}"
+            for rank, error in enumerate(extension_errors)
+            if error
+        ]
+        if failures:
+            raise RuntimeError(
+                "Checkpoint extension state failed; " + "; ".join(failures)
+            )
+        checkpoint_extension.assert_checkpoint_state_consistent(extension_state)
+        extension_key = checkpoint_extension.checkpoint_state_key
+
+    save_error = None
+    if local_state['rank'] == 0:
+        try:
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            checkpoint_path = os.path.join(checkpoint_dir, f'ckpt_step_{step}.pth')
+            temporary_path = checkpoint_path + '.tmp'
+            trainer_state = {
+                **trainer_progress,
+                'version': TRAINER_STATE_VERSION,
+                'augmentation_seed_version': AUGMENTATION_SEED_VERSION,
+                'global_seed': global_seed,
+                'sampler_contract': copy.deepcopy(sampler_contract),
+                'world_size': world_size,
+                'rank_states': sorted(rank_states, key=lambda state: state['rank']),
+            }
+            checkpoint_payload = {
+                'step': step,
+                'model_state_dict': model.module.state_dict(),
+                'ema_model_state_dict': ema_model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'trainer_state': trainer_state,
+            }
+            if extension_key is not None:
+                checkpoint_payload[extension_key] = extension_state
+            torch.save(checkpoint_payload, temporary_path)
+            os.replace(temporary_path, checkpoint_path)
+            logging.info(
+                f'********************* Checkpoint saved at {checkpoint_path}'
+            )
+        except Exception as error:
+            save_error = f"{type(error).__name__}: {error}"
+    save_errors = [save_error]
+    if dist.is_initialized():
+        dist.broadcast_object_list(save_errors, src=0)
+    if save_errors[0]:
+        raise RuntimeError("Checkpoint persistence failed; " + save_errors[0])
 
 
 def center_crop_lambda(pil_image):
@@ -1529,7 +1637,16 @@ def worker(gpu, cfg):
     else:
         use_amp = False
 
-    if cfg.rank == 0:
+    timer_cfg = getattr(cfg, 'throughput_timer_config', None)
+    throughput_enabled = bool(
+        timer_cfg
+        and (
+            timer_cfg.get('enabled', False)
+            if hasattr(timer_cfg, 'get')
+            else False
+        )
+    )
+    if cfg.rank == 0 and not throughput_enabled:
         writer = SummaryWriter(log_dir=osp.join(cfg.output_dir, "tensorboard"))
     
     cfg.train_img_num = getattr(cfg, 'train_img_num', None)
@@ -1672,29 +1789,149 @@ def worker(gpu, cfg):
     )
     scaler = amp.GradScaler(enabled=False)
 
+    credit_controller = None
+    controller_cfg = getattr(cfg, 'credit_redistribution_config', None)
+    controller_enabled = bool(
+        controller_cfg
+        and (
+            controller_cfg.get('enabled', False)
+            if hasattr(controller_cfg, 'get')
+            else False
+        )
+    )
+    if controller_enabled:
+        controller_init_error = None
+        try:
+            if not cfg.use_pre_latents or not getattr(cfg, 'use_encoded_latents', False):
+                raise ValueError(
+                    "Credit redistribution requires direct pre-encoded latent inputs"
+                )
+            credit_controller = CreditRedistributionController(
+                model=model,
+                runtime_cfg=cfg,
+                controller_cfg=controller_cfg,
+            )
+        except Exception as error:
+            controller_init_error = f"{type(error).__name__}: {error}"
+        _synchronize_sealed_error(
+            controller_init_error,
+            "credit controller initialization",
+            cfg.world_size,
+        )
+
+    transcript_recorder = None
+    transcript_cfg = getattr(cfg, 'training_transcript_config', None)
+    transcript_enabled = bool(
+        transcript_cfg
+        and (
+            transcript_cfg.get('enabled', False)
+            if hasattr(transcript_cfg, 'get')
+            else False
+        )
+    )
+    if transcript_enabled:
+        transcript_init_error = None
+        try:
+            if credit_controller is not None:
+                raise ValueError(
+                    "Credit controller and transcript-only recorder are mutually exclusive"
+                )
+            if not cfg.use_pre_latents or not getattr(cfg, 'use_encoded_latents', False):
+                raise ValueError(
+                    "Transcript-only sealed runs require direct pre-encoded latents"
+                )
+            transcript_recorder = TranscriptOnlyRecorder(
+                model=model,
+                runtime_cfg=cfg,
+                recorder_cfg=transcript_cfg,
+            )
+        except Exception as error:
+            transcript_init_error = f"{type(error).__name__}: {error}"
+        _synchronize_sealed_error(
+            transcript_init_error,
+            "transcript recorder initialization",
+            cfg.world_size,
+        )
+
+    throughput_timer = None
+    if throughput_enabled:
+        throughput_timer = DistributedThroughputTimer(cfg, timer_cfg)
+        if throughput_timer.mode == 'transcript_only':
+            if transcript_recorder is None or credit_controller is not None:
+                raise ValueError("Throughput A requires transcript-only instrumentation")
+        elif (
+            credit_controller is None
+            or credit_controller.execution_mode != 'throughput'
+        ):
+            raise ValueError("Throughput B requires the matched credit controller")
+    elif (
+        credit_controller is not None
+        and credit_controller.execution_mode == 'throughput'
+    ) or (
+        transcript_recorder is not None
+        and transcript_recorder.execution_mode == 'throughput_baseline'
+    ):
+        raise ValueError("Throughput execution mode requires the distributed timer")
+
     for para_id, (name, param) in enumerate(model.named_parameters()):
         logging.info(f"Train parameter {para_id}: {name} (requires_grad={param.requires_grad})")
 
     cfg.checkpoint_dir = osp.join(cfg.output_dir, 'checkpoints')
     if cfg.resume_checkpoint:
         cfg.resume_checkpoint_step = getattr(cfg, 'resume_checkpoint_step', None)
-        resume_state = load_latest_checkpoint(
-            model,
-            model_ema,
-            optimizer,
-            os.path.join(cfg.checkpoint_dir),
-            cfg.resume_checkpoint_step,
-            rank=cfg.rank,
-            world_size=cfg.world_size,
-            grad_mix=cfg.grad_mix,
-            batches_per_epoch=batches_per_epoch,
-            fallback_seed=(
-                cfg.seed + (int(cfg.resume_checkpoint_step or 0) + 1) * 1000003
-            ),
-            global_seed=global_seed,
-            sampler_contract=sampler_contract,
-        )
+        initial_checkpoint_path = None
+        initial_checkpoint_owner = credit_controller or transcript_recorder
+        if initial_checkpoint_owner is not None:
+            local_checkpoints = glob.glob(
+                os.path.join(cfg.checkpoint_dir, 'ckpt_step_*.pth')
+            )
+            if not local_checkpoints:
+                initial_checkpoint_owner.verify_initial_checkpoint()
+            initial_checkpoint_path = str(
+                initial_checkpoint_owner.initial_checkpoint_path
+            )
+        resume_error = None
+        try:
+            resume_state = load_latest_checkpoint(
+                model,
+                model_ema,
+                optimizer,
+                os.path.join(cfg.checkpoint_dir),
+                cfg.resume_checkpoint_step,
+                rank=cfg.rank,
+                world_size=cfg.world_size,
+                grad_mix=cfg.grad_mix,
+                batches_per_epoch=batches_per_epoch,
+                fallback_seed=(
+                    cfg.seed + (int(cfg.resume_checkpoint_step or 0) + 1) * 1000003
+                ),
+                global_seed=global_seed,
+                sampler_contract=sampler_contract,
+                initial_checkpoint_path=initial_checkpoint_path,
+                checkpoint_extension=credit_controller,
+            )
+        except Exception as error:
+            if credit_controller is None and transcript_recorder is None:
+                raise
+            resume_error = f"{type(error).__name__}: {error}"
+            resume_state = None
+        if credit_controller is not None or transcript_recorder is not None:
+            resume_errors = [None] * cfg.world_size
+            dist.all_gather_object(resume_errors, resume_error)
+            failures = [
+                f"rank {rank}: {error}"
+                for rank, error in enumerate(resume_errors)
+                if error
+            ]
+            if failures:
+                raise RuntimeError(
+                    "Credit checkpoint resume failed; " + "; ".join(failures)
+                )
     else:
+        if credit_controller is not None or transcript_recorder is not None:
+            raise ValueError(
+                "Sealed credit instrumentation requires resume_checkpoint=True"
+            )
         resume_state = _fresh_resume_state()
 
     step = resume_state['next_step']
@@ -1746,6 +1983,8 @@ def worker(gpu, cfg):
     accum_steps = 0
     accum_loss_dict = None
     while step < cfg.num_steps:
+        if throughput_timer is not None:
+            throughput_timer.before_batch(step)
         # read batch
         try:
             img_batch = next(image_rank_iter)
@@ -1763,6 +2002,7 @@ def worker(gpu, cfg):
         if cfg.use_pre_latents:
             rank_img_paths, rank_img_y, rank_img_z = img_batch
             rank_img_y, rank_img_z = rank_img_y.to(gpu, non_blocking=True), rank_img_z.to(gpu, non_blocking=True)
+            rank_img_latent_parameters = rank_img_z
             rank_img_z_is_all_zero = torch.all(rank_img_z == 0).item()
             assert not rank_img_z_is_all_zero, "error: rank_img_z is all zero"
         else:
@@ -1809,6 +2049,11 @@ def worker(gpu, cfg):
         noise = torch.randn_like(z)
         target = noise - z
         noised_z_in = (1.0 - sigmas.squeeze()).view(z.shape[0], 1, 1, 1, 1) * z + sigmas.squeeze().view(z.shape[0], 1, 1, 1, 1) * noise
+
+        if credit_controller is not None:
+            credit_controller.begin_step(step)
+        if transcript_recorder is not None:
+            transcript_recorder.begin_step(step)
 
         if cfg.model_name in DENOISING_REGRET_MODELS:
             arg_c['denoising_target'] = target
@@ -1885,10 +2130,22 @@ def worker(gpu, cfg):
         if accum_steps < cfg.grad_mix:
             continue
 
+        if credit_controller is not None or transcript_recorder is not None:
+            loss_error = (
+                None
+                if bool(torch.isfinite(loss))
+                else "nonfinite ordinary training loss"
+            )
+            _synchronize_sealed_error(
+                loss_error,
+                "sealed loss validation",
+                cfg.world_size,
+            )
+
         logged_loss_dict = average_loss_dict(accum_loss_dict, accum_steps)
-        if step % cfg.log_interval == 0:
+        if not throughput_enabled and step % cfg.log_interval == 0:
             logging.info(format_loss_log(epoch, step, logged_loss_dict))
-        if cfg.rank == 0:
+        if cfg.rank == 0 and not throughput_enabled:
             write_loss_dict_to_tensorboard(writer, logged_loss_dict, step)
             if step % cfg.log_interval == 0:
                 # lsreg: log realized mean label-smoothing epsilon (for fixed-vs-dynamic deconfounding);
@@ -1899,14 +2156,59 @@ def worker(gpu, cfg):
                     writer.add_scalar('lsreg/mean_eps', float(torch.stack(_ls_eps).mean()), step)
 
         scaler.unscale_(optimizer)
+        transcript_inputs = None
+        if credit_controller is not None or transcript_recorder is not None:
+            transcript_inputs = {
+                'paths': rank_img_paths,
+                'original_labels': rank_img_y,
+                'tensors': {
+                    'latent_parameters': rank_img_latent_parameters,
+                    'realized_z': rank_img_z,
+                    'sampled_u': rank_img_u,
+                    'timestep': rank_img_t,
+                    'sigma': rank_img_sigma,
+                    'diffusion_noise': noise,
+                    'noised_model_input': noised_z_in,
+                    'denoising_target': target,
+                },
+            }
+        if transcript_recorder is not None:
+            transcript_recorder.record_before_optimizer(transcript_inputs)
+        controller_stats = None
+        if credit_controller is not None:
+            controller_stats = credit_controller.after_backward(
+                optimizer=optimizer,
+                scaler_enabled=scaler.is_enabled(),
+                transcript_inputs=transcript_inputs,
+            )
+            if cfg.rank == 0 and not throughput_enabled:
+                for name, value in controller_stats.items():
+                    writer.add_scalar(f'credit_redistribution/{name}', value, step)
         grad_norm = clip_grad_norm_(model.parameters(), cfg.max_grad_norm)
+        if credit_controller is not None or transcript_recorder is not None:
+            grad_error = (
+                None
+                if bool(torch.isfinite(grad_norm))
+                else "nonfinite full-model gradient norm"
+            )
+            _synchronize_sealed_error(
+                grad_error,
+                "sealed gradient validation",
+                cfg.world_size,
+            )
         scaler.step(optimizer)
         scaler.update()
+        if credit_controller is not None:
+            credit_controller.after_optimizer_step(optimizer)
+        if transcript_recorder is not None:
+            transcript_recorder.after_optimizer_step()
         # Update noise expert as EMA of shared expert (if model supports it)
         if hasattr(model.module, 'update_noise_expert_ema'):
             model.module.update_noise_expert_ema()
         optimizer.zero_grad(set_to_none=True)
         update_ema(model_ema, model.module)
+        if throughput_timer is not None:
+            throughput_timer.after_update(step)
 
         if step != 0 and step % cfg.save_ckpt_interval == 0:
             checkpoint_epoch, checkpoint_offset = _sampler_position(
@@ -1929,15 +2231,23 @@ def worker(gpu, cfg):
                 cfg.checkpoint_dir,
                 global_seed=global_seed,
                 sampler_contract=sampler_contract,
+                checkpoint_extension=credit_controller,
             )
 
         accum_steps = 0
         accum_loss_dict = None
         step += 1
 
+    if throughput_timer is not None:
+        throughput_timer.finalize(step)
     if cfg.rank == 0:
         logging.info('Congratulations! The training is completed!')
-        writer.close()
+        if not throughput_enabled:
+            writer.close()
+    if credit_controller is not None:
+        credit_controller.close()
+    if transcript_recorder is not None:
+        transcript_recorder.close()
     
     # barrier to ensure all ranks are completed
     torch.cuda.synchronize()

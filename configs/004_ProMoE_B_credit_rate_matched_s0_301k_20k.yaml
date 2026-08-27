@@ -1,0 +1,47 @@
+model_name: "ProMoE_TC_B"
+output_dir: "/home/dev/promoe-runs/credit-normalized-expert-gradient-ab-v4"
+
+gpu_ids: [4, 5, 6, 7]
+
+image_size: 256
+total_train_batch_size: 256
+lr: 0.0001
+weight_decay: 0
+global_seed: 0
+img_num_workers: 16
+prefetch_factor: 2
+use_pre_latents: True
+use_encoded_latents: True
+latent_data_path: "/home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz"
+resume_checkpoint: True
+log_interval: 10
+num_steps: 321001
+save_ckpt_interval: 1000
+
+credit_redistribution_config:
+  enabled: True
+  branch: "matched_credit_rate_redistribution"
+  execution_mode: "continuation"
+  initial_checkpoint_path: "/home/dev/promoe-probes/base-seed0-ckpt_step_301000.pth"
+  preregister_v3_path: "/home/dev/promoe-probes/credit-normalized-expert-gradient-ab-v3-preregister.json"
+  preregister_v4_path: "/home/dev/promoe-probes/credit-normalized-expert-gradient-ab-v4-preregister.json"
+  artifact_root: "/home/dev/promoe-probes/credit-normalized-expert-gradient-ab-v4/branches/matched_credit_rate_redistribution"
+  reference_artifact_root: "/home/dev/promoe-probes/credit-normalized-expert-gradient-ab-v4/branches/measure_only_control"
+
+DiT_B_config:
+  qk_norm: False
+  MoE_config:
+    num_routed_experts: 12
+    moe_intermediate_size: 1536
+    shared_expert_intermediate_size: 1536
+    load_balance_loss_coef: 0
+    norm_topk_prob: False
+    seq_aux: False
+    use_shared_expert: True
+    interleave: True
+    init_MoeMLP: False
+    top_k: 1
+    router_weight_mode: identity
+    routing_contrastive_lam: 1
+    use_top_k_for_routing_contrastive: True
+    routing_contrastive_temperature: 0.07

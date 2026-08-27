@@ -1,4 +1,5 @@
 import copy
+import datetime
 import io
 import pickle
 import random
@@ -8,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 from torch.utils.data import BatchSampler, DataLoader, DistributedSampler
 
@@ -23,7 +25,36 @@ from train import (
     _resume_state_from_checkpoint,
     _restore_rng_state,
     load_latest_checkpoint,
+    save_checkpoint,
 )
+
+
+def _checkpoint_save_failure_worker(rank, world_size, init_file, blocker, queue):
+    dist.init_process_group(
+        backend='gloo',
+        init_method=f'file://{init_file}',
+        rank=rank,
+        world_size=world_size,
+        timeout=datetime.timedelta(seconds=10),
+    )
+    try:
+        try:
+            save_checkpoint(
+                model=None,
+                ema_model=None,
+                optimizer=None,
+                step=7,
+                trainer_progress={},
+                checkpoint_dir=blocker,
+                global_seed=0,
+                sampler_contract={'global_seed': 0},
+            )
+        except RuntimeError as error:
+            queue.put((rank, 'Checkpoint persistence failed' in str(error)))
+        else:
+            queue.put((rank, False))
+    finally:
+        dist.destroy_process_group()
 
 
 class TrainResumeTests(unittest.TestCase):
@@ -153,6 +184,34 @@ class TrainResumeTests(unittest.TestCase):
         state = _capture_rng_state()
         self.assertEqual(state['numpy']['state'].dtype, torch.int64)
         self._assert_rng_continuation(state)
+
+    def test_rank_zero_checkpoint_failure_reaches_every_rank(self):
+        context = torch.multiprocessing.get_context('spawn')
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            init_file = str(root / 'gloo-init')
+            blocker = root / 'checkpoint-dir-is-a-file'
+            blocker.write_text('block directory creation', encoding='utf-8')
+            queue = context.Queue()
+            processes = [
+                context.Process(
+                    target=_checkpoint_save_failure_worker,
+                    args=(rank, 2, init_file, str(blocker), queue),
+                )
+                for rank in range(2)
+            ]
+            for process in processes:
+                process.start()
+            for process in processes:
+                process.join(timeout=20)
+            alive = [process for process in processes if process.is_alive()]
+            for process in alive:
+                process.terminate()
+                process.join(timeout=5)
+            self.assertEqual(alive, [])
+            results = sorted(queue.get(timeout=2) for _ in range(2))
+            self.assertEqual(results, [(0, True), (1, True)])
+            self.assertTrue(all(process.exitcode == 0 for process in processes))
 
     def test_rng_state_pickle_round_trip(self):
         self._seed_rng_streams()

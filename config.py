@@ -200,6 +200,15 @@ cfg.ECDiT_L_E8_config = {
 cfg.use_pre_latents = False
 cfg.resume_checkpoint = False
 cfg.use_gradient_checkpointing = False
+cfg.credit_redistribution_config = {
+    'enabled': False,
+}
+cfg.training_transcript_config = {
+    'enabled': False,
+}
+cfg.throughput_timer_config = {
+    'enabled': False,
+}
 
 cfg.grad_mix = 1
 cfg.num_steps = 10_000_000
