@@ -49,6 +49,7 @@ class SparseMoeBlock(nn.Module):
         use_top_k_for_routing_contrastive=False,
         routing_contrastive_temperature=0.1,
         proto_t_update_mode="residual",
+        proto_t_init_seed=1729,
         **kwargs,
     ):
         super().__init__()
@@ -63,15 +64,18 @@ class SparseMoeBlock(nn.Module):
 
         self.cluster_centers = nn.Parameter(torch.randn(num_routed_experts, hidden_size))
 
-        # Timestep-conditioned prototype generator. Step 0 behavior is bit-identical
-        # to base ProMoE-EC-BC (residual: zero delta; direct: identity-init proto_proj).
-        self.prototype_mlp = PrototypeMLP(
-            prototype_dim=hidden_size,
-            time_dim=hidden_size,
-            output_dim=hidden_size,
-            intermediate_dim=2 * hidden_size,
-            update_mode=proto_t_update_mode,
-        )
+        # The private RNG keeps all Base parameters identical while residual mode
+        # starts from the static cluster centers.
+        self.proto_t_init_seed = int(proto_t_init_seed)
+        with torch.random.fork_rng(devices=[]):
+            torch.random.default_generator.manual_seed(self.proto_t_init_seed)
+            self.prototype_mlp = PrototypeMLP(
+                prototype_dim=hidden_size,
+                time_dim=hidden_size,
+                output_dim=hidden_size,
+                intermediate_dim=2 * hidden_size,
+                update_mode=proto_t_update_mode,
+            )
         
         self.alpha = load_balance_loss_coef
         self.use_shared_expert = use_shared_expert
@@ -355,9 +359,31 @@ class DiT(nn.Module):
 
     def initialize_weights(self):
         # Initialize transformer layers:
+        prototype_linears = {
+            id(module)
+            for block in self.blocks
+            if getattr(block, "use_moe", False)
+            for module in block.mlp.prototype_mlp.modules()
+            if isinstance(module, nn.Linear)
+        }
+        prototype_generator = torch.Generator(
+            device=self.x_embedder.proj.weight.device
+        )
+        prototype_generator.manual_seed(
+            int(self.MoE_config.get("proto_t_init_seed", 1729))
+        )
+
         def _basic_init(module):
             if isinstance(module, nn.Linear):
-                torch.nn.init.xavier_uniform_(module.weight)
+                generator = (
+                    prototype_generator
+                    if id(module) in prototype_linears
+                    else None
+                )
+                torch.nn.init.xavier_uniform_(
+                    module.weight,
+                    generator=generator,
+                )
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
         self.apply(_basic_init)

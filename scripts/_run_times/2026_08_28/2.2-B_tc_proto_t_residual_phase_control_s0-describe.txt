@@ -1,0 +1,9 @@
+实验 / Experiment: 2.2-B_tc_proto_t_residual_phase_control_s0
+model_name: ProMoE_TC_B_proto_t  |  config: configs/004_ProMoE_B_proto_t_residual_phase_control_s0.yaml
+基线 / Baseline: 基础 ProMoE-TC（conditional cond/uncond routing、静态 `cluster_centers` cosine routing、shared expert 和 routing contrastive guidance）；直接父变体 / Parent: Proto-T residual（逐样本 timestep-conditioned prototypes）
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 时间步条件原型 / timestep-conditioned prototypes：每个 MoE block 的 `PrototypeMLP` 同时读取静态 `cluster_centers` 和该样本的 `t_emb`，生成逐样本 prototype，再用它与 token 做 cosine routing。它直接改变 routed-expert 选择，不使用 REPA/DINO teacher，也不增加激活专家数。
+2. residual 与公平初始化 / controlled initialization：`proto_t_update_mode: residual` 使用 `prototype_t = cluster_centers + delta`，其中输出 delta 的 `fc2` 为零初始化；`proto_t_init_seed: 1729` 将新增 MLP 的随机初始化隔离到私有 RNG，使相同 seed 下所有 Base 公共参数逐值一致。初始 prototype 与静态中心一致；由于 batched affinity 与 Base 使用不同浮点 kernel，只要求初始 top-1 路由决策一致，不宣称 router score bit-exact。
+3. 机制对照 / mechanism control：相对 phase-conditioned routing metric，本实验通过移动 prototype 表示引入 timestep 条件，而不是在原 cosine affinity 上加入低秩 token-prototype-phase 三线性交互；它用于判断 phase 方法的收益是否仅来自一般的时间条件路由。
+4. fresh 完整协议 / fresh full schedule：不设置 `initial_checkpoint_path`，使用独立空输出桶从 step 0 训练到 501K；seed 0、global batch 256、lr `1e-4`、16 workers，本地 encoded latents，300K/500K 各按 CFG 1.0/1.5 生成 50K 图像并执行 OpenAI evaluator。
