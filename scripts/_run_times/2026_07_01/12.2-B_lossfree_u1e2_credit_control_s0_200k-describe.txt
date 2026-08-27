@@ -1,0 +1,8 @@
+实验 / Experiment: 12.2-B_lossfree_u1e2_credit_control_s0_200k
+model_name: ProMoE_TC_B_lossfree  |  config: configs/004_ProMoE_B_lossfree_u1e2_credit_control_s0_200k.yaml
+基线 / Baseline: 基础 ProMoE-TC（conditional/unconditional 分流、cosine prototype top-1 路由、shared expert 和 routing contrastive guidance）；直接父变体 / Parent: Loss-Free u=1e-2，使用相同的 count-based routing bias，本实验只把它做成 seed-0 的 200K 诊断控制。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. Loss-Free count balancing：`use_lossfree_bias: True`、`bias_update_rate: 0.01`。每个 routed expert 有一个非训练 `expert_bias` buffer；top-1 选择使用 `cosine score + expert_bias`，实际 routed weight 仍使用无偏 cosine score。训练时按跨 GPU 汇总的本 batch token count 更新 bias，因此不增加 trainable parameters，bias 初始为零时与基础 ProMoE 的初始选择一致。
+2. 诊断目的 / diagnostic role：保持 Base 的 LR `1e-4`、global batch `256`、12 个 top-1 routed experts、shared expert 和 routing-contrastive 设置不变，以 `global_seed: 0` 训练到 200K。该 checkpoint 先检验 Loss-Free 是否确实压低 count imbalance；只有这一前置门槛通过，才检验是否仍有 count-adjusted learning-credit mismatch。它不是新的论文方法，也不是 500K 最终结论。
+3. 可审计运行设置：使用本地 encoded ImageNet latents，`img_num_workers: 16`，每 10K 保存 checkpoint；输出写入 `/home/dev/promoe-runs/...`。200K 后按既有协议生成 50K samples，并在 guide scale `1.0/1.5` 下评估；slot `12.2` 使用 GPU 4-7。
