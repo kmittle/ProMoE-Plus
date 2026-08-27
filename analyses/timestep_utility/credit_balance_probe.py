@@ -12,6 +12,7 @@ import torch
 from analyses.denoising_regret.probe import (
     RoutingProbeCapture,
     _all_router_weights,
+    _compute_router,
     _extract_prediction,
     _load_latent,
     _per_sample_mse,
@@ -226,11 +227,13 @@ def _probe_cell(
     if hidden_states is None or labels is None:
         raise RuntimeError("Credit probe did not capture router inputs")
     with torch.no_grad():
-        route_weights, route_indices, auxiliary_loss = moe_layer.compute_router(
+        route_weights, route_indices, auxiliary_loss = _compute_router(
+            moe_layer,
             hidden_states,
             labels,
+            timestep,
         )
-        router_scores = _all_router_weights(moe_layer, hidden_states)
+        router_scores = _all_router_weights(moe_layer, hidden_states, timestep)
     if auxiliary_loss is not None:
         raise RuntimeError("Frozen eval router returned an auxiliary loss")
     if not torch.equal(

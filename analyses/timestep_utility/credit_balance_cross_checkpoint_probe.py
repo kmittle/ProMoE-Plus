@@ -11,6 +11,7 @@ import torch
 from analyses.denoising_regret.probe import (
     RoutingProbeCapture,
     _all_router_weights,
+    _compute_router,
     _extract_prediction,
     _load_latent,
     _per_sample_mse,
@@ -110,19 +111,28 @@ def validate_cross_checkpoint_model(
     return {**contracts, "parameter_credit_blocks": block_rows}
 
 
-def _route_controls(moe_layer, hidden_states, labels):
+def _route_controls(moe_layer, hidden_states, labels, timestep=None):
     """Recompute the native route and validate biased selection/unbiased weight."""
     if moe_layer.training:
         raise RuntimeError("Cross-checkpoint routing controls require eval mode")
     with torch.no_grad():
-        route_weights, route_indices, auxiliary_loss = moe_layer.compute_router(
+        route_weights, route_indices, auxiliary_loss = _compute_router(
+            moe_layer,
             hidden_states,
             labels,
+            timestep,
         )
-        repeated_weights, repeated_indices, repeated_auxiliary = (
-            moe_layer.compute_router(hidden_states, labels)
+        repeated_weights, repeated_indices, repeated_auxiliary = _compute_router(
+            moe_layer,
+            hidden_states,
+            labels,
+            timestep,
         )
-        unbiased_scores = _all_router_weights(moe_layer, hidden_states)
+        unbiased_scores = _all_router_weights(
+            moe_layer,
+            hidden_states,
+            timestep,
+        )
     if auxiliary_loss is not None or repeated_auxiliary is not None:
         raise RuntimeError("Frozen eval router returned an auxiliary loss")
     if route_weights.shape[-1] != 1 or route_indices.shape != route_weights.shape:
@@ -245,6 +255,7 @@ def _probe_cell(
         moe_layer,
         hidden_states,
         labels,
+        timestep,
     )
     native_experts = route_indices[0, :, 0]
     native_weights = route_weights[0, :, 0]

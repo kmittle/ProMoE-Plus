@@ -1,0 +1,8 @@
+实验 / Experiment: 2.1-B_phase_metric_shuffle
+model_name: ProMoE_TC_B  |  config: configs/004_ProMoE_B_phase_metric_shuffle.yaml
+基线 / Baseline: 基础 ProMoE-TC（conditional cond/uncond routing、静态 `cluster_centers` cosine routing、shared expert 和 routing contrastive guidance）；直接父变体 / Parent: `1.1-B_phase_metric` native phase metric
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 打乱 phase 对应关系 / shuffled phase correspondence：保留与 native 方案完全相同的低秩 `PhaseConditionedRoutingMetric`、rank、Fourier bands、scale 和初始化，但设置 `shuffle_timestep: True`，在每个 batch 内循环 timestep 后再给 token 路由使用。这样保留 phase histogram，同时破坏 token 与真实 diffusion phase 的对应关系。
+2. MoE 拓扑不变 / unchanged MoE topology：shuffle 只影响 phase metric 的输入，不改变 cond/uncond expert、shared expert、top-1 路由预算或 expert MLP；它是检验 native timestep 对应关系是否真正提供路由收益的匹配 control，而不是新的表征对齐路径。
+3. 严格配对设置 / controlled setting：seed 为 0，global batch 为 256，lr 为 `1e-4`，`num_steps: 501000`，使用同一份本地 encoded latents和 300K/500K、CFG 1.0/1.5 评估协议；由于含新增 metric 参数，本实验也必须在独立输出目录从 step 0 fresh 训练。

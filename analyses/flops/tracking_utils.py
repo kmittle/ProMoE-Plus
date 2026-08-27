@@ -6,14 +6,38 @@ import inspect
 def is_tc_compute_router(moe_module):
     """Check if the module's compute_router follows TC (Token-Choice) signature.
 
-    TC models: compute_router(self, hidden_states, labels) -> 2 params.
+    TC models accept ``hidden_states`` and ``labels``; phase-aware TC routers
+    may additionally accept an optional ``timestep``.
     EC models: compute_router(self, cond_hidden_states) -> 1 param (incompatible).
     """
     if not hasattr(moe_module, "compute_router"):
         return False
     sig = inspect.signature(moe_module.compute_router)
-    params = [p for p in sig.parameters if p != "self"]
-    return len(params) == 2
+    params = [
+        parameter
+        for name, parameter in sig.parameters.items()
+        if name != "self"
+    ]
+    if len(params) < 2:
+        return False
+    if [parameter.name for parameter in params[:2]] != [
+        "hidden_states",
+        "labels",
+    ]:
+        return False
+    for parameter in params[2:]:
+        if parameter.kind in {
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        }:
+            continue
+        if (
+            parameter.name == "timestep"
+            and parameter.default is not inspect.Parameter.empty
+        ):
+            continue
+        return False
+    return True
 
 
 def find_moe_blocks(model):

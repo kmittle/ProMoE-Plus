@@ -150,12 +150,51 @@ def _per_sample_mse(prediction, target):
     return difference.square().flatten(1).mean(dim=1)
 
 
-def _all_router_weights(moe_layer, hidden_states):
+def _compute_router(moe_layer, hidden_states, labels, timestep=None):
+    if getattr(moe_layer, "phase_metric", None) is None:
+        return moe_layer.compute_router(hidden_states, labels)
+    if timestep is None:
+        raise ValueError("Phase-aware router calls require timestep")
+    return moe_layer.compute_router(hidden_states, labels, timestep)
+
+
+def _all_router_weights(moe_layer, hidden_states, timestep=None):
+    if hidden_states.ndim != 3:
+        raise ValueError(
+            "Router score reconstruction expects (batch, tokens, hidden), got "
+            f"{tuple(hidden_states.shape)}"
+        )
     normalized_input = F.normalize(hidden_states.float(), p=2, dim=-1)
     normalized_centers = F.normalize(
         moe_layer.cluster_centers.detach().float(), p=2, dim=-1
     )
     cosine = normalized_input @ normalized_centers.T
+    phase_metric = getattr(moe_layer, "phase_metric", None)
+    if phase_metric is not None:
+        if timestep is None:
+            raise ValueError(
+                "Phase-aware router score reconstruction requires timestep"
+            )
+        batch_size, token_count, hidden_size = normalized_input.shape
+        phase_timesteps = timestep.reshape(-1).to(hidden_states.device)
+        if phase_timesteps.numel() != batch_size:
+            raise ValueError(
+                "timestep must contain one value per router batch row; got "
+                f"{phase_timesteps.numel()} for batch size {batch_size}"
+            )
+        if (
+            getattr(moe_layer, "phase_metric_shuffle_timestep", False)
+            and batch_size > 1
+        ):
+            phase_timesteps = torch.roll(phase_timesteps, shifts=1, dims=0)
+        token_timesteps = phase_timesteps.repeat_interleave(token_count)
+        with torch.no_grad():
+            phase_residual = phase_metric(
+                normalized_input.reshape(-1, hidden_size),
+                normalized_centers,
+                token_timesteps,
+            ).view(batch_size, token_count, -1)
+        cosine = cosine + phase_residual
     if moe_layer.router_weight_mode == "softmax":
         return F.softmax(cosine, dim=-1)
     if moe_layer.router_weight_mode == "sigmoid":
@@ -231,10 +270,21 @@ def _forced_routes(moe_layer, token_indices, expert_indices):
         raise ValueError("Forced route indices must be one- or two-dimensional")
     original_compute_router = moe_layer.compute_router
 
-    def compute_router_with_override(this, hidden_states, labels):
-        weights, indices, auxiliary_loss = original_compute_router(
-            hidden_states, labels
-        )
+    def compute_router_with_override(
+        this,
+        hidden_states,
+        labels,
+        timestep=None,
+    ):
+        if timestep is None:
+            router_result = original_compute_router(hidden_states, labels)
+        else:
+            router_result = original_compute_router(
+                hidden_states,
+                labels,
+                timestep,
+            )
+        weights, indices, auxiliary_loss = router_result
         expected_batch = (
             token_indices.numel()
             if token_indices.ndim == 1
@@ -400,7 +450,7 @@ def _probe_sigma(
     capture.stop()
 
     hidden_states = capture.hidden_states
-    router_weights = _all_router_weights(moe_layer, hidden_states)
+    router_weights = _all_router_weights(moe_layer, hidden_states, timestep)
     current_ids = router_weights.argmax(dim=-1)
 
     num_tokens = hidden_states.shape[1]

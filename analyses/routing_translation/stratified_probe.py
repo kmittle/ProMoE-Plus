@@ -282,7 +282,11 @@ def _probe_stratified_cell(
         grid_size,
         token_shift,
     )
-    router_scores = _all_router_weights(moe_layer, shifted_hidden)[0]
+    router_scores = _all_router_weights(
+        moe_layer,
+        shifted_hidden,
+        timestep,
+    )[0]
     stratum_masks, router_diagnostics = _build_stratum_masks(
         router_scores,
         shifted_ids,

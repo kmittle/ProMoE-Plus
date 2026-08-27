@@ -5,6 +5,7 @@ import torch.nn as nn
 from timm.models.vision_transformer import PatchEmbed
 import torch.nn.functional as F
 from .modules import get_2d_sincos_pos_embed, Attention, modulate, TimestepEmbedder, LabelEmbedder, FinalLayer, MoeMLP, Mlp
+from .phase_metric import PhaseConditionedRoutingMetric
 
 
 #################################################################################
@@ -63,6 +64,7 @@ class SparseMoeBlock(nn.Module):
         routing_contrastive_lam=0,
         use_top_k_for_routing_contrastive=False,
         routing_contrastive_temperature=0.1,
+        phase_metric_config=None,
         **kwargs,
     ):
         super().__init__()
@@ -85,6 +87,27 @@ class SparseMoeBlock(nn.Module):
         self.routing_contrastive_lam = routing_contrastive_lam
         self.use_top_k_for_routing_contrastive = use_top_k_for_routing_contrastive
         self.routing_contrastive_temperature = routing_contrastive_temperature
+
+        phase_metric_config = phase_metric_config or {}
+        self.phase_metric_shuffle_timestep = bool(
+            phase_metric_config.get('shuffle_timestep', False)
+        )
+        if bool(phase_metric_config.get('enabled', False)):
+            self.phase_metric = PhaseConditionedRoutingMetric(
+                hidden_size=hidden_size,
+                num_experts=num_routed_experts,
+                rank=int(phase_metric_config.get('rank', 8)),
+                num_fourier_bands=int(
+                    phase_metric_config.get('num_fourier_bands', 4)
+                ),
+                num_train_timesteps=float(
+                    phase_metric_config.get('num_train_timesteps', 1000)
+                ),
+                scale=float(phase_metric_config.get('scale', 0.25)),
+                init_seed=int(phase_metric_config.get('init_seed', 1729)),
+            )
+        else:
+            self.phase_metric = None
         
         self.experts = nn.ModuleList(
             [MoeMLP(hidden_size=hidden_size, intermediate_size=moe_intermediate_size) 
@@ -99,11 +122,30 @@ class SparseMoeBlock(nn.Module):
         
         self._init_weights()
 
-    def compute_router(self, hidden_states, labels):
+    def compute_router(self, hidden_states, labels, timestep=None):
         batch_size, seq_len, _ = hidden_states.shape
         device = hidden_states.device
         flat_input = hidden_states.view(-1, self.hidden_size)
         flat_labels = labels.view(batch_size, 1).expand(-1, seq_len).reshape(-1)
+
+        phase_timesteps = None
+        if self.phase_metric is not None:
+            if timestep is None:
+                raise ValueError(
+                    'phase-conditioned routing requires the scalar timestep'
+                )
+            phase_timesteps = timestep.reshape(-1).to(device=device)
+            if phase_timesteps.numel() != batch_size:
+                raise ValueError(
+                    'timestep must contain one value per batch sample; got '
+                    f'{phase_timesteps.numel()} for batch size {batch_size}'
+                )
+            if self.phase_metric_shuffle_timestep and batch_size > 1:
+                # This is a matched control: retain the observed phase
+                # histogram while breaking token-to-phase correspondence.
+                phase_timesteps = torch.roll(
+                    phase_timesteps, shifts=1, dims=0
+                )
 
         if self.use_uncond_expert and flat_labels is not None:
             uncond_mask = (flat_labels == 1000)
@@ -132,6 +174,19 @@ class SparseMoeBlock(nn.Module):
             cluster_norm = F.normalize(self.cluster_centers, p=2, dim=1)
             
             cos_sim = input_norm @ cluster_norm.T
+
+            if self.phase_metric is not None:
+                cond_sample_idx = cond_positions // seq_len
+                cond_timesteps = phase_timesteps[cond_sample_idx]
+                metric_delta = self.phase_metric(
+                    input_norm,
+                    cluster_norm,
+                    cond_timesteps,
+                )
+                # Keep the Base path untouched when the feature is disabled.
+                # Promotion here retains the phase residual's float32
+                # resolution before expert selection under autocast.
+                cos_sim = cos_sim + metric_delta
 
             if self.router_weight_mode == "softmax":
                 cond_weights = F.softmax(cos_sim, dim=1)
@@ -177,9 +232,21 @@ class SparseMoeBlock(nn.Module):
         
         return router_weights, expert_indices, load_balance_loss
 
-    def forward(self, hidden_states: torch.Tensor, labels: torch.Tensor):
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        labels: torch.Tensor,
+        timestep: torch.Tensor = None,
+    ):
         ### token assignment
-        router_weights, expert_indices, load_balance_loss = self.compute_router(hidden_states, labels)
+        if self.phase_metric is None:
+            router_weights, expert_indices, load_balance_loss = (
+                self.compute_router(hidden_states, labels)
+            )
+        else:
+            router_weights, expert_indices, load_balance_loss = (
+                self.compute_router(hidden_states, labels, timestep)
+            )
         batch_size, seq_len, hidden_dim = hidden_states.shape
         
         flat_input = hidden_states.view(-1, hidden_dim)
@@ -333,11 +400,15 @@ class DiTBlock(nn.Module):
             nn.Linear(hidden_size, 6 * hidden_size, bias=True)
         )
 
-    def forward(self, x, c, label):
+    def forward(self, x, c, label, timestep=None):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(6, dim=1)
         x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
         if self.use_moe:
-            x_mlp, aux_loss = self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp), label)
+            mlp_input = modulate(self.norm2(x), shift_mlp, scale_mlp)
+            if self.mlp.phase_metric is None:
+                x_mlp, aux_loss = self.mlp(mlp_input, label)
+            else:
+                x_mlp, aux_loss = self.mlp(mlp_input, label, timestep)
             if aux_loss is not None:
                 x_mlp = AddAuxiliaryLoss.apply(x_mlp, aux_loss)
             x = x + gate_mlp.unsqueeze(1) * x_mlp
@@ -474,7 +545,10 @@ class DiT(nn.Module):
         y, labels = self.y_embedder(y, self.training)    # (N, D)
         c = t + y                                # (N, D)
         for block in self.blocks:
-            x = block(x, c, labels)                      # (N, T, D)
+            if block.use_moe and block.mlp.phase_metric is not None:
+                x = block(x, c, labels, timestep)       # (N, T, D)
+            else:
+                x = block(x, c, labels)                 # (N, T, D)
         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
         x = self.unpatchify(x)                   # (N, out_channels, H, W)
 

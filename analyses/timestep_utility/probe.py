@@ -109,11 +109,21 @@ def _forced_route_state(moe_layer, route_ids, route_weights):
         raise ValueError("Forced route weights must be finite")
     original_compute_router = moe_layer.compute_router
 
-    def compute_router_with_override(this, hidden_states, labels):
-        weights, indices, auxiliary_loss = original_compute_router(
-            hidden_states,
-            labels,
-        )
+    def compute_router_with_override(
+        this,
+        hidden_states,
+        labels,
+        timestep=None,
+    ):
+        if timestep is None:
+            router_result = original_compute_router(hidden_states, labels)
+        else:
+            router_result = original_compute_router(
+                hidden_states,
+                labels,
+                timestep,
+            )
+        weights, indices, auxiliary_loss = router_result
         if weights.shape[-1] != 1:
             raise RuntimeError("Timestep-utility overrides require top_k == 1")
         if weights.shape[:2] != route_ids.shape:
@@ -710,7 +720,11 @@ def _probe_cell(
     native_loss = _per_sample_mse(native_prediction, target)[0]
     native_route_ids = native_indices[0, :, 0]
     native_route_weights = native_weights[0, :, 0]
-    router_scores = _all_router_weights(moe_layer, hidden_states)[0, token_indices]
+    router_scores = _all_router_weights(
+        moe_layer,
+        hidden_states,
+        timestep,
+    )[0, token_indices]
     if not torch.equal(router_scores.argmax(dim=-1), native_route_ids[token_indices]):
         raise RuntimeError("Captured native routes disagree with all-router scores")
 

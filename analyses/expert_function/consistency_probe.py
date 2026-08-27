@@ -547,7 +547,11 @@ def _probe_cell(
             token_indices,
             content_sources,
         )
-        router_scores = _all_router_weights(moe_layer, shifted_hidden)[
+        router_scores = _all_router_weights(
+            moe_layer,
+            shifted_hidden,
+            timestep,
+        )[
             0, token_indices
         ].float()
         native_experts = shifted_indices[0, token_indices, 0]

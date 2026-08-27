@@ -290,7 +290,11 @@ def _probe_flip_cell(
         valid_tokens,
         generator,
     )
-    all_router_scores = _all_router_weights(moe_layer, flipped_hidden)[0]
+    all_router_scores = _all_router_weights(
+        moe_layer,
+        flipped_hidden,
+        timestep,
+    )[0]
     route_margin = _route_margin_metrics(
         all_router_scores,
         flipped_ids,

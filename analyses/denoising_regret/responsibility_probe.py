@@ -17,6 +17,7 @@ from analyses.t_SNE.checkpoint_utils import (
 
 from .probe import (
     RoutingProbeCapture,
+    _compute_router,
     _configure_torch_threads,
     _correlation,
     _evaluate_experts,
@@ -219,11 +220,21 @@ def summarize_global_records(records, candidate_scales):
 def _forced_token_route_weights(moe_layer, token_indices, route_weights):
     original_compute_router = moe_layer.compute_router
 
-    def compute_router_with_override(this, hidden_states, labels):
-        weights, indices, auxiliary_loss = original_compute_router(
-            hidden_states,
-            labels,
-        )
+    def compute_router_with_override(
+        this,
+        hidden_states,
+        labels,
+        timestep=None,
+    ):
+        if timestep is None:
+            router_result = original_compute_router(hidden_states, labels)
+        else:
+            router_result = original_compute_router(
+                hidden_states,
+                labels,
+                timestep,
+            )
+        weights, indices, auxiliary_loss = router_result
         if hidden_states.shape[0] != token_indices.numel():
             raise RuntimeError(
                 "Forced token-weight count must match the counterfactual batch size"
@@ -254,11 +265,21 @@ def _forced_token_route_weights(moe_layer, token_indices, route_weights):
 def _forced_route_weight_matrix(moe_layer, route_weight_matrix):
     original_compute_router = moe_layer.compute_router
 
-    def compute_router_with_override(this, hidden_states, labels):
-        weights, indices, auxiliary_loss = original_compute_router(
-            hidden_states,
-            labels,
-        )
+    def compute_router_with_override(
+        this,
+        hidden_states,
+        labels,
+        timestep=None,
+    ):
+        if timestep is None:
+            router_result = original_compute_router(hidden_states, labels)
+        else:
+            router_result = original_compute_router(
+                hidden_states,
+                labels,
+                timestep,
+            )
+        weights, indices, auxiliary_loss = router_result
         if weights.shape[-1] != 1:
             raise RuntimeError("Responsibility overrides require top_k == 1")
         if route_weight_matrix is not None and weights.shape[:2] != route_weight_matrix.shape:
@@ -428,9 +449,11 @@ def _probe_sigma(
     hidden_states = capture.hidden_states
     captured_labels = capture.labels
     with torch.no_grad():
-        router_weights, expert_indices, _ = moe_layer.compute_router(
+        router_weights, expert_indices, _ = _compute_router(
+            moe_layer,
             hidden_states,
             captured_labels,
+            timestep,
         )
         native_weights = router_weights[0, :, 0].float()
         selected_experts = expert_indices[0, :, 0]

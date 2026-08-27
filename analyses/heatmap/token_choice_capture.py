@@ -14,7 +14,7 @@ class TokenChoiceExpertIndexCapture:
         self.moe_blocks = find_token_choice_moe_blocks(model)
         if not self.moe_blocks:
             raise RuntimeError(
-                "No token-choice MoE blocks with compute_router(hidden_states, labels) "
+                "No token-choice MoE blocks with a supported compute_router "
                 "were found in this model."
             )
 
@@ -36,10 +36,13 @@ class TokenChoiceExpertIndexCapture:
             original_compute_router = moe_module.compute_router
             self._original_compute_router[block_idx] = original_compute_router
 
-            def hooked_compute_router(hidden_states, labels, *,
+            def hooked_compute_router(hidden_states, labels, timestep=None, *,
                                       _block_idx=block_idx,
                                       _original=original_compute_router):
-                result = _original(hidden_states, labels)
+                if timestep is None:
+                    result = _original(hidden_states, labels)
+                else:
+                    result = _original(hidden_states, labels, timestep)
                 if not self._enabled:
                     return result
 

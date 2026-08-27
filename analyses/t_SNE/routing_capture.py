@@ -8,8 +8,31 @@ def _supports_token_choice_router(moe_module) -> bool:
     if not hasattr(moe_module, "compute_router"):
         return False
     signature = inspect.signature(moe_module.compute_router)
-    params = [name for name in signature.parameters if name != "self"]
-    return len(params) == 2
+    params = [
+        parameter
+        for name, parameter in signature.parameters.items()
+        if name != "self"
+    ]
+    if len(params) < 2:
+        return False
+    if [parameter.name for parameter in params[:2]] != [
+        "hidden_states",
+        "labels",
+    ]:
+        return False
+    for parameter in params[2:]:
+        if parameter.kind in {
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        }:
+            continue
+        if (
+            parameter.name == "timestep"
+            and parameter.default is not inspect.Parameter.empty
+        ):
+            continue
+        return False
+    return True
 
 
 def find_token_choice_moe_blocks(model) -> list[tuple[int, object, object]]:
@@ -33,7 +56,7 @@ class TokenRoutingCapture:
         self.moe_blocks = find_token_choice_moe_blocks(model)
         if not self.moe_blocks:
             raise RuntimeError(
-                "No token-choice MoE blocks with compute_router(hidden_states, labels) "
+                "No token-choice MoE blocks with a supported compute_router "
                 "were found in this model."
             )
 
@@ -65,8 +88,16 @@ class TokenRoutingCapture:
 
             hidden_states = inputs[0]
             labels = inputs[1]
+            timestep = inputs[2] if len(inputs) >= 3 else None
             with torch.no_grad():
-                router_result = module.compute_router(hidden_states, labels)
+                if timestep is None:
+                    router_result = module.compute_router(hidden_states, labels)
+                else:
+                    router_result = module.compute_router(
+                        hidden_states,
+                        labels,
+                        timestep,
+                    )
             expert_indices = router_result[1]
             self._pending_labels[block_idx] = expert_indices[..., 0].detach().cpu()
 

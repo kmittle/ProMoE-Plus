@@ -15,6 +15,7 @@ import torch.nn.functional as F
 
 from analyses.denoising_regret.probe import (
     _all_router_weights,
+    _compute_router,
     _configure_torch_threads,
     _extract_prediction,
     _load_checkpoint_model,
@@ -370,11 +371,21 @@ def _forced_route_matrices(moe_layer, route_ids):
 
     original_compute_router = moe_layer.compute_router
 
-    def compute_router_with_override(this, hidden_states, labels):
-        weights, indices, auxiliary_loss = original_compute_router(
-            hidden_states,
-            labels,
-        )
+    def compute_router_with_override(
+        this,
+        hidden_states,
+        labels,
+        timestep=None,
+    ):
+        if timestep is None:
+            router_result = original_compute_router(hidden_states, labels)
+        else:
+            router_result = original_compute_router(
+                hidden_states,
+                labels,
+                timestep,
+            )
+        weights, indices, auxiliary_loss = router_result
         if weights.shape[-1] != 1:
             raise RuntimeError("Translation route overrides require top_k == 1")
         if route_ids.shape != indices.shape[:2]:
@@ -413,9 +424,11 @@ def _capture_native_forward(model, moe_layer, capture, inputs, timestep, label):
     if capture.hidden_states is None or capture.labels is None:
         raise RuntimeError("The target MoE router did not run")
     with torch.inference_mode():
-        weights, indices, _ = moe_layer.compute_router(
+        weights, indices, _ = _compute_router(
+            moe_layer,
             capture.hidden_states,
             capture.labels,
+            timestep,
         )
     return output, capture.hidden_states, weights, indices
 
@@ -577,7 +590,11 @@ def _probe_cell(
         valid_tokens,
         generator,
     )
-    all_router_scores = _all_router_weights(moe_layer, shifted_hidden)[0]
+    all_router_scores = _all_router_weights(
+        moe_layer,
+        shifted_hidden,
+        timestep,
+    )[0]
     route_margin = _route_margin_metrics(
         all_router_scores,
         shifted_ids,

@@ -16,6 +16,7 @@ from scipy.optimize import linear_sum_assignment
 from analyses.denoising_regret.probe import (
     RoutingProbeCapture,
     _all_router_weights,
+    _compute_router,
     _evaluate_experts,
     _extract_prediction,
     _load_latent,
@@ -130,13 +131,15 @@ def _source_cells_by_key(source_result):
     return cells
 
 
-def _native_route_state(moe_layer, hidden_states, labels):
+def _native_route_state(moe_layer, hidden_states, labels, timestep=None):
     with torch.no_grad():
-        weights, indices, auxiliary_loss = moe_layer.compute_router(
+        weights, indices, auxiliary_loss = _compute_router(
+            moe_layer,
             hidden_states,
             labels,
+            timestep,
         )
-        scores = _all_router_weights(moe_layer, hidden_states)
+        scores = _all_router_weights(moe_layer, hidden_states, timestep)
     if auxiliary_loss is not None:
         raise RuntimeError("Frozen eval router unexpectedly returned an auxiliary loss")
     native_experts = indices[0, :, 0]
@@ -200,6 +203,7 @@ def _calibration_cell(
         moe_layer,
         hidden_states,
         labels,
+        timestep,
     )
     components = _exchange_components(
         moe_layer=moe_layer,
@@ -256,6 +260,7 @@ def _forward_only_cell(
         moe_layer,
         hidden_states,
         labels,
+        timestep,
     )
     return {
         "hidden": hidden_states[0].detach(),
@@ -465,6 +470,7 @@ def _reveal_action_cell(
         moe_layer,
         capture.hidden_states,
         capture.labels,
+        timestep,
     )
     route_id_sha256 = array_sha256(
         native_experts.detach().cpu().numpy(),

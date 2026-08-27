@@ -71,8 +71,18 @@ class ExpertActivationTracker:
         original_compute_router = moe_module.compute_router
         moe_module._original_compute_router = original_compute_router
 
-        def hooked_compute_router(hidden_states, labels):
-            result = original_compute_router(hidden_states, labels)
+        def hooked_compute_router(
+            hidden_states,
+            labels,
+            *router_args,
+            **router_kwargs,
+        ):
+            result = original_compute_router(
+                hidden_states,
+                labels,
+                *router_args,
+                **router_kwargs,
+            )
             expert_indices = result[1]
             # expert_indices: (batch_size, seq_len, top_k)
             batch_size, seq_len, top_k = expert_indices.shape

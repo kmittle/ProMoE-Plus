@@ -379,7 +379,7 @@ def _probe_sigma(
     capture.stop()
 
     hidden_states = capture.hidden_states
-    router_weights = _all_router_weights(moe_layer, hidden_states)
+    router_weights = _all_router_weights(moe_layer, hidden_states, timestep)
     current_ids = router_weights.argmax(dim=-1)
     num_tokens = hidden_states.shape[1]
     probe_count = min(num_token_probes, num_tokens)

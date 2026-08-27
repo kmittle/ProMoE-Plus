@@ -76,7 +76,7 @@ class ActivatedParamsTracker:
         original_forward = moe_module.forward
         moe_module._original_forward_for_params = original_forward
 
-        def patched_forward(hidden_states, labels):
+        def patched_forward(hidden_states, labels, timestep=None):
             # Temporarily wrap compute_router to capture expert_indices.
             # This composes correctly with ExpertActivationTracker which may
             # have already patched compute_router — we wrap whatever is
@@ -84,14 +84,24 @@ class ActivatedParamsTracker:
             prev_compute_router = moe_module.compute_router
             captured = {}
 
-            def capturing_compute_router(hs, lbs):
-                result = prev_compute_router(hs, lbs)
+            def capturing_compute_router(hs, lbs, *router_args, **router_kwargs):
+                result = prev_compute_router(
+                    hs,
+                    lbs,
+                    *router_args,
+                    **router_kwargs,
+                )
                 captured['expert_indices'] = result[1]  # expert_indices
                 return result
 
             moe_module.compute_router = capturing_compute_router
-            result = original_forward(hidden_states, labels)
-            moe_module.compute_router = prev_compute_router
+            try:
+                if timestep is None:
+                    result = original_forward(hidden_states, labels)
+                else:
+                    result = original_forward(hidden_states, labels, timestep)
+            finally:
+                moe_module.compute_router = prev_compute_router
 
             # Record which experts received real tokens
             if 'expert_indices' in captured:

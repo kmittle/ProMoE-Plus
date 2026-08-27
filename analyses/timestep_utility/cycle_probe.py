@@ -17,6 +17,7 @@ import torch
 from analyses.denoising_regret.probe import (
     RoutingProbeCapture,
     _all_router_weights,
+    _compute_router,
     _configure_torch_threads,
     _evaluate_experts,
     _extract_prediction,
@@ -1113,12 +1114,19 @@ def _probe_cell(
     labels = capture.labels
     if hidden_states is None or labels is None:
         raise RuntimeError("The cycle probe did not capture router inputs")
+    reference_timestep = timestep.repeat(reference_batch_size)
     with torch.no_grad():
-        native_weights, native_indices, _ = moe_layer.compute_router(
+        native_weights, native_indices, _ = _compute_router(
+            moe_layer,
             hidden_states,
             labels,
+            reference_timestep,
         )
-        router_scores = _all_router_weights(moe_layer, hidden_states)
+        router_scores = _all_router_weights(
+            moe_layer,
+            hidden_states,
+            reference_timestep,
+        )
     if not torch.equal(
         native_indices,
         native_indices[0:1].expand_as(native_indices),
