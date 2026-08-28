@@ -29,6 +29,7 @@ Each Python entrypoint in this directory has a matching Markdown guide with the 
 
 - [`run_routing_flip_probe.py`](run_routing_flip_probe.py): fixed-compute causal audit of whether top-1 routes follow horizontally flipped content, including changed-token router margins. See [`run_routing_flip_probe.md`](run_routing_flip_probe.md).
 - [`run_routing_translation_stratified_probe.py`](run_routing_translation_stratified_probe.py): fixed-compute translation audit split by native router margin and transported-expert rank. See [`run_routing_translation_stratified_probe.md`](run_routing_translation_stratified_probe.md).
+- [`run_phase_default_probe.py`](run_phase_default_probe.py): locked Base-200K test of global versus phase-conditioned default expert outputs and their dense router-gradient approximation. See [`run_phase_default_probe.md`](run_phase_default_probe.md).
 
 ## Shared Modules
 
@@ -39,3 +40,4 @@ MoS routing helpers live in [`analyses/mos_routing/`](/mnt/miah204/bycao/ProMoE-
 Denoising-regret helpers live in [`analyses/denoising_regret/`](denoising_regret/), including checkpoint loading, routing interception, exact counterfactual execution, fixed case manifests, and per-cell launch-gate aggregation.
 Routing-equivariance helpers live in [`analyses/routing_translation/`](routing_translation/), including reflect-padded latent shifts, horizontal flips, transported route references, matched random controls, router-margin diagnostics, and fixed-ID counterfactual execution.
 Natural-input expert-utility helpers live in [`analyses/timestep_utility/`](timestep_utility/), including paired all-expert interventions, constrained assignment, load statistics, and cross-sigma rank analysis.
+Phase-default helpers live in [`analyses/phase_default/`](phase_default/), including selected-output sketch calibration, exact missing-expert output evaluation, and local dense router-gradient comparisons.

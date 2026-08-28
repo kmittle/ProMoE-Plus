@@ -1,0 +1,482 @@
+{
+  "version": 1,
+  "name": "phase_default_gate_v1",
+  "selection": {
+    "locked_before_any_phase_default_result": true,
+    "salt": "promoe-phase-default-gate-v1-20260828",
+    "class_rule": "Collect labels from all existing manifests and classNNN result filenames under /home/dev/promoe-probes, exclude them, sort SHA256(salt|class|label03|synset), use the first 16 for calibration and the next 32 for confirmation.",
+    "latent_rule": "Sort latent basenames and select int(SHA256(salt|latent|label03|synset)[0:16],16) modulo class count.",
+    "seed_rule": "int(SHA256(salt|seed|label03|synset|latent_basename)[0:16],16) modulo 2147483647.",
+    "source_manifest_count": 12,
+    "source_result_case_file_count": 1322,
+    "excluded_label_count": 327,
+    "excluded_labels_sha256": "66bf4ef85b524eda2a122104e183094ec1f99c445c9107691da99de836e91a83"
+  },
+  "protocol": {
+    "model_name": "ProMoE_TC_B",
+    "checkpoint_step": 200000,
+    "checkpoint_state": "ema_model_state_dict",
+    "checkpoint_size": 4808904390,
+    "checkpoint_sha256": "efe2400374c3bf14a80590906a8000189b297dc05738ab4839ed94d8530ed848",
+    "sigmas": [0.1, 0.3, 0.5, 0.7, 0.9],
+    "block_indices": [1, 5, 11],
+    "tokens_per_cell": 16,
+    "phase_shuffle_offset": 2,
+    "calibration_cases": 16,
+    "confirmatory_cases": 32,
+    "bootstrap_resamples": 200000,
+    "bootstrap_seed": 2026082801,
+    "minimum_phase_buffer_coverage": 1.0,
+    "gates": {
+      "maximum_mean_phase_output_relative_squared_error": 0.9,
+      "maximum_ucb_phase_output_relative_squared_error": 0.95,
+      "minimum_mean_phase_missing_score_cosine": 0.25,
+      "minimum_lcb_phase_missing_score_cosine": 0.15,
+      "minimum_mean_phase_center_cosine": 0.25,
+      "minimum_lcb_phase_center_cosine": 0.15,
+      "minimum_mean_phase_vs_global_output_error_reduction": 0.05,
+      "minimum_lcb_phase_vs_global_output_error_reduction": 0.02,
+      "minimum_mean_phase_minus_global_missing_score_cosine": 0.03,
+      "minimum_lcb_phase_minus_global_missing_score_cosine": 0.0,
+      "minimum_mean_phase_minus_global_center_cosine": 0.03,
+      "minimum_lcb_phase_minus_global_center_cosine": 0.0,
+      "minimum_lcb_phase_vs_shuffled_output_error_reduction": 0.0,
+      "minimum_lcb_phase_minus_shuffled_missing_score_cosine": 0.0,
+      "minimum_lcb_phase_minus_shuffled_center_cosine": 0.0
+    }
+  },
+  "cases": [
+    {
+      "split": "calibration",
+      "id": "class121_n01981276_n01981276_5918",
+      "label": 121,
+      "seed": 364959909,
+      "synset": "n01981276",
+      "latent": "n01981276/n01981276_5918.latent.npz",
+      "latent_sha256": "1ee616ddc5fbb54050dd9b09230869c9b5a994bb6cc347dd5b57e72664cd7372"
+    },
+    {
+      "split": "calibration",
+      "id": "class134_n02012849_n02012849_30820",
+      "label": 134,
+      "seed": 1719288218,
+      "synset": "n02012849",
+      "latent": "n02012849/n02012849_30820.latent.npz",
+      "latent_sha256": "d6c15f0051cafb4e34de292d7912c20a51fd7fe33fe1f76316c9ef252b7d3019"
+    },
+    {
+      "split": "calibration",
+      "id": "class572_n03443371_n03443371_16027",
+      "label": 572,
+      "seed": 1440182301,
+      "synset": "n03443371",
+      "latent": "n03443371/n03443371_16027.latent.npz",
+      "latent_sha256": "45abcfd9a95b8853ff88a22403d671909196bea0caf344927455e666d3663d5c"
+    },
+    {
+      "split": "calibration",
+      "id": "class176_n02091831_n02091831_7740",
+      "label": 176,
+      "seed": 185831367,
+      "synset": "n02091831",
+      "latent": "n02091831/n02091831_7740.latent.npz",
+      "latent_sha256": "cd0faf944161f54d4c1e59cde281ceaadf1956fc40d3521e77071536a60ad5e2"
+    },
+    {
+      "split": "calibration",
+      "id": "class374_n02488291_n02488291_4650",
+      "label": 374,
+      "seed": 1964245579,
+      "synset": "n02488291",
+      "latent": "n02488291/n02488291_4650.latent.npz",
+      "latent_sha256": "5589038d5aeccd5f49319fb48d31fd99a23705cb8172c517593371522c1a7898"
+    },
+    {
+      "split": "calibration",
+      "id": "class825_n04326547_n04326547_10053",
+      "label": 825,
+      "seed": 2068621009,
+      "synset": "n04326547",
+      "latent": "n04326547/n04326547_10053.latent.npz",
+      "latent_sha256": "4c876ff9ef5e40e3fb303665ba6c13d311e13dcb6a266df347117b32d287c980"
+    },
+    {
+      "split": "calibration",
+      "id": "class243_n02108422_n02108422_10216",
+      "label": 243,
+      "seed": 464346496,
+      "synset": "n02108422",
+      "latent": "n02108422/n02108422_10216.latent.npz",
+      "latent_sha256": "58b8b879f06aba79b163c6774593b28e7accbdd4d3655d0660fb7f0580f15197"
+    },
+    {
+      "split": "calibration",
+      "id": "class742_n04004767_n04004767_9662",
+      "label": 742,
+      "seed": 930083548,
+      "synset": "n04004767",
+      "latent": "n04004767/n04004767_9662.latent.npz",
+      "latent_sha256": "d703b70939e2a993b3d4cbf3cb5210fee1f1df54544eb2f2c244c4b15881b4d7"
+    },
+    {
+      "split": "calibration",
+      "id": "class278_n02119789_n02119789_9696",
+      "label": 278,
+      "seed": 1223101301,
+      "synset": "n02119789",
+      "latent": "n02119789/n02119789_9696.latent.npz",
+      "latent_sha256": "9a2fc5a66bd6a1aa0874b6717d32253ae6eb5a2e1bbf650e21306cb609a3e93b"
+    },
+    {
+      "split": "calibration",
+      "id": "class951_n07749582_n07749582_16368",
+      "label": 951,
+      "seed": 1919982555,
+      "synset": "n07749582",
+      "latent": "n07749582/n07749582_16368.latent.npz",
+      "latent_sha256": "dcd0670e1dd4eccc207d5123e52e49e3d1fad0e166a2cf2d6272f6d99086736c"
+    },
+    {
+      "split": "calibration",
+      "id": "class538_n03220513_n03220513_1374",
+      "label": 538,
+      "seed": 153900785,
+      "synset": "n03220513",
+      "latent": "n03220513/n03220513_1374.latent.npz",
+      "latent_sha256": "3c8b4867d3a70ee2b0d8fc7e60beccfff17de6d30c6ad6701d1cbbcae6a381fd"
+    },
+    {
+      "split": "calibration",
+      "id": "class921_n07248320_n07248320_68872",
+      "label": 921,
+      "seed": 1985099801,
+      "synset": "n07248320",
+      "latent": "n07248320/n07248320_68872.latent.npz",
+      "latent_sha256": "afae4ad9f6d5574d70ba657a3a6e45fabc21f77ef3796c45dd92bc7dc4d886a9"
+    },
+    {
+      "split": "calibration",
+      "id": "class174_n02091467_n02091467_1593",
+      "label": 174,
+      "seed": 1315915021,
+      "synset": "n02091467",
+      "latent": "n02091467/n02091467_1593.latent.npz",
+      "latent_sha256": "a71809e6c43246401a21842e6e6f918455084b4874353dacee0380c83b0ba7ef"
+    },
+    {
+      "split": "calibration",
+      "id": "class912_n04604644_n04604644_17175",
+      "label": 912,
+      "seed": 1015136712,
+      "synset": "n04604644",
+      "latent": "n04604644/n04604644_17175.latent.npz",
+      "latent_sha256": "43e68390b9cc124d4b914ba510f791dfc2dfc4495b52ea19efdd6bafcd770300"
+    },
+    {
+      "split": "calibration",
+      "id": "class962_n07871810_n07871810_12095",
+      "label": 962,
+      "seed": 1630533780,
+      "synset": "n07871810",
+      "latent": "n07871810/n07871810_12095.latent.npz",
+      "latent_sha256": "47fc235c84937823159d6f767067678e26900802cfc23f339ab8f945b0f5a351"
+    },
+    {
+      "split": "calibration",
+      "id": "class311_n02226429_n02226429_16808",
+      "label": 311,
+      "seed": 1785546466,
+      "synset": "n02226429",
+      "latent": "n02226429/n02226429_16808.latent.npz",
+      "latent_sha256": "2bfc5b52016084081c30de317cca93acab2d2f16322e27fa24c6bdca75308fdc"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class357_n02442845_n02442845_32102",
+      "label": 357,
+      "seed": 96632684,
+      "synset": "n02442845",
+      "latent": "n02442845/n02442845_32102.latent.npz",
+      "latent_sha256": "4320edc6f2530310fbbad67259993da16280fac1efbb8039bbf6978759e7023b"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class871_n04483307_n04483307_8101",
+      "label": 871,
+      "seed": 1698523950,
+      "synset": "n04483307",
+      "latent": "n04483307/n04483307_8101.latent.npz",
+      "latent_sha256": "4315e863119fa0380caddd7b7104feea37c86ee97ab4dd25963285dce00b91f6"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class878_n04505470_n04505470_4086",
+      "label": 878,
+      "seed": 686590640,
+      "synset": "n04505470",
+      "latent": "n04505470/n04505470_4086.latent.npz",
+      "latent_sha256": "c5fa54f868f19683e26e3396f6e2b985a0c21f1a506bf6bbcc76aca9b16c2dc1"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class446_n02840245_n02840245_1901",
+      "label": 446,
+      "seed": 413979803,
+      "synset": "n02840245",
+      "latent": "n02840245/n02840245_1901.latent.npz",
+      "latent_sha256": "cf08c864460a61fe7cc090a665fdb0e3448583409364492992fc2db256283a01"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class262_n02112706_n02112706_4871",
+      "label": 262,
+      "seed": 1969520855,
+      "synset": "n02112706",
+      "latent": "n02112706/n02112706_4871.latent.npz",
+      "latent_sha256": "937e73cc34452e8fa3693771051e27307386ba632c7a0015585ea073ce70f280"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class819_n04296562_n04296562_44026",
+      "label": 819,
+      "seed": 1249217212,
+      "synset": "n04296562",
+      "latent": "n04296562/n04296562_44026.latent.npz",
+      "latent_sha256": "02a426b0cfb7be177d497eaa9c034331d316b1af4abdcd481284ddb2c8a9c9b3"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class892_n04548280_n04548280_574",
+      "label": 892,
+      "seed": 1765960464,
+      "synset": "n04548280",
+      "latent": "n04548280/n04548280_574.latent.npz",
+      "latent_sha256": "2e3838bdd1f806e0c59d2ea13873dca50ea50f7abe7b53523f3fad6e5ed14fca"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class803_n04252225_n04252225_21249",
+      "label": 803,
+      "seed": 898435112,
+      "synset": "n04252225",
+      "latent": "n04252225/n04252225_21249.latent.npz",
+      "latent_sha256": "f6d470776170f9df8641240c2037d6c79dbdd73f95734b97e3e7ee161c9c6076"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class406_n02699494_n02699494_13051",
+      "label": 406,
+      "seed": 137993972,
+      "synset": "n02699494",
+      "latent": "n02699494/n02699494_13051.latent.npz",
+      "latent_sha256": "cc63839301ba061e928e512a1a1435f07e9b87aa51a2df257bd59bea64f01646"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class343_n02397096_n02397096_3441",
+      "label": 343,
+      "seed": 1101488106,
+      "synset": "n02397096",
+      "latent": "n02397096/n02397096_3441.latent.npz",
+      "latent_sha256": "5481df9936d5645dddc6eb9468125f2a00021958feb23732f8f26f3d14698bd9"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class256_n02111277_n02111277_13166",
+      "label": 256,
+      "seed": 844599729,
+      "synset": "n02111277",
+      "latent": "n02111277/n02111277_13166.latent.npz",
+      "latent_sha256": "46d837c5c024b5a4eadddf6b7e6ceb764b62bd502b2b50894812e01a47b562d1"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class024_n01622779_n01622779_2865",
+      "label": 24,
+      "seed": 1938434316,
+      "synset": "n01622779",
+      "latent": "n01622779/n01622779_2865.latent.npz",
+      "latent_sha256": "089eb852f5a94928e19f0bc8d286b496461f90053b51cbfc2dfb6e61e4e63927"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class456_n02879718_n02879718_22549",
+      "label": 456,
+      "seed": 1165981937,
+      "synset": "n02879718",
+      "latent": "n02879718/n02879718_22549.latent.npz",
+      "latent_sha256": "b9df3e8a7e47b250ece23d40e462c634293d9fb4c3fc9c0464c3a672e0ca386b"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class453_n02870880_n02870880_9583",
+      "label": 453,
+      "seed": 215613752,
+      "synset": "n02870880",
+      "latent": "n02870880/n02870880_9583.latent.npz",
+      "latent_sha256": "a96ad60a6301034cbfa28c9310e34bfadd18709d744cd808ccd8aae9cb907a69"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class074_n01773797_n01773797_3182",
+      "label": 74,
+      "seed": 146215130,
+      "synset": "n01773797",
+      "latent": "n01773797/n01773797_3182.latent.npz",
+      "latent_sha256": "d0979bda62a326138db4ed2f3093545bab228ac07c1d5ad0dcab287dedacd200"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class894_n04550184_n04550184_63060",
+      "label": 894,
+      "seed": 908504653,
+      "synset": "n04550184",
+      "latent": "n04550184/n04550184_63060.latent.npz",
+      "latent_sha256": "285441d4448773f24e5589b6559a1ff12f00aa76baf13ec09cc0c11347c5e8e0"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class215_n02101388_n02101388_916",
+      "label": 215,
+      "seed": 2054305983,
+      "synset": "n02101388",
+      "latent": "n02101388/n02101388_916.latent.npz",
+      "latent_sha256": "e0922f060bed85a4e1268e00557ca1cec0ae4bd5da732d953dc89a72f7e2c646"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class202_n02098105_n02098105_3364",
+      "label": 202,
+      "seed": 1918009568,
+      "synset": "n02098105",
+      "latent": "n02098105/n02098105_3364.latent.npz",
+      "latent_sha256": "007bb182bcb83b2287aceb0a71ce1ebb136958432cb07f395e4fa3b212f21ad9"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class570_n03424325_n03424325_18013",
+      "label": 570,
+      "seed": 1906887036,
+      "synset": "n03424325",
+      "latent": "n03424325/n03424325_18013.latent.npz",
+      "latent_sha256": "d010ec0e7a6745fe96e19a519bbc3098bcef78fdd7af246a72370dd60b7ec2a6"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class876_n04493381_n04493381_11841",
+      "label": 876,
+      "seed": 1624352144,
+      "synset": "n04493381",
+      "latent": "n04493381/n04493381_11841.latent.npz",
+      "latent_sha256": "06c0ee133c5436b94120774fb1a33fe74ec7d061c37a4473144993aba176d6b7"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class395_n02641379_n02641379_8700",
+      "label": 395,
+      "seed": 1996601174,
+      "synset": "n02641379",
+      "latent": "n02641379/n02641379_8700.latent.npz",
+      "latent_sha256": "259d6d95b93b983502c5ab13edabacf8554588df45ed42fedc8599ee70fff846"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class896_n04553703_n04553703_10464",
+      "label": 896,
+      "seed": 807704578,
+      "synset": "n04553703",
+      "latent": "n04553703/n04553703_10464.latent.npz",
+      "latent_sha256": "05d25284825c86fc2d67dbf44b0e9fa8d18eb112f8c7601c50cff72111cbc05a"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class240_n02107908_n02107908_8379",
+      "label": 240,
+      "seed": 1492734415,
+      "synset": "n02107908",
+      "latent": "n02107908/n02107908_8379.latent.npz",
+      "latent_sha256": "d3b772907e5cf38e97e16257240f7e9a96b24eb63c2fda0b65931f3de3335525"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class376_n02489166_n02489166_1726",
+      "label": 376,
+      "seed": 1372161573,
+      "synset": "n02489166",
+      "latent": "n02489166/n02489166_1726.latent.npz",
+      "latent_sha256": "5ba183564fc4e1716be73cc476c9e84b2a1684990f0e64524660337ee0cef428"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class122_n01983481_n01983481_5671",
+      "label": 122,
+      "seed": 1978958615,
+      "synset": "n01983481",
+      "latent": "n01983481/n01983481_5671.latent.npz",
+      "latent_sha256": "4bdfc8def1ba73de18f03c3a9900faf1575d7206a27ec081988a2af7af8c2986"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class824_n04325704_n04325704_7418",
+      "label": 824,
+      "seed": 2102018194,
+      "synset": "n04325704",
+      "latent": "n04325704/n04325704_7418.latent.npz",
+      "latent_sha256": "b5435520fb49344f0fa7b11203bf3f33af614c4821c466692efa950a5412cf20"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class618_n03633091_n03633091_15173",
+      "label": 618,
+      "seed": 636888624,
+      "synset": "n03633091",
+      "latent": "n03633091/n03633091_15173.latent.npz",
+      "latent_sha256": "7d6b113d8918bdc6b163474d6f767ddb053644b607714f915d29577b3860353b"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class164_n02088632_n02088632_2847",
+      "label": 164,
+      "seed": 1966066025,
+      "synset": "n02088632",
+      "latent": "n02088632/n02088632_2847.latent.npz",
+      "latent_sha256": "d696f74eb98219e94b5bfb091e97d8251dfcbc1c16932d5293f5b4a7b32772d3"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class515_n03124170_n03124170_8003",
+      "label": 515,
+      "seed": 1858736260,
+      "synset": "n03124170",
+      "latent": "n03124170/n03124170_8003.latent.npz",
+      "latent_sha256": "820b3832e40e52a9d11f02f872d7ea89a7b8496b8cf880a75540aa2674d0157c"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class192_n02096177_n02096177_10758",
+      "label": 192,
+      "seed": 479496158,
+      "synset": "n02096177",
+      "latent": "n02096177/n02096177_10758.latent.npz",
+      "latent_sha256": "9ea11640c179f2baf29c735be38cf08730fb370e4ba9252ad426557bf4e4ca8a"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class929_n07615774_n07615774_28083",
+      "label": 929,
+      "seed": 571052387,
+      "synset": "n07615774",
+      "latent": "n07615774/n07615774_28083.latent.npz",
+      "latent_sha256": "a08765fc9b1d1d7789e5037988389e0917715711b56cd5a4a35ea36b1009b41f"
+    },
+    {
+      "split": "confirmatory",
+      "id": "class597_n03527444_n03527444_13105",
+      "label": 597,
+      "seed": 86181094,
+      "synset": "n03527444",
+      "latent": "n03527444/n03527444_13105.latent.npz",
+      "latent_sha256": "1841d9a7bf963a267fb190528fbb6f3669ad7b26f50a0c9769722011d1578d23"
+    }
+  ]
+}
