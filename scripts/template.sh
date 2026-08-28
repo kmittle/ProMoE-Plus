@@ -21,7 +21,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "$REPO_ROOT"
 
 CONFIG="configs/004_ProMoE_B_repa_dyna_only.yaml"
-LOG="log_ProMoE_B_repa_dyna_only_train_sample_eval.log"
+LOG="${REPO_ROOT}/logs/log_ProMoE_B_repa_dyna_only_train_sample_eval.log"
+mkdir -p "$(dirname "$LOG")"
 
 readarray -t YAML_INFO < <(python - "$CONFIG" <<'PY'
 import os

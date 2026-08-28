@@ -1,5 +1,6 @@
 model_name: "ProMoE_TC_B"
-output_dir: "/home/dev/promoe-runs/credit-normalized-expert-gradient-ab-v4"
+archived_experiment: True
+output_dir: "/mnt/cubefs/caoboyuan/ProMoE-Plus/outputs/archived_outputs/2026-08-28/credit-normalized-expert-gradient-ab-v4"
 
 gpu_ids: [4, 5, 6, 7]
 
@@ -22,10 +23,10 @@ credit_redistribution_config:
   enabled: True
   branch: "measure_only_control"
   execution_mode: "continuation"
-  initial_checkpoint_path: "/home/dev/promoe-probes/base-seed0-ckpt_step_301000.pth"
-  preregister_v3_path: "/home/dev/promoe-probes/credit-normalized-expert-gradient-ab-v3-preregister.json"
-  preregister_v4_path: "/home/dev/promoe-probes/credit-normalized-expert-gradient-ab-v4-preregister.json"
-  artifact_root: "/home/dev/promoe-probes/credit-normalized-expert-gradient-ab-v4/branches/measure_only_control"
+  initial_checkpoint_path: "/mnt/cubefs/caoboyuan/ProMoE-Plus/analyses/archvied_analyses/2026-08-28/dirty_probes/promoe-probes/base-seed0-ckpt_step_301000.pth"
+  preregister_v3_path: "/mnt/cubefs/caoboyuan/ProMoE-Plus/credit_redistribution/archived_credit_redistribution/2026-08-28/dirty_diagnostics/credit-normalized-expert-gradient-ab-v3-preregister.json"
+  preregister_v4_path: "/mnt/cubefs/caoboyuan/ProMoE-Plus/credit_redistribution/archived_credit_redistribution/2026-08-28/dirty_diagnostics/credit-normalized-expert-gradient-ab-v4-preregister.json"
+  artifact_root: "/mnt/cubefs/caoboyuan/ProMoE-Plus/credit_redistribution/archived_credit_redistribution/2026-08-28/dirty_diagnostics/credit-normalized-expert-gradient-ab-v4/branches/measure_only_control"
 
 DiT_B_config:
   qk_norm: False

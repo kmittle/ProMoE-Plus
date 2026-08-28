@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import gc
+import hashlib
 import json
 import math
 import os
@@ -11,7 +12,7 @@ import shutil
 import subprocess
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import torch
 import yaml
@@ -28,11 +29,18 @@ from .evaluator import (
     validate_protocol_for_evaluation,
 )
 from .heldout import canonical_json_sha256
+from .git_provenance import (
+    reject_history_overrides,
+    repository_state,
+    run_git,
+    verify_worktree_source_manifest,
+)
 from .protocol import (
     DEFAULT_OUTPUT_ROOT,
     SEALED_GPU_IDS,
     _sealed_gpu_device_pairs,
     load_and_verify_protocol,
+    resolve_archived_artifact_path,
 )
 from .serialization import atomic_write_json, sha256_file
 from .state_digest import checkpoint_state_digests
@@ -42,6 +50,7 @@ from .statistics import aggregate_statistics
 PREFLIGHT_VERSION = 1
 THROUGHPUT_VERSION = 1
 START_STEP = 301001
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _load_json(path):
@@ -119,6 +128,117 @@ def _load_protocol_document(path, expected_sha256=None):
     return payload, observed
 
 
+def _git_commit_is_ancestor(ancestor, descendant):
+    result = run_git(
+        PROJECT_ROOT,
+        "merge-base",
+        "--is-ancestor",
+        ancestor,
+        descendant,
+        text=True,
+    )
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    raise RuntimeError(
+        "Could not verify cross-checkpoint Git ancestry: "
+        + result.stderr.strip()
+    )
+
+
+def _git_blob_sha256(commit, relative):
+    result = run_git(
+        PROJECT_ROOT,
+        "cat-file",
+        "blob",
+        f"{commit}:{relative}",
+        text=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Cross-checkpoint source is absent from its recorded Git commit: "
+            f"{relative}"
+        )
+    return hashlib.sha256(result.stdout).hexdigest()
+
+
+def _verify_cross_checkpoint_git_provenance(cross_protocol, current_commit):
+    cross_git = cross_protocol.get("git", {})
+    cross_commit = cross_git.get("commit")
+    hexadecimal = frozenset("0123456789abcdef")
+    for label, commit in (
+        ("cross-checkpoint", cross_commit),
+        ("continuation", current_commit),
+    ):
+        if (
+            not isinstance(commit, str)
+            or len(commit) != 40
+            or not set(commit).issubset(hexadecimal)
+        ):
+            raise RuntimeError(f"{label} Git commit is not a full SHA-1")
+    if cross_git.get("origin_repa_divergence") != "0\t0":
+        raise RuntimeError("Cross-checkpoint gate was not run from pushed code")
+    reject_history_overrides(PROJECT_ROOT)
+    if not _git_commit_is_ancestor(cross_commit, current_commit):
+        raise RuntimeError(
+            "Cross-checkpoint gate commit is not an ancestor of the "
+            "continuation implementation"
+        )
+
+    source_hashes = cross_protocol.get("project_source_sha256")
+    if not isinstance(source_hashes, dict) or not source_hashes:
+        raise RuntimeError("Cross-checkpoint protocol has no source binding")
+    for relative, expected in source_hashes.items():
+        if not isinstance(relative, str):
+            raise RuntimeError(
+                f"Cross-checkpoint source path is invalid: {relative!r}"
+            )
+        source_path = PurePosixPath(relative)
+        if (
+            not relative
+            or source_path.is_absolute()
+            or ".." in source_path.parts
+            or ":" in relative
+        ):
+            raise RuntimeError(
+                f"Cross-checkpoint source path is invalid: {relative!r}"
+            )
+        if (
+            not isinstance(expected, str)
+            or len(expected) != 64
+            or not set(expected).issubset(hexadecimal)
+        ):
+            raise RuntimeError(
+                f"Cross-checkpoint source hash is invalid: {relative}"
+            )
+        if _git_blob_sha256(cross_commit, relative) != expected:
+            raise RuntimeError(
+                "Cross-checkpoint Git source binding changed: "
+                f"{relative}"
+            )
+
+
+def _verify_continuation_git_provenance(current_commit, source_hashes):
+    state = repository_state(PROJECT_ROOT)
+    if current_commit != state["commit"]:
+        raise RuntimeError("Continuation protocol commit differs from real HEAD")
+    if state["commit"] != state["origin_repa"]:
+        raise RuntimeError("Continuation implementation is not pushed to origin/repa")
+    if state["commit"] != state["authoritative_remote_tip"]:
+        raise RuntimeError(
+            "Continuation implementation is not pushed to the authoritative "
+            "remote repa branch"
+        )
+    if state["status"]:
+        raise RuntimeError("Continuation implementation worktree is not clean")
+    verify_worktree_source_manifest(
+        PROJECT_ROOT,
+        current_commit,
+        source_hashes,
+    )
+
+
 def verify_prerequisites(protocol):
     contracts = protocol["prerequisites"]
     base = contracts["base_gate"]
@@ -153,28 +273,57 @@ def verify_prerequisites(protocol):
     cross_protocol, cross_protocol_sha256 = _load_protocol_document(
         cross["protocol_path"]
     )
-    expected_preregistrations = [
-        {"version": version, "path": path, "sha256": expected}
-        for path, expected, version in preregistrations
-    ]
-    if cross_protocol.get("effective_preregistrations") != expected_preregistrations:
+    sealed_preregistrations = cross_protocol.get("effective_preregistrations")
+    if (
+        not isinstance(sealed_preregistrations, list)
+        or len(sealed_preregistrations) != len(preregistrations)
+    ):
         raise RuntimeError("Cross-checkpoint protocol preregistration binding differs")
+    for sealed, (expected_path, expected_sha256, expected_version) in zip(
+        sealed_preregistrations,
+        preregistrations,
+    ):
+        if (
+            not isinstance(sealed, dict)
+            or set(sealed) != {"version", "path", "sha256"}
+            or sealed.get("version") != expected_version
+            or sealed.get("sha256") != expected_sha256
+            or not isinstance(sealed.get("path"), str)
+        ):
+            raise RuntimeError(
+                "Cross-checkpoint protocol preregistration binding differs"
+            )
+        sealed_path = sealed["path"]
+        if sealed_path == expected_path:
+            relocated_path = Path(expected_path)
+        else:
+            try:
+                relocated_path = resolve_archived_artifact_path(sealed_path)
+            except RuntimeError as error:
+                raise RuntimeError(
+                    "Cross-checkpoint protocol preregistration binding differs"
+                ) from error
+        if relocated_path.resolve() != Path(expected_path).resolve():
+            raise RuntimeError(
+                "Cross-checkpoint protocol preregistration binding differs"
+            )
     if cross_protocol.get("stage_order") != cross["required_stage_order"]:
         raise RuntimeError("Cross-checkpoint protocol stage order differs")
     if cross_protocol.get("base_protocol", {}).get(
         "canonical_json_sha256"
     ) != base_protocol_sha256:
         raise RuntimeError("Cross-checkpoint protocol used a different Base gate")
-    if cross_protocol.get("git", {}).get("commit") != protocol["git"]["commit"]:
-        raise RuntimeError("Cross-checkpoint gate used a different implementation commit")
-    if cross_protocol.get("git", {}).get("origin_repa_divergence") != "0\t0":
-        raise RuntimeError("Cross-checkpoint gate was not run from pushed code")
-    for relative, expected in cross_protocol.get("project_source_sha256", {}).items():
-        source_path = Path(__file__).resolve().parents[1] / relative
-        if not source_path.is_file() or sha256_file(source_path) != expected:
-            raise RuntimeError(f"Cross-checkpoint source binding changed: {relative}")
+    current_commit = protocol["git"]["commit"]
+    _verify_continuation_git_provenance(
+        current_commit,
+        protocol.get("project_source_file_sha256"),
+    )
+    _verify_cross_checkpoint_git_provenance(
+        cross_protocol,
+        current_commit,
+    )
     for checkpoint in cross_protocol.get("checkpoints", {}).values():
-        checkpoint_path = Path(checkpoint["path"])
+        checkpoint_path = resolve_archived_artifact_path(checkpoint["path"])
         if checkpoint_path.stat().st_size != checkpoint["size"]:
             raise RuntimeError(f"Prerequisite checkpoint size changed: {checkpoint_path}")
         if sha256_file(checkpoint_path) != checkpoint["sha256"]:

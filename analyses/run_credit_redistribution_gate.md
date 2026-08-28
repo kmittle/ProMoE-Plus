@@ -1,10 +1,12 @@
 # Credit-Rate Redistribution Gate
 
+> **已归档，禁止启动。** 这套实验从 301K 权重继续训练 20K，并非从第 0 步训练，不能作为正式论文证据。下面内容只保留旧实验当时的设置，方便追溯，不是当前执行说明。
+
 这个入口执行冻结的 Base seed-0 三臂 late-training 因果筛选。研究问题不是“让 token 数量更均衡”，而是：在 token 负载已经均衡后，专家是否仍收到不均衡的单位-token学习信用；如果存在，把固定的每层原始梯度预算按专家自身的 credit rate 重新分配，是否比不干预和错配反馈都更好。
 
 三臂固定为 `measure_only_control`、`rotating_permuted_scale_control` 和 `matched_credit_rate_redistribution`。它们都从同一个 step-301000 checkpoint 开始，在 GPU 4-7 上依次训练 20K updates。训练输入、LR、global batch、采样顺序、FLOPs 和推理图保持一致。
 
-## 执行顺序
+## 历史执行顺序（不要照此启动）
 
 所有命令从仓库根目录执行。长任务必须放在当前附着的 tmux session 新窗口中。
 
@@ -37,6 +39,8 @@
    bash scripts/credit_redistribution/run_B_credit_rate_matched_s0_301k_20k.sh
    ```
 
+   Cross-checkpoint gate 可以来自三臂实现之前已经推送的历史提交。验证器要求该提交是当前三臂实现提交的 Git 祖先，并直接从历史 commit 读取每个锁定 source blob 重新计算 SHA256；它不会要求当前工作树与历史 probe 逐字相同。这样后续新增的训练实现不会使已经 sealed 的前置分析失效，同时任何未推送提交、旁支提交、缺失 blob 或 source hash 漂移仍会被拒绝。三臂 protocol 生成和后续验证都会清除继承的 `GIT_*` repository overrides、禁用 object replacement，并拒绝本地 replace refs、grafts、`assume-unchanged` 或 `skip-worktree` index 标记；每个锁定 source 还会用原始字节同时对照当前 `HEAD` blob 和工作树文件。执行前会从固定的 `git@github.com:kmittle/ProMoE-Plus.git` 直接查询服务端 `refs/heads/repa`，要求远端 tip、本地 `origin/repa` 和 `HEAD` 三者一致且工作树干净；远端查询显式把 `GIT_DIR` 绑定到空设备，禁止发现任何当前目录或祖先仓库，并禁用 system/global Git config。工作树检查则从 `HEAD` 在 Git common directory 内生成一次性 fresh index，禁用 fsmonitor、untracked cache 和 stat 快捷路径，再独立检查真实 index，避免本地 tracking ref、URL rewrite、陈旧 index metadata 或其他 Git 元数据伪造已 push 状态、祖先链、历史 blob 或隐藏未提交源码。
+
 5. 三臂全部完成后先做盲态 held-out evaluation。该命令只生成逐 case 的 sealed 原始量，不计算组间性能差异：
 
    ```bash
@@ -60,6 +64,6 @@
 
 ## 输出
 
-协议与分析工件写到 `/home/dev/promoe-probes/credit-normalized-expert-gradient-ab-v4/`，三臂 checkpoint 写到 `/home/dev/promoe-runs/credit-normalized-expert-gradient-ab-v4/`。这些目录不属于 Git 工作树。
+旧协议和分析结果已整理到 `credit_redistribution/archived_credit_redistribution/2026-08-28/dirty_diagnostics/`，旧模型输出统一放在 `outputs/archived_outputs/`。项目外的旧路径不再使用。
 
 本 gate 只支持一个 seed、一个冻结轨迹上的 20K continuation。即使通过，也只能授权 fresh multi-seed 训练，不能直接声称改善生成质量或构成 TPAMI 贡献。

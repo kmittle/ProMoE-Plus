@@ -21,7 +21,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "$REPO_ROOT"
 
 CONFIG="configs/004_ProMoE_B_proto_t_residual_phase_control_s0_v2.yaml"
-LOG="log_ProMoE_B_proto_t_residual_phase_control_s0_v2_train_sample_eval.log"
+LOG="${REPO_ROOT}/logs/log_ProMoE_B_proto_t_residual_phase_control_s0_v2_train_sample_eval.log"
+mkdir -p "$(dirname "$LOG")"
 
 readarray -t YAML_INFO < <(python - "$CONFIG" <<'PY'
 import os

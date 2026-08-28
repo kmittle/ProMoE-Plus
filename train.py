@@ -668,7 +668,7 @@ class Tee:
 
 def setup_logging(output_dir, rank):
     os.makedirs(output_dir, exist_ok=True)
-    formatter = colorlog.ColoredFormatter(
+    color_formatter = colorlog.ColoredFormatter(
         '%(log_color)s[%(asctime)s-%(levelname)s]: %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S',
         log_colors={
@@ -679,6 +679,10 @@ def setup_logging(output_dir, rank):
             'CRITICAL': 'bold_red',
         }
     )
+    plain_formatter = logging.Formatter(
+        '[%(asctime)s-%(levelname)s]: %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+    )
     
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
@@ -687,12 +691,14 @@ def setup_logging(output_dir, rank):
         logger.handlers.clear()
 
     stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(formatter)
+    stream_is_tty = getattr(stream_handler.stream, "isatty", lambda: False)()
+    stream_handler.setFormatter(
+        color_formatter if stream_is_tty else plain_formatter
+    )
     logger.addHandler(stream_handler)
 
     if rank == 0:
         file_handler = logging.FileHandler(os.path.join(output_dir, "training.log"), mode='a')
-        plain_formatter = logging.Formatter('[%(asctime)s-%(levelname)s]: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
         file_handler.setFormatter(plain_formatter)
         logger.addHandler(file_handler)
 
@@ -1564,6 +1570,11 @@ def compute_density_for_timestep_sampling(
 
 
 def main(**kwargs):
+    if kwargs.get('archived_experiment', False):
+        raise RuntimeError(
+            "Archived experiment configs are disabled; formal experiments "
+            "must start from step 0 in a clean output directory"
+        )
     deep_update(cfg, kwargs)
     
     if 'gpu_ids' in kwargs and kwargs['gpu_ids'] is not None:

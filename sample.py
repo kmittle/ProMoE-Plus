@@ -31,7 +31,7 @@ os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 def setup_logging(output_dir, rank):
     os.makedirs(output_dir, exist_ok=True)
-    formatter = colorlog.ColoredFormatter(
+    color_formatter = colorlog.ColoredFormatter(
         '%(log_color)s[%(asctime)s-%(levelname)s]: %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S',
         log_colors={
@@ -42,13 +42,22 @@ def setup_logging(output_dir, rank):
             'CRITICAL': 'bold_red',
         }
     )
+    plain_formatter = logging.Formatter(
+        '[%(asctime)s-%(levelname)s]: %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+    )
     if rank == 0:
         file_handler = logging.FileHandler(os.path.join(output_dir, "sample.log"))
-        file_handler.setFormatter(formatter)  # Using colorlog is not effective in files but format can still apply
+        file_handler.setFormatter(plain_formatter)
         stream_handler = logging.StreamHandler()
-        stream_handler.setFormatter(formatter)
+        stream_is_tty = getattr(stream_handler.stream, "isatty", lambda: False)()
+        stream_handler.setFormatter(
+            color_formatter if stream_is_tty else plain_formatter
+        )
         logger = logging.getLogger()
         logger.setLevel(logging.INFO)
+        if logger.hasHandlers():
+            logger.handlers.clear()
         logger.addHandler(file_handler)
         logger.addHandler(stream_handler)
 

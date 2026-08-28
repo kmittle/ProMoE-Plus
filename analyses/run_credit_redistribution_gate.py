@@ -19,7 +19,6 @@ from credit_redistribution.orchestration import (
     run_evaluation,
     run_preflight,
     run_throughput,
-    verify_launch,
 )
 from credit_redistribution.protocol import (
     DEFAULT_OUTPUT_ROOT,
@@ -85,7 +84,10 @@ def main():
         path, payload = run_preflight()
         _print_json({"summary_path": str(path), "passed": payload["passed"]})
     elif args.command == "verify-launch":
-        _print_json(verify_launch(args.branch))
+        raise RuntimeError(
+            "Archived continuation launches are disabled; formal experiments "
+            "must start from step 0 in a clean output directory"
+        )
     elif args.command == "evaluate":
         print(run_evaluation())
     elif args.command == "aggregate":

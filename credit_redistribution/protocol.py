@@ -6,7 +6,6 @@ import copy
 import json
 import os
 import platform
-import subprocess
 from pathlib import Path
 
 import diffusers
@@ -21,6 +20,7 @@ from analyses.run_learning_credit_balance_cross_checkpoint import (
 from analyses.t_SNE.checkpoint_utils import load_runtime_cfg
 
 from .controller import BRANCHES
+from .git_provenance import repository_state, verify_worktree_source_manifest
 from .heldout import canonical_json_sha256
 from .protocol_lock import V3_SHA256, V4_SHA256, load_effective_protocol
 from .serialization import atomic_write_json, sha256_file
@@ -28,27 +28,66 @@ from .serialization import atomic_write_json, sha256_file
 
 PROTOCOL_VERSION = 1
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT_ROOT = Path(
-    "/home/dev/promoe-probes/credit-normalized-expert-gradient-ab-v4"
+ARCHIVED_ANALYSIS_ROOT = (
+    PROJECT_ROOT
+    / "analyses/archvied_analyses/2026-08-28/dirty_probes/promoe-probes"
+)
+ARCHIVED_CREDIT_ROOT = (
+    PROJECT_ROOT
+    / "credit_redistribution/archived_credit_redistribution/2026-08-28"
+    / "dirty_diagnostics"
+)
+ARCHIVED_OUTPUT_ROOT = (
+    PROJECT_ROOT / "outputs/archived_outputs/2026-08-28"
+)
+DEFAULT_OUTPUT_ROOT = (
+    ARCHIVED_CREDIT_ROOT / "credit-normalized-expert-gradient-ab-v4"
 )
 DEFAULT_PROTOCOL_PATH = DEFAULT_OUTPUT_ROOT / "protocol.json"
-FROZEN_CHECKPOINT = Path("/home/dev/promoe-probes/base-seed0-ckpt_step_301000.pth")
+FROZEN_CHECKPOINT = ARCHIVED_ANALYSIS_ROOT / "base-seed0-ckpt_step_301000.pth"
 LATENT_ROOT = Path("/home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz")
 HELDOUT_MANIFEST = DEFAULT_OUTPUT_ROOT / "heldout" / "manifest.json"
-RUN_OUTPUT_ROOT = Path("/home/dev/promoe-runs/credit-normalized-expert-gradient-ab-v4")
+RUN_OUTPUT_ROOT = (
+    PROJECT_ROOT / "outputs/archived_outputs/2026-08-28"
+    / "credit-normalized-expert-gradient-ab-v4"
+)
 BASE_CONFIG = PROJECT_ROOT / "configs/004_ProMoE_B_seed0_control.yaml"
-PARENT_PROTOCOL = Path(
-    "/home/dev/promoe-probes/credit-balance-gate-base200k-v1/protocol.json"
+PARENT_PROTOCOL = (
+    ARCHIVED_CREDIT_ROOT / "credit-balance-gate-base200k-v1/protocol.json"
 )
-CROSS_CHECKPOINT_ROOT = Path(
-    "/home/dev/promoe-probes/credit-balance-lossfree-s0-200k-v2"
+CROSS_CHECKPOINT_ROOT = (
+    ARCHIVED_CREDIT_ROOT / "credit-balance-lossfree-s0-200k-v2"
 )
-V3_PATH = Path(
-    "/home/dev/promoe-probes/credit-normalized-expert-gradient-ab-v3-preregister.json"
+V3_PATH = (
+    ARCHIVED_CREDIT_ROOT
+    / "credit-normalized-expert-gradient-ab-v3-preregister.json"
 )
-V4_PATH = Path(
-    "/home/dev/promoe-probes/credit-normalized-expert-gradient-ab-v4-preregister.json"
+V4_PATH = (
+    ARCHIVED_CREDIT_ROOT
+    / "credit-normalized-expert-gradient-ab-v4-preregister.json"
 )
+_ARCHIVED_ARTIFACT_REDIRECTS = {
+    "/home/dev/promoe-probes/credit-balance-gate-base200k-v1-preregister.json":
+        ARCHIVED_CREDIT_ROOT
+        / "credit-balance-gate-base200k-v1-preregister.json",
+    "/home/dev/promoe-probes/credit-balance-lossfree-s0-200k-v1-preregister.json":
+        ARCHIVED_CREDIT_ROOT
+        / "credit-balance-lossfree-s0-200k-v1-preregister.json",
+    "/home/dev/promoe-probes/credit-balance-lossfree-s0-200k-v2-preregister.json":
+        ARCHIVED_CREDIT_ROOT
+        / "credit-balance-lossfree-s0-200k-v2-preregister.json",
+    "/home/dev/promoe-probes/base-seed0-ckpt_step_200000.pth":
+        ARCHIVED_ANALYSIS_ROOT / "base-seed0-ckpt_step_200000.pth",
+    (
+        "/home/dev/promoe-runs/ProMoE_TC_B_lossfree/"
+        "004_ProMoE_B_lossfree_u1e2_credit_control_s0_200k/"
+        "checkpoints/ckpt_step_200000.pth"
+    ):
+        ARCHIVED_OUTPUT_ROOT
+        / "ProMoE_TC_B_lossfree"
+        / "004_ProMoE_B_lossfree_u1e2_credit_control_s0_200k"
+        / "checkpoints/ckpt_step_200000.pth",
+}
 SEALED_GPU_IDS = (4, 5, 6, 7)
 SEALED_GPU_MAPPING_ENV = "PROMOE_SEALED_PHYSICAL_GPU_IDS"
 
@@ -85,6 +124,7 @@ SOURCE_PATHS = (
     "credit_redistribution/benchmark.py",
     "credit_redistribution/controller.py",
     "credit_redistribution/evaluator.py",
+    "credit_redistribution/git_provenance.py",
     "credit_redistribution/heldout.py",
     "credit_redistribution/orchestration.py",
     "credit_redistribution/protocol.py",
@@ -105,35 +145,37 @@ SOURCE_PATHS = (
 )
 
 
-def _git_output(*arguments):
-    return subprocess.run(
-        ["git", *arguments],
-        cwd=PROJECT_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
+def resolve_archived_artifact_path(locked_path):
+    locked_path = str(Path(locked_path))
+    relocated = _ARCHIVED_ARTIFACT_REDIRECTS.get(locked_path)
+    if relocated is None:
+        raise RuntimeError(
+            f"Archived artifact path has no approved relocation: {locked_path}"
+        )
+    return relocated
 
 
 def git_contract(require_clean=True, require_origin=True):
-    commit = _git_output("rev-parse", "HEAD")
-    origin = _git_output("rev-parse", "origin/repa")
-    status = subprocess.run(
-        ["git", "status", "--porcelain", "--untracked-files=all"],
-        cwd=PROJECT_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    if require_origin and commit != origin:
+    state = repository_state(PROJECT_ROOT, verify_remote=require_origin)
+    if require_origin and state["commit"] != state["origin_repa"]:
         raise RuntimeError("Generated protocol requires HEAD == origin/repa")
-    if require_clean and status:
+    if (
+        require_origin
+        and state["commit"] != state["authoritative_remote_tip"]
+    ):
+        raise RuntimeError(
+            "Generated protocol requires HEAD == authoritative remote repa"
+        )
+    if require_clean and state["status"]:
         raise RuntimeError("Generated protocol requires a clean worktree")
     return {
-        "branch": _git_output("branch", "--show-current"),
-        "commit": commit,
-        "origin_repa": origin,
-        "worktree_clean": not bool(status),
+        "branch": state["branch"],
+        "commit": state["commit"],
+        "origin_repa": state["origin_repa"],
+        "authoritative_remote_url": state["authoritative_remote_url"],
+        "authoritative_remote_ref": state["authoritative_remote_ref"],
+        "authoritative_remote_tip": state["authoritative_remote_tip"],
+        "worktree_clean": not bool(state["status"]),
     }
 
 
@@ -281,10 +323,19 @@ def _validate_branch_configs():
 def _prerequisite_contract(effective):
     base = effective["prerequisites"]["base_gate"]
     cross = effective["prerequisites"]["cross_checkpoint_gate"]
+    base_preregister = resolve_archived_artifact_path(
+        base["preregister_path"]
+    )
+    cross_preregister_v1 = resolve_archived_artifact_path(
+        cross["preregister_v1_path"]
+    )
+    cross_preregister_v2 = resolve_archived_artifact_path(
+        cross["preregister_v2_path"]
+    )
     external_files = (
-        (base["preregister_path"], base["preregister_sha256"]),
-        (cross["preregister_v1_path"], cross["preregister_v1_sha256"]),
-        (cross["preregister_v2_path"], cross["preregister_v2_sha256"]),
+        (base_preregister, base["preregister_sha256"]),
+        (cross_preregister_v1, cross["preregister_v1_sha256"]),
+        (cross_preregister_v2, cross["preregister_v2_sha256"]),
     )
     for path, expected in external_files:
         if sha256_file(path) != expected:
@@ -299,7 +350,7 @@ def _prerequisite_contract(effective):
     return {
         "base_gate": {
             "name": base["name"],
-            "preregister_path": base["preregister_path"],
+            "preregister_path": str(base_preregister),
             "preregister_file_sha256": base["preregister_sha256"],
             "protocol_path": str(PARENT_PROTOCOL),
             "protocol_canonical_sha256": parent_digest,
@@ -308,9 +359,9 @@ def _prerequisite_contract(effective):
         },
         "cross_checkpoint_gate": {
             "name": cross["name"],
-            "preregister_v1_path": cross["preregister_v1_path"],
+            "preregister_v1_path": str(cross_preregister_v1),
             "preregister_v1_file_sha256": cross["preregister_v1_sha256"],
-            "preregister_v2_path": cross["preregister_v2_path"],
+            "preregister_v2_path": str(cross_preregister_v2),
             "preregister_v2_file_sha256": cross["preregister_v2_sha256"],
             "protocol_path": str(CROSS_CHECKPOINT_ROOT / "protocol.json"),
             "output_root": str(CROSS_CHECKPOINT_ROOT),
@@ -492,6 +543,12 @@ def build_protocol(require_clean=True, require_origin=True):
         require_clean=require_clean,
         require_origin=require_origin,
     )
+    source_hashes = _source_hashes()
+    verify_worktree_source_manifest(
+        PROJECT_ROOT,
+        git["commit"],
+        source_hashes,
+    )
     branches = _validate_branch_configs()
     dataset_identity = _latent_dataset_identity(LATENT_ROOT)
     expected_identity = effective["checkpoint"]["provenance"]["dataset_identity"]
@@ -541,7 +598,7 @@ def build_protocol(require_clean=True, require_origin=True):
         "heldout": _heldout_binding(),
         "branches": branches,
         "model_contract": model_contract,
-        "project_source_file_sha256": _source_hashes(),
+        "project_source_file_sha256": source_hashes,
         "evaluator_source_file_sha256": sha256_file(
             PROJECT_ROOT / "credit_redistribution/evaluator.py"
         ),
