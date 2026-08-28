@@ -1,0 +1,88 @@
+{
+  "version": 1,
+  "name": "phase_metric_50k_gate_v1",
+  "locked_before_checkpoint": true,
+  "protocol": {
+    "candidate_config_stem": "004_ProMoE_B_phase_metric",
+    "base_config_stem": "004_ProMoE_B_phase_metric_base_s0",
+    "model_name": "ProMoE_TC_B",
+    "fresh_start_required": true,
+    "training_contract": {
+      "global_seed": 0,
+      "total_train_batch_size": 256,
+      "lr": 0.0001,
+      "candidate_gpu_ids": [0, 1, 2, 3],
+      "base_gpu_ids": [4, 5, 6, 7]
+    },
+    "routing_contract": {
+      "num_routed_experts": 12,
+      "top_k": 1,
+      "router_weight_mode": "identity",
+      "use_uncond_expert": true
+    },
+    "phase_metric_contract": {
+      "enabled": true,
+      "rank": 8,
+      "num_fourier_bands": 4,
+      "num_train_timesteps": 1000,
+      "scale": 0.25,
+      "shuffle_timestep": false,
+      "init_seed": 1729
+    },
+    "probe_execution_contract": {
+      "devices": ["cuda:0", "cuda:1", "cuda:2", "cuda:3"],
+      "num_threads_per_worker": 4
+    },
+    "checkpoint_step": 50000,
+    "checkpoint_state": "ema_model_state_dict",
+    "case_manifest": "analyses/timestep_utility/manifests/natural_timestep_utility_gate_v1.json",
+    "case_manifest_sha256": "4afa587649c0ba97fcfc6c2584cd170708e2da7db70e53cde5b86306078c21e4",
+    "split_counts": {
+      "discovery": 8,
+      "confirmatory": 24
+    },
+    "sigmas": [0.2, 0.5, 0.8],
+    "block_indices": [1, 5, 11],
+    "tokens_per_cell": 8,
+    "noop_tokens_per_cell": 1,
+    "exact_batch_size": 8,
+    "phase_shuffle_offset": 1,
+    "bootstrap_resamples": 200000,
+    "bootstrap_seeds": {
+      "discovery": 2026082802,
+      "confirmatory": 2026082803
+    },
+    "requirements": {
+      "discovery": {
+        "minimum_mean_route_flip_fraction": 0.002,
+        "minimum_exact_probe_count": 32,
+        "minimum_mean_exact_phase_route_relative_gain": 0.0,
+        "minimum_mean_phase_route_win_rate": 0.5,
+        "minimum_mean_selection_relative_gain": 0.0,
+        "minimum_mean_native_vs_base_base_relative_gain": 0.0,
+        "minimum_mean_native_vs_shuffled_relative_gain": 0.0,
+        "minimum_mean_candidate_vs_base_relative_gain": 0.0,
+        "maximum_noop_abs_mse_change": 0.0,
+        "maximum_native_override_abs_output_change": 0.0,
+        "maximum_native_override_abs_mse_change": 0.0
+      },
+      "confirmatory": {
+        "minimum_mean_route_flip_fraction": 0.002,
+        "minimum_exact_probe_count": 96,
+        "minimum_mean_exact_phase_route_relative_gain": 0.0,
+        "minimum_lcb_exact_phase_route_relative_gain": 0.0,
+        "minimum_mean_phase_route_win_rate": 0.52,
+        "minimum_mean_selection_relative_gain": 0.0,
+        "minimum_lcb_selection_relative_gain": 0.0,
+        "minimum_mean_native_vs_base_base_relative_gain": 0.0,
+        "minimum_lcb_native_vs_base_base_relative_gain": 0.0,
+        "minimum_mean_native_vs_shuffled_relative_gain": 0.0,
+        "minimum_lcb_native_vs_shuffled_relative_gain": 0.0,
+        "minimum_mean_candidate_vs_base_relative_gain": 0.0,
+        "maximum_noop_abs_mse_change": 0.0,
+        "maximum_native_override_abs_output_change": 0.0,
+        "maximum_native_override_abs_mse_change": 0.0
+      }
+    }
+  }
+}
