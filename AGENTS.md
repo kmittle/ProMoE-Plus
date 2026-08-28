@@ -46,6 +46,7 @@ Main code layout:
 - `scripts/adepth/`: adaptive routed-FFN depth fixed-quota train + sample + eval wrappers.
 - `scripts/lossfree/`: loss-free balancing-bias train + sample + eval wrappers.
 - `scripts/lsreg/`: routing-contrastive label-smoothing and diagonal-correction sweeps.
+- `scripts/fresh_routing/`: strict-provenance Base ProMoE control used by the longitudinal routing audit; it changes no model mechanism, verifies HEAD against the fixed authoritative GitHub `repa` ref rather than only a local tracking ref, and must start from an empty output bucket.
 - `scripts/_run_times/`: timestamped launch indirection for scheduled experiment batches; date directories may also contain generated `commands.md`/`commands.csv` launch tables and `*-describe.txt` experiment notes.
 - `command-tables/`: CSV template assets for run-time command tables.
 - `collapse_smoking_test/`, `collapse_smoking_test_10k/`: crash-diagnosis smoke configs, logs, summaries, and rerun helpers for cross-alignment stability work.
@@ -265,6 +266,7 @@ bash scripts/lsreg/run_B_lsreg_diag_idea1_s0p30_train_sample_eval.sh
 bash scripts/lsreg/run_B_lsreg_diag_inv_s0p40_train_sample_eval.sh
 bash scripts/expert_contra/run_B_expert_contra_param_cos_train_sample_eval.sh
 bash scripts/expert_contra/run_B_expert_contra_param_shared_uncond_train_sample_eval.sh
+bash scripts/fresh_routing/run_B_fresh_routing_audit_s0_train_sample_eval.sh
 
 bash tb_smoke_200/run_all.sh
 bash tb_smoke_500/run_all.sh

@@ -246,6 +246,82 @@ class OrchestrationTest(unittest.TestCase):
             state = repository_state(root, verify_remote=False)
             self.assertIn("source.py", state["status"])
 
+    def test_repository_state_hashes_symlink_target_without_following_it(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _run_git(root, "init", "--quiet")
+            _run_git(root, "config", "user.email", "test@example.com")
+            _run_git(root, "config", "user.name", "Test User")
+
+            link = root / "tracked-link"
+            link.symlink_to("missing-target-a")
+            _run_git(root, "add", "--", "tracked-link")
+            _run_git(root, "commit", "--quiet", "-m", "add symlink")
+            commit = _run_git(root, "rev-parse", "HEAD")
+            _run_git(
+                root,
+                "update-ref",
+                "refs/remotes/origin/repa",
+                commit,
+            )
+            self.assertEqual(
+                repository_state(root, verify_remote=False)["status"],
+                "",
+            )
+
+            link.unlink()
+            link.symlink_to("missing-target-b")
+            state = repository_state(root, verify_remote=False)
+            self.assertIn("tracked-link", state["status"])
+
+    def test_repository_state_hashes_raw_bytes_without_clean_filters(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _run_git(root, "init", "--quiet")
+            _run_git(root, "config", "user.email", "test@example.com")
+            _run_git(root, "config", "user.name", "Test User")
+            _run_git(
+                root,
+                "config",
+                "filter.mask.clean",
+                "sed s/tampered/original/g",
+            )
+            _run_git(root, "config", "filter.mask.smudge", "cat")
+            _run_git(root, "config", "filter.mask.required", "true")
+
+            (root / ".gitattributes").write_text(
+                "source.py filter=mask\n",
+                encoding="utf-8",
+            )
+            source = root / "source.py"
+            source.write_text("original\n", encoding="utf-8")
+            _run_git(root, "add", "--", ".gitattributes", "source.py")
+            _run_git(root, "commit", "--quiet", "-m", "add filtered source")
+            commit = _run_git(root, "rev-parse", "HEAD")
+            _run_git(
+                root,
+                "update-ref",
+                "refs/remotes/origin/repa",
+                commit,
+            )
+
+            source.write_text("tampered\n", encoding="utf-8")
+            filtered_hash = subprocess.run(
+                ["git", "hash-object", "--stdin-paths"],
+                cwd=root,
+                env=sanitized_git_environment(),
+                input=b"source.py\n",
+                check=True,
+                capture_output=True,
+            ).stdout.decode("ascii").strip()
+            self.assertEqual(
+                filtered_hash,
+                _run_git(root, "rev-parse", "HEAD:source.py"),
+            )
+
+            state = repository_state(root, verify_remote=False)
+            self.assertIn("source.py", state["status"])
+
     def test_repository_state_rejects_index_only_change(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

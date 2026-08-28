@@ -1,0 +1,8 @@
+实验 / Experiment: 1.1-B_fresh_routing_audit_s0
+model_name: ProMoE_TC_B  |  config: configs/004_ProMoE_B_fresh_routing_audit_s0.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分流、静态 cluster_centers、top-1 cosine 路由、shared expert 和 routing contrastive guidance）；直接父变体 / Parent: 就是同一个基础 ProMoE-TC，没有新增模型结构。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 这是独立的干净基线，不是新方法：`phase_metric_config.enabled: False`，仍使用 `ProMoE_TC_B`；模型参数、路由和损失都与基础 ProMoE-TC 相同，用来判断后续改进究竟来自新方法还是实验技巧。
+2. 启动时开启严格来源记录 / strict provenance：只有 Git 工作区干净、固定 GitHub `repa` 远端的真实 tip 等于 HEAD，而且首次启动时整个输出桶为空，才能训练；每个 checkpoint 都记录同一份 Git、关键源码、实际配置、Python/PyTorch/CUDA 和 GPU UUID 信息，供 Fresh Base 路由审计逐项核对。
+3. 公平的 from-scratch 设置：seed 0、global batch 256、学习率 `1e-4`、16 个 workers、GPU 0-3，使用新的输出桶从 step 0 训练；在 300K 和 500K 各生成 50K 图片，并按项目 OpenAI evaluator 协议评估 CFG 1.0/1.5。

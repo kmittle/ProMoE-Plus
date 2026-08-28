@@ -228,8 +228,23 @@ def _bootstrap_ci(values, resamples, seed):
     ]
 
 
+def _finite_metric(value, name, *, minimum=None, maximum=None):
+    if isinstance(value, bool) or not np.isscalar(value):
+        raise ValueError(f"Metric {name} must be a scalar number")
+    numeric = float(value)
+    if not np.isfinite(numeric):
+        raise ValueError(f"Metric {name} is non-finite")
+    if minimum is not None and numeric < minimum:
+        raise ValueError(f"Metric {name} is below the allowed minimum {minimum}")
+    if maximum is not None and numeric > maximum:
+        raise ValueError(f"Metric {name} is above the allowed maximum {maximum}")
+    return numeric
+
+
 def _case_metrics(result):
     cells = result["cells"]
+    if not cells:
+        raise ValueError("Case result has no utility cells")
     native_capacity = []
     balanced_capacity = []
     unconstrained = []
@@ -249,52 +264,89 @@ def _case_metrics(result):
     sensitivity_agreement = {"candidate": [], "unit": []}
     for cell in cells:
         assignments = cell["assignments"]
-        native_improvement = -assignments["native_capacity_oracle"][
-            "exact_mse_change_relative"
-        ]
+        native_improvement = _finite_metric(
+            -assignments["native_capacity_oracle"]["exact_mse_change_relative"],
+            "native_capacity_improvement_relative",
+        )
         native_capacity.append(native_improvement)
-        balanced_capacity.append(-assignments["balanced_capacity_oracle"][
-            "exact_mse_change_relative"
-        ])
-        unconstrained.append(-assignments["unconstrained_oracle"][
-            "exact_mse_change_relative"
-        ])
+        balanced_capacity.append(
+            _finite_metric(
+                -assignments["balanced_capacity_oracle"]["exact_mse_change_relative"],
+                "balanced_capacity_improvement_relative",
+            )
+        )
+        unconstrained.append(
+            _finite_metric(
+                -assignments["unconstrained_oracle"]["exact_mse_change_relative"],
+                "unconstrained_improvement_relative",
+            )
+        )
         per_block[str(cell["block_index"])].append(native_improvement)
         per_sigma[str(cell["sigma"])].append(native_improvement)
         native_load = assignments["native"]["load"]
         capacity_load = assignments["native_capacity_oracle"]["load"]
         balanced_load = assignments["balanced_capacity_oracle"]["load"]
-        native_load_cv.append(native_load["cv"])
-        balanced_load_cv.append(balanced_load["cv"])
+        native_load_cv.append(
+            _finite_metric(native_load["cv"], "mean_native_load_cv", minimum=0.0)
+        )
+        balanced_load_cv.append(
+            _finite_metric(
+                balanced_load["cv"], "mean_balanced_load_cv", minimum=0.0
+            )
+        )
         capacity_count_matches.append(
             native_load["counts"] == capacity_load["counts"]
         )
         safety["joint_native_abs_mse_change"] = max(
             safety["joint_native_abs_mse_change"],
-            abs(assignments["native"]["exact_mse_change"]),
+            _finite_metric(
+                abs(assignments["native"]["exact_mse_change"]),
+                "joint_native_abs_mse_change",
+                minimum=0.0,
+            ),
         )
         safety["joint_native_abs_output_change"] = max(
             safety["joint_native_abs_output_change"],
-            assignments["native"]["max_abs_output_change"],
+            _finite_metric(
+                assignments["native"]["max_abs_output_change"],
+                "joint_native_abs_output_change",
+                minimum=0.0,
+            ),
         )
 
         controls = cell["numerical_controls"]
         safety["forced_unforced_abs_mse_change"] = max(
             safety["forced_unforced_abs_mse_change"],
-            controls["max_abs_forced_unforced_mse_change"],
+            _finite_metric(
+                controls["max_abs_forced_unforced_mse_change"],
+                "forced_unforced_abs_mse_change",
+                minimum=0.0,
+            ),
         )
         safety["forced_unforced_abs_output_change"] = max(
             safety["forced_unforced_abs_output_change"],
-            controls["max_abs_forced_unforced_output_change"],
+            _finite_metric(
+                controls["max_abs_forced_unforced_output_change"],
+                "forced_unforced_abs_output_change",
+                minimum=0.0,
+            ),
         )
         for mode_controls in controls["weight_modes"].values():
             safety["noop_abs_mse_change"] = max(
                 safety["noop_abs_mse_change"],
-                mode_controls["max_abs_noop_mse_change"],
+                _finite_metric(
+                    mode_controls["max_abs_noop_mse_change"],
+                    "noop_abs_mse_change",
+                    minimum=0.0,
+                ),
             )
             safety["noop_abs_output_change"] = max(
                 safety["noop_abs_output_change"],
-                mode_controls["max_abs_noop_output_change"],
+                _finite_metric(
+                    mode_controls["max_abs_noop_output_change"],
+                    "noop_abs_output_change",
+                    minimum=0.0,
+                ),
             )
         for token in cell["tokens"]:
             for mode in sensitivity_agreement:
@@ -305,16 +357,34 @@ def _case_metrics(result):
                     )
 
     stage = result["stage_dynamics"]["summary"]
-    return {
+    metrics = {
         "case_id": result["batch_case"]["id"],
-        "native_is_oracle_rate": result["summary"]["native_is_oracle_rate"],
-        "native_regret_relative": result["summary"]["mean_native_regret_relative"],
-        "router_utility_spearman": result["summary"][
-            "mean_router_utility_spearman"
-        ],
-        "native_capacity_improvement_relative": float(np.mean(native_capacity)),
-        "balanced_capacity_improvement_relative": float(np.mean(balanced_capacity)),
-        "unconstrained_improvement_relative": float(np.mean(unconstrained)),
+        "native_is_oracle_rate": _finite_metric(
+            result["summary"]["native_is_oracle_rate"],
+            "native_is_oracle_rate",
+            minimum=0.0,
+            maximum=1.0,
+        ),
+        "native_regret_relative": _finite_metric(
+            result["summary"]["mean_native_regret_relative"],
+            "native_regret_relative",
+            minimum=0.0,
+        ),
+        "router_utility_spearman": _finite_metric(
+            result["summary"]["mean_router_utility_spearman"],
+            "router_utility_spearman",
+            minimum=-1.0,
+            maximum=1.0,
+        ),
+        "native_capacity_improvement_relative": _finite_metric(
+            np.mean(native_capacity), "native_capacity_improvement_relative"
+        ),
+        "balanced_capacity_improvement_relative": _finite_metric(
+            np.mean(balanced_capacity), "balanced_capacity_improvement_relative"
+        ),
+        "unconstrained_improvement_relative": _finite_metric(
+            np.mean(unconstrained), "unconstrained_improvement_relative"
+        ),
         "native_capacity_positive": bool(np.mean(native_capacity) > 0),
         "per_block_native_capacity_improvement": {
             key: float(np.mean(values)) for key, values in per_block.items()
@@ -322,22 +392,64 @@ def _case_metrics(result):
         "per_sigma_native_capacity_improvement": {
             key: float(np.mean(values)) for key, values in per_sigma.items()
         },
-        "mean_native_load_cv": float(np.mean(native_load_cv)),
-        "mean_balanced_load_cv": float(np.mean(balanced_load_cv)),
+        "mean_native_load_cv": _finite_metric(
+            np.mean(native_load_cv), "mean_native_load_cv"
+        ),
+        "mean_balanced_load_cv": _finite_metric(
+            np.mean(balanced_load_cv), "mean_balanced_load_cv"
+        ),
         "native_capacity_counts_match": bool(all(capacity_count_matches)),
-        "candidate_oracle_agreement": float(np.mean(sensitivity_agreement["candidate"])),
-        "unit_oracle_agreement": float(np.mean(sensitivity_agreement["unit"])),
-        "router_minus_utility_rank_stability": stage[
-            "mean_router_minus_utility_rank_stability"
-        ],
-        "utility_pair_inversion_rate": stage["mean_utility_pair_inversion_rate"],
-        "oracle_expert_flip_rate": stage["oracle_expert_flip_rate"],
-        "native_expert_flip_rate": stage["native_expert_flip_rate"],
-        "oracle_minus_native_flip_rate": (
-            stage["oracle_expert_flip_rate"] - stage["native_expert_flip_rate"]
+        "candidate_oracle_agreement": _finite_metric(
+            np.mean(sensitivity_agreement["candidate"]),
+            "candidate_oracle_agreement",
+            minimum=0.0,
+            maximum=1.0,
+        ),
+        "unit_oracle_agreement": _finite_metric(
+            np.mean(sensitivity_agreement["unit"]),
+            "unit_oracle_agreement",
+            minimum=0.0,
+            maximum=1.0,
+        ),
+        "router_minus_utility_rank_stability": _finite_metric(
+            stage["mean_router_minus_utility_rank_stability"],
+            "router_minus_utility_rank_stability",
+            minimum=-2.0,
+            maximum=2.0,
+        ),
+        "utility_pair_inversion_rate": _finite_metric(
+            stage["mean_utility_pair_inversion_rate"],
+            "utility_pair_inversion_rate",
+            minimum=0.0,
+            maximum=1.0,
+        ),
+        "oracle_expert_flip_rate": _finite_metric(
+            stage["oracle_expert_flip_rate"],
+            "oracle_expert_flip_rate",
+            minimum=0.0,
+            maximum=1.0,
+        ),
+        "native_expert_flip_rate": _finite_metric(
+            stage["native_expert_flip_rate"],
+            "native_expert_flip_rate",
+            minimum=0.0,
+            maximum=1.0,
+        ),
+        "oracle_minus_native_flip_rate": _finite_metric(
+            stage["oracle_expert_flip_rate"] - stage["native_expert_flip_rate"],
+            "oracle_minus_native_flip_rate",
+            minimum=-1.0,
+            maximum=1.0,
         ),
         "safety": safety,
     }
+    for key, values in metrics["per_block_native_capacity_improvement"].items():
+        _finite_metric(values, f"per_block_native_capacity_improvement[{key}]")
+    for key, values in metrics["per_sigma_native_capacity_improvement"].items():
+        _finite_metric(values, f"per_sigma_native_capacity_improvement[{key}]")
+    for key, value in safety.items():
+        _finite_metric(value, f"safety[{key}]", minimum=0.0)
+    return metrics
 
 
 def _check(observed, required, passed):
@@ -378,22 +490,44 @@ def aggregate_case_results(case_results, split, requirements=None):
         requirements["bootstrap_seed"] + 1,
     )
     block_means = {
-        str(block): float(np.mean([
-            row["per_block_native_capacity_improvement"][str(block)]
-            for row in metrics
-        ]))
+        str(block): float(
+            np.mean(
+                [
+                    _finite_metric(
+                        row["per_block_native_capacity_improvement"][str(block)],
+                        f"per_block_native_capacity_improvement[{block}]",
+                    )
+                    for row in metrics
+                ]
+            )
+        )
         for block in BLOCK_INDICES
     }
     sigma_means = {
-        str(sigma): float(np.mean([
-            row["per_sigma_native_capacity_improvement"][str(sigma)]
-            for row in metrics
-        ]))
+        str(sigma): float(
+            np.mean(
+                [
+                    _finite_metric(
+                        row["per_sigma_native_capacity_improvement"][str(sigma)],
+                        f"per_sigma_native_capacity_improvement[{sigma}]",
+                    )
+                    for row in metrics
+                ]
+            )
+        )
         for sigma in SIGMAS
     }
+    safety_names = tuple(metrics[0]["safety"])
+    if not safety_names:
+        raise ValueError("Case metrics contain no safety values")
+    if any(tuple(row["safety"]) != safety_names for row in metrics):
+        raise ValueError("Case metrics contain inconsistent safety values")
     max_safety = {
-        name: float(max(row["safety"][name] for row in metrics))
-        for name in next(iter(metrics))["safety"]
+        name: max(
+            _finite_metric(row["safety"][name], f"safety[{name}]")
+            for row in metrics
+        )
+        for name in safety_names
     }
 
     safety_checks = {

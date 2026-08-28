@@ -128,6 +128,58 @@ class TimestepUtilityBatchTests(unittest.TestCase):
         self.assertFalse(gate["safety_checks"]["joint_native_output"]["passed"])
         self.assertFalse(gate["passed"])
 
+    def test_nonfinite_safety_metric_is_rejected_before_maximum(self):
+        self.results[0]["cells"][0]["assignments"]["native"][
+            "max_abs_output_change"
+        ] = float("nan")
+        with self.assertRaisesRegex(ValueError, "non-finite"):
+            aggregate_case_results(self.results, "discovery")
+
+    def test_negative_absolute_or_cv_metric_is_rejected(self):
+        cases = (
+            (
+                self.results[0]["cells"][0]["assignments"]["native"],
+                "max_abs_output_change",
+                -1.0,
+            ),
+            (
+                self.results[0]["cells"][0]["assignments"]["native"]["load"],
+                "cv",
+                -1.0,
+            ),
+        )
+        for target, key, value in cases:
+            with self.subTest(key=key):
+                target[key] = value
+                with self.assertRaisesRegex(ValueError, "allowed minimum"):
+                    aggregate_case_results(self.results, "discovery")
+                target[key] = 0.0 if key == "max_abs_output_change" else 0.7071067811865476
+
+    def test_rate_metrics_are_bounded(self):
+        fields = (
+            ("native_is_oracle_rate", 1.01),
+            ("native_is_oracle_rate", -0.01),
+            ("mean_utility_pair_inversion_rate", 1.01),
+            ("oracle_expert_flip_rate", -0.01),
+            ("mean_router_utility_spearman", 1.01),
+        )
+        for field, value in fields:
+            with self.subTest(field=field, value=value):
+                if field in self.results[0]["summary"]:
+                    self.results[0]["summary"][field] = value
+                else:
+                    self.results[0]["stage_dynamics"]["summary"][field] = value
+                with self.assertRaisesRegex(ValueError, "allowed"):
+                    aggregate_case_results(self.results, "discovery")
+                if field == "native_is_oracle_rate":
+                    self.results[0]["summary"][field] = 0.05
+                elif field == "mean_router_utility_spearman":
+                    self.results[0]["summary"][field] = 0.0
+                elif field == "mean_utility_pair_inversion_rate":
+                    self.results[0]["stage_dynamics"]["summary"][field] = 0.4
+                else:
+                    self.results[0]["stage_dynamics"]["summary"][field] = 0.7
+
 
 if __name__ == "__main__":
     unittest.main()

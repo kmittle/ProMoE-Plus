@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
@@ -152,54 +153,153 @@ def authoritative_remote_tip(remote_url=None, remote_ref=None):
 
 
 def fresh_worktree_status(project_root):
+    """Compare the worktree with ``HEAD`` without trusting Git stat data.
+
+    CubeFS can preserve all metadata fields consulted by Git after a file is
+    rewritten.  Rebuilding an index is insufficient in that case: Git may
+    populate the new index with the same poisoned metadata and skip hashing
+    the file again.  Hash every tracked blob explicitly and compare it with
+    the object ID recorded by ``HEAD`` instead.
+    """
+
     project_root = Path(project_root).resolve()
-    common_dir = _git_common_dir(project_root)
-    with tempfile.TemporaryDirectory(
-        prefix="promoe-status-",
-        dir=common_dir,
-    ) as temporary:
-        environment = sanitized_git_environment()
-        environment["GIT_INDEX_FILE"] = str(Path(temporary) / "index")
-        git_command = [
-            "git",
-            "--no-replace-objects",
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            "core.untrackedCache=false",
-            "-c",
-            "core.ignoreStat=false",
-            "-c",
-            "core.trustctime=true",
-            "-c",
-            "core.checkStat=default",
-        ]
-        read_tree = subprocess.run(
-            [*git_command, "read-tree", "HEAD"],
-            cwd=project_root,
-            env=environment,
-            check=False,
-            capture_output=True,
-            text=True,
+    tree = run_git(
+        project_root,
+        "ls-tree",
+        "-r",
+        "-z",
+        "--full-tree",
+        "HEAD",
+        check=True,
+        text=False,
+    )
+    expected_blobs = {}
+    changed = []
+    hash_paths = []
+    for raw_entry in tree.stdout.split(b"\0"):
+        if not raw_entry:
+            continue
+        try:
+            metadata, encoded_path = raw_entry.split(b"\t", 1)
+            mode, object_type, object_id = metadata.split(b" ", 2)
+        except ValueError as error:
+            raise RuntimeError("Git HEAD tree entry is malformed") from error
+        relative = os.fsdecode(encoded_path)
+        relative_path = PurePosixPath(relative)
+        if (
+            not relative
+            or relative_path.is_absolute()
+            or ".." in relative_path.parts
+            or b"\n" in encoded_path
+        ):
+            raise RuntimeError(f"Git HEAD path cannot be verified: {relative!r}")
+        if object_type != b"blob" or mode not in (b"100644", b"100755", b"120000"):
+            raise RuntimeError(
+                f"Git HEAD entry type cannot be verified: {relative}"
+            )
+
+        worktree_path = project_root.joinpath(*relative_path.parts)
+        try:
+            observed_stat = worktree_path.lstat()
+        except FileNotFoundError:
+            changed.append((relative, f" D {relative}\n"))
+            continue
+        except OSError as error:
+            raise RuntimeError(
+                f"Could not inspect tracked worktree path: {relative}"
+            ) from error
+
+        if mode == b"120000":
+            expected_type = stat.S_ISLNK(observed_stat.st_mode)
+        else:
+            expected_type = stat.S_ISREG(observed_stat.st_mode)
+        if not expected_type:
+            changed.append((relative, f" T {relative}\n"))
+            continue
+        if mode in (b"100644", b"100755"):
+            observed_executable = bool(observed_stat.st_mode & 0o111)
+            expected_executable = mode == b"100755"
+            if observed_executable != expected_executable:
+                changed.append((relative, f" M {relative}\n"))
+
+        expected_blobs[relative] = object_id.decode("ascii")
+        if mode == b"120000":
+            try:
+                link_target = os.fsencode(os.readlink(worktree_path))
+            except OSError as error:
+                raise RuntimeError(
+                    f"Could not read tracked worktree symlink: {relative}"
+                ) from error
+            link_hash = subprocess.run(
+                [
+                    "git",
+                    "--no-replace-objects",
+                    "hash-object",
+                    "--no-filters",
+                    "--stdin",
+                ],
+                cwd=project_root,
+                env=sanitized_git_environment(),
+                input=link_target,
+                check=False,
+                capture_output=True,
+                text=False,
+            )
+            if link_hash.returncode != 0:
+                raise RuntimeError(
+                    f"Could not hash tracked worktree symlink: {relative}"
+                )
+            observed = link_hash.stdout.strip().decode("ascii")
+            if observed != expected_blobs[relative]:
+                changed.append((relative, f" M {relative}\n"))
+        else:
+            hash_paths.append(relative)
+
+    if hash_paths:
+        path_input = b"".join(
+            os.fsencode(relative) + b"\n" for relative in hash_paths
         )
-        if read_tree.returncode != 0:
-            raise RuntimeError("Could not build a fresh Git provenance index")
-        status = subprocess.run(
+        hashes = subprocess.run(
             [
-                *git_command,
-                "status",
-                "--porcelain=v1",
-                "--untracked-files=all",
-                "--ignore-submodules=none",
+                "git",
+                "--no-replace-objects",
+                "hash-object",
+                "--no-filters",
+                "--stdin-paths",
             ],
             cwd=project_root,
-            env=environment,
+            env=sanitized_git_environment(),
+            input=path_input,
             check=False,
             capture_output=True,
-            text=True,
+            text=False,
         )
-        if status.returncode != 0:
-            raise RuntimeError("Could not verify the Git worktree against HEAD")
+        if hashes.returncode != 0:
+            raise RuntimeError("Could not hash every tracked worktree blob")
+        observed_blobs = hashes.stdout.splitlines()
+        if len(observed_blobs) != len(hash_paths):
+            raise RuntimeError("Git returned an incomplete worktree hash set")
+        for relative, observed_blob in zip(hash_paths, observed_blobs):
+            try:
+                observed = observed_blob.decode("ascii")
+            except UnicodeDecodeError as error:
+                raise RuntimeError("Git returned a malformed worktree hash") from error
+            if observed != expected_blobs[relative]:
+                changed.append((relative, f" M {relative}\n"))
+
+    untracked = run_git(
+        project_root,
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "-z",
+        check=True,
+        text=False,
+    )
+    for encoded_path in untracked.stdout.split(b"\0"):
+        if encoded_path:
+            relative = os.fsdecode(encoded_path)
+            changed.append((relative, f"?? {relative}\n"))
 
     index_difference = run_git(
         project_root,
@@ -212,9 +312,10 @@ def fresh_worktree_status(project_root):
     )
     if index_difference.returncode not in (0, 1):
         raise RuntimeError("Could not verify the real Git index against HEAD")
+    status = "".join(line for _, line in sorted(set(changed)))
     if index_difference.returncode == 1:
-        return status.stdout + "[real index differs from HEAD]\n"
-    return status.stdout
+        return status + "[real index differs from HEAD]\n"
+    return status
 
 
 def verify_worktree_source_manifest(project_root, commit, source_hashes):

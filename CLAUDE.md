@@ -67,6 +67,7 @@ Scripts under `scripts/` run train + sample + eval in one go. Organized by exper
 | `scripts/lossfree/` | Loss-Free Balancing bias, `bias_update_rate` sweep (`u1e4` / `u1e3` / `u1e2`) |
 | `scripts/lsreg/` | Label-smoothing regularization on routing contrastive: `fixed` (ε sweep), `dyn{both,over,under}`, `diag_idea1`/`diag_inv` (diagonal correction, strength sweep) |
 | `scripts/dagfuse_shared/` | Shared-expert augmentation: `dense` (prev-Dense-block source), `densenet` (all prev-MoE shared), `sharedroute` (router-selected prev-MoE, top1/top2), `region` (Block-AttnRes; `shared`/`resid` attach × `dag`/`softmax`) |
+| `scripts/fresh_routing/` | Strict-provenance Base ProMoE control for the longitudinal routing audit; no model change, fixed GitHub `repa` tip verification, fresh output only |
 
 ```bash
 # Example: run a MoS experiment end-to-end

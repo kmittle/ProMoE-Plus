@@ -22,10 +22,16 @@ import colorlog
 import glob
 import yaml
 import argparse
+import json
 import random
+import re
 import operator
 import hashlib
 import numbers
+import platform
+import subprocess
+import sys
+import uuid
 from pathlib import Path
 from torch.utils.tensorboard import SummaryWriter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -35,6 +41,10 @@ from utils import deep_update, find_free_port, load_vae
 from torch.nn.utils import clip_grad_norm_
 from credit_redistribution import CreditRedistributionController
 from credit_redistribution.benchmark import DistributedThroughputTimer
+from credit_redistribution.git_provenance import (
+    repository_state,
+    verify_worktree_source_manifest,
+)
 from credit_redistribution.transcript import TranscriptOnlyRecorder
 
 os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
@@ -125,6 +135,22 @@ SAMPLER_CONTRACT_VERSION = 1
 DATASET_IDENTITY_VERSION = 1
 IMAGENET_NUM_CLASSES = 1000
 _UINT64_MASK = (1 << 64) - 1
+RUN_ID_ENV = "PROMOE_RUN_ID"
+STRICT_PROVENANCE_ENV = "PROMOE_STRICT_PROVENANCE"
+TRAINING_PROVENANCE_VERSION = 1
+STRICT_PROVENANCE_SOURCE_PATHS = {
+    "ProMoE_TC_B": (
+        "requirements.txt",
+        "config.py",
+        "utils.py",
+        "train.py",
+        "models/models_ProMoE_TC.py",
+        "models/modules.py",
+        "models/phase_metric.py",
+        "credit_redistribution/git_provenance.py",
+    ),
+}
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _synchronize_sealed_error(local_error, phase, world_size):
@@ -750,6 +776,369 @@ def _seed_training_rng(seed):
         torch.cuda.manual_seed(seed)
 
 
+def _new_run_id():
+    """Return a process-independent identifier without touching training RNG."""
+
+    configured = os.environ.get(RUN_ID_ENV)
+    if configured is None or not configured.strip():
+        return uuid.uuid4().hex
+    configured = configured.strip()
+    if not _valid_run_id(configured):
+        raise ValueError(
+            f"{RUN_ID_ENV} must contain 16-128 alphanumeric, '_' or '-' characters"
+        )
+    return configured
+
+
+def _run_id_is_explicit():
+    configured = os.environ.get(RUN_ID_ENV)
+    return configured is not None and bool(configured.strip())
+
+
+def _valid_run_id(value):
+    return (
+        isinstance(value, str)
+        and 16 <= len(value) <= 128
+        and (
+            ("a" <= value[0] <= "z")
+            or ("A" <= value[0] <= "Z")
+            or ("0" <= value[0] <= "9")
+        )
+        and all(
+            ("a" <= character <= "z")
+            or ("A" <= character <= "Z")
+            or ("0" <= character <= "9")
+            or character in "_-"
+            for character in value
+        )
+    )
+
+
+def _broadcast_run_id():
+    if not dist.is_initialized():
+        return _new_run_id(), _run_id_is_explicit()
+
+    local_run_id = None
+    local_error = None
+    local_explicit = False
+    if dist.get_rank() == 0:
+        try:
+            local_explicit = _run_id_is_explicit()
+            local_run_id = _new_run_id()
+        except Exception as error:
+            local_error = f"{type(error).__name__}: {error}"
+    values = [local_run_id, local_error, local_explicit]
+    dist.broadcast_object_list(values, src=0)
+    if values[1] is not None:
+        raise ValueError(f"{RUN_ID_ENV} is invalid on rank 0: {values[1]}")
+    run_id = values[0]
+    if not _valid_run_id(run_id):
+        raise ValueError("Broadcast run_id is malformed")
+    return run_id, bool(values[2])
+
+
+def _sha256_file(path, chunk_size=8 * 1024 * 1024):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _json_sha256(payload):
+    serialized = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(',', ':'),
+        allow_nan=False,
+    ).encode('utf-8')
+    return hashlib.sha256(serialized).hexdigest()
+
+
+def _config_source_contract(config_path, payload):
+    """Bind the loaded YAML while ignoring only the wrapper stop boundary."""
+
+    if not isinstance(payload, dict):
+        raise ValueError("Training config payload must be a mapping")
+    normalized = copy.deepcopy(payload)
+    num_steps = normalized.get('num_steps')
+    if isinstance(num_steps, bool) or not isinstance(num_steps, int) or num_steps < 1:
+        raise ValueError("Training config num_steps must be a positive integer")
+    normalized['num_steps'] = '<runtime-stop-boundary>'
+    return {
+        'version': TRAINING_PROVENANCE_VERSION,
+        'basename': Path(config_path).name,
+        'payload_sha256': _json_sha256(normalized),
+    }
+
+
+def _strict_provenance_enabled():
+    value = os.environ.get(STRICT_PROVENANCE_ENV, '0').strip()
+    if value not in {'0', '1'}:
+        raise ValueError(f"{STRICT_PROVENANCE_ENV} must be exactly 0 or 1")
+    return value == '1'
+
+
+def _git_output(*args):
+    return subprocess.run(
+        ['git', *args],
+        cwd=Path(__file__).resolve().parent,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def _training_environment_contract():
+    if not torch.cuda.is_available():
+        raise RuntimeError("Strict training provenance requires CUDA")
+    visible = [
+        item.strip()
+        for item in os.environ.get('CUDA_VISIBLE_DEVICES', '').split(',')
+        if item.strip()
+    ]
+    devices = {}
+    for index in range(torch.cuda.device_count()):
+        properties = torch.cuda.get_device_properties(index)
+        device_uuid = getattr(properties, 'uuid', None)
+        if device_uuid is None:
+            raise RuntimeError(f"CUDA device UUID is unavailable for cuda:{index}")
+        devices[f'cuda:{index}'] = {
+            'name': properties.name,
+            'compute_capability': [properties.major, properties.minor],
+            'total_memory_bytes': properties.total_memory,
+            'uuid': str(device_uuid),
+        }
+    return {
+        'python': platform.python_version(),
+        'python_executable': str(Path(sys.executable).resolve()),
+        'torch': torch.__version__,
+        'numpy': np.__version__,
+        'cuda_runtime': torch.version.cuda,
+        'devices': list(devices),
+        'cuda_visible_devices': visible,
+        'cuda_devices': devices,
+    }
+
+
+def _collect_strict_training_provenance(cfg):
+    source_paths = STRICT_PROVENANCE_SOURCE_PATHS.get(cfg.model_name)
+    if source_paths is None:
+        raise ValueError(
+            f"Strict provenance source paths are not registered for {cfg.model_name}"
+        )
+    config_contract = getattr(cfg, '_config_source_contract', None)
+    if not isinstance(config_contract, dict):
+        raise ValueError(
+            "Strict provenance requires the source YAML contract from the CLI"
+        )
+    if (
+        config_contract.get('version') != TRAINING_PROVENANCE_VERSION
+        or config_contract.get('basename') != f"{cfg.custom_cfg_name}.yaml"
+        or not isinstance(config_contract.get('payload_sha256'), str)
+        or not _SHA256_PATTERN.fullmatch(config_contract['payload_sha256'])
+    ):
+        raise ValueError("Training source YAML contract is malformed")
+
+    project_root = Path(__file__).resolve().parent
+    git_state = repository_state(project_root)
+    commit = git_state['commit']
+    origin_commit = git_state['origin_repa']
+    status = git_state['status']
+    divergence = _git_output(
+        'rev-list', '--left-right', '--count', 'origin/repa...HEAD'
+    )
+    if status:
+        raise RuntimeError("Strict provenance requires a clean working tree")
+    if (
+        divergence != '0\t0'
+        or origin_commit != commit
+        or git_state['authoritative_remote_tip'] != commit
+    ):
+        raise RuntimeError(
+            "Strict provenance requires HEAD to be pushed to origin/repa"
+        )
+
+    source_sha256 = {}
+    for relative in source_paths:
+        path = project_root / relative
+        if path.is_symlink() or not path.is_file():
+            raise FileNotFoundError(f"Strict provenance source is missing: {path}")
+        source_sha256[relative] = _sha256_file(path)
+    verify_worktree_source_manifest(project_root, commit, source_sha256)
+    contract = {
+        'version': TRAINING_PROVENANCE_VERSION,
+        'strict': True,
+        'git': {
+            'commit': commit,
+            'origin_repa_commit': origin_commit,
+            'status_clean': True,
+            'origin_repa_divergence': divergence,
+        },
+        'config': copy.deepcopy(config_contract),
+        'source_sha256': source_sha256,
+        'environment': _training_environment_contract(),
+    }
+    _validate_training_provenance_contract(contract)
+    return contract
+
+
+def _validate_training_provenance_contract(contract):
+    if not isinstance(contract, dict) or set(contract) != {
+        'version',
+        'strict',
+        'git',
+        'config',
+        'source_sha256',
+        'environment',
+    }:
+        raise ValueError("Strict training provenance fields are malformed")
+    if (
+        contract['version'] != TRAINING_PROVENANCE_VERSION
+        or contract['strict'] is not True
+    ):
+        raise ValueError("Strict training provenance version is malformed")
+    git_contract = contract['git']
+    if not isinstance(git_contract, dict) or set(git_contract) != {
+        'commit',
+        'origin_repa_commit',
+        'status_clean',
+        'origin_repa_divergence',
+    }:
+        raise ValueError("Strict training Git provenance is malformed")
+    commit = git_contract['commit']
+    if (
+        not isinstance(commit, str)
+        or re.fullmatch(r'[0-9a-f]{40,64}', commit) is None
+        or git_contract['origin_repa_commit'] != commit
+        or git_contract['status_clean'] is not True
+        or git_contract['origin_repa_divergence'] != '0\t0'
+    ):
+        raise ValueError("Strict training Git provenance is not clean and pushed")
+    config_contract = contract['config']
+    if not isinstance(config_contract, dict) or set(config_contract) != {
+        'version',
+        'basename',
+        'payload_sha256',
+    }:
+        raise ValueError("Strict training config provenance is malformed")
+    if (
+        config_contract['version'] != TRAINING_PROVENANCE_VERSION
+        or not isinstance(config_contract['basename'], str)
+        or not isinstance(config_contract['payload_sha256'], str)
+        or not _SHA256_PATTERN.fullmatch(config_contract['payload_sha256'])
+    ):
+        raise ValueError("Strict training config provenance is malformed")
+    source_sha256 = contract['source_sha256']
+    if not isinstance(source_sha256, dict) or not source_sha256:
+        raise ValueError("Strict training source provenance is empty")
+    for relative, digest in source_sha256.items():
+        if (
+            not isinstance(relative, str)
+            or Path(relative).is_absolute()
+            or '..' in Path(relative).parts
+            or not isinstance(digest, str)
+            or not _SHA256_PATTERN.fullmatch(digest)
+        ):
+            raise ValueError("Strict training source provenance is malformed")
+    environment = contract['environment']
+    if not isinstance(environment, dict) or not isinstance(
+        environment.get('cuda_devices'), dict
+    ):
+        raise ValueError("Strict training environment provenance is malformed")
+    return contract
+
+
+def _broadcast_training_provenance(cfg):
+    local_contract = None
+    local_error = None
+    local_enabled = False
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        try:
+            local_enabled = _strict_provenance_enabled()
+            if local_enabled:
+                local_contract = _collect_strict_training_provenance(cfg)
+        except Exception as error:
+            local_error = f"{type(error).__name__}: {error}"
+    values = [local_contract, local_error, local_enabled]
+    if dist.is_initialized():
+        dist.broadcast_object_list(values, src=0)
+    if values[1] is not None:
+        raise RuntimeError("Training provenance failed on rank 0: " + values[1])
+    if values[2]:
+        if not isinstance(values[0], dict) or values[0].get('strict') is not True:
+            raise RuntimeError("Broadcast strict training provenance is malformed")
+        _validate_training_provenance_contract(values[0])
+        _json_sha256(values[0])
+    elif values[0] is not None:
+        raise RuntimeError("Non-strict training unexpectedly received provenance")
+    return values[0], bool(values[2])
+
+
+def _persistent_checkpoint_entries(checkpoint_dir):
+    """List completed checkpoint-directory entries for fresh-run detection."""
+
+    checkpoint_dir = Path(checkpoint_dir)
+    if not os.path.lexists(checkpoint_dir):
+        return []
+    if checkpoint_dir.is_symlink() or not checkpoint_dir.is_dir():
+        raise ValueError(
+            f"Checkpoint path must be a real directory: {checkpoint_dir}"
+        )
+    temporary_suffixes = ('.tmp', '.part')
+    return sorted(
+        entry.name
+        for entry in checkpoint_dir.iterdir()
+        if not entry.name.endswith(temporary_suffixes)
+    )
+
+
+def _validate_strict_output_bucket(output_dir, resume_checkpoint):
+    """Reject stale artifacts before a strict run writes its first log."""
+
+    output_dir = Path(output_dir)
+    if not os.path.lexists(output_dir):
+        return
+    if not output_dir.is_dir():
+        raise ValueError(
+            f"Strict provenance output must be a directory: {output_dir}"
+        )
+
+    checkpoint_entries = _persistent_checkpoint_entries(
+        output_dir / 'checkpoints'
+    )
+    checkpoint_names = [
+        name
+        for name in checkpoint_entries
+        if re.fullmatch(r'ckpt_step_[0-9]+\.pth', name)
+    ]
+    if checkpoint_names:
+        checkpoint_dir = output_dir / 'checkpoints'
+        for checkpoint_name in checkpoint_names:
+            checkpoint_path = checkpoint_dir / checkpoint_name
+            if checkpoint_path.is_symlink() or not checkpoint_path.is_file():
+                raise ValueError(
+                    "Strict provenance resume checkpoint must be a regular "
+                    f"file: {checkpoint_path}"
+                )
+        if not resume_checkpoint:
+            raise RuntimeError(
+                "Strict provenance cannot start fresh in an output bucket "
+                f"that contains checkpoints: {output_dir}"
+            )
+        return
+
+    existing_entries = sorted(entry.name for entry in output_dir.iterdir())
+    if existing_entries:
+        raise RuntimeError(
+            "Strict provenance requires an empty output bucket before step 0; "
+            f"found: {existing_entries[:5]}"
+        )
+
+
 def _capture_rng_state():
     numpy_state = np.random.get_state()
     state = {
@@ -891,6 +1280,10 @@ def _legacy_resume_state(
         'legacy_augmentation_state': True,
         'legacy_sampler_seed_state': True,
         'trainer_state_version': None,
+        'run_id_missing': True,
+        'checkpoint_run_id': None,
+        'training_provenance_missing': True,
+        'checkpoint_training_provenance': None,
     }
 
 
@@ -903,6 +1296,8 @@ def _resume_state_from_checkpoint(
     fallback_seed,
     global_seed=0,
     sampler_contract=None,
+    run_id=None,
+    training_provenance=None,
 ):
     checkpoint_step = checkpoint.get('step')
     if (
@@ -914,6 +1309,11 @@ def _resume_state_from_checkpoint(
 
     trainer_state = checkpoint.get('trainer_state')
     if trainer_state is None:
+        if run_id is not None or training_provenance is not None:
+            raise ValueError(
+                "Legacy checkpoint has no run_id or training provenance for a "
+                "strict run"
+            )
         return _legacy_resume_state(
             checkpoint_step,
             grad_mix,
@@ -938,6 +1338,50 @@ def _resume_state_from_checkpoint(
         and trainer_state.get('global_seed') != global_seed
     ):
         raise ValueError("Checkpoint global_seed differs from the current configuration")
+    if trainer_state_version == TRAINER_STATE_VERSION:
+        checkpoint_run_id = trainer_state.get('run_id')
+        if checkpoint_run_id is None:
+            if run_id is not None:
+                raise ValueError(
+                    "Checkpoint run_id is missing for an explicit training run"
+                )
+            run_id_missing = True
+        else:
+            if not _valid_run_id(checkpoint_run_id):
+                raise ValueError("Checkpoint run_id is malformed")
+            if run_id is not None and checkpoint_run_id != run_id:
+                raise ValueError(
+                    "Checkpoint run_id differs from the current training run"
+                )
+            run_id_missing = False
+    else:
+        if run_id is not None:
+            raise ValueError(
+                "Legacy checkpoint has no run_id for an explicit training run"
+            )
+        run_id_missing = True
+    checkpoint_training_provenance = trainer_state.get('training_provenance')
+    if checkpoint_training_provenance is not None:
+        _validate_training_provenance_contract(checkpoint_training_provenance)
+    if training_provenance is not None:
+        _validate_training_provenance_contract(training_provenance)
+        if checkpoint_training_provenance is None:
+            raise ValueError(
+                "Checkpoint training provenance is missing for a strict run"
+            )
+        if checkpoint_training_provenance != training_provenance:
+            raise ValueError(
+                "Checkpoint training provenance differs from this invocation"
+            )
+    elif checkpoint_training_provenance is not None:
+        raise ValueError(
+            "A strict-provenance checkpoint requires strict provenance on resume"
+        )
+    if (
+        (training_provenance is not None or checkpoint_training_provenance is not None)
+        and run_id_missing
+    ):
+        raise ValueError("A strict-provenance checkpoint must contain a valid run_id")
     if trainer_state_version == TRAINER_STATE_VERSION:
         _validate_sampler_contract(
             trainer_state.get('sampler_contract'),
@@ -1012,6 +1456,14 @@ def _resume_state_from_checkpoint(
             trainer_state_version == LEGACY_TRAINER_STATE_VERSION
         ),
         'trainer_state_version': trainer_state_version,
+        'run_id_missing': run_id_missing,
+        'checkpoint_run_id': (
+            trainer_state.get('run_id')
+            if trainer_state_version == TRAINER_STATE_VERSION
+            else None
+        ),
+        'training_provenance_missing': checkpoint_training_provenance is None,
+        'checkpoint_training_provenance': checkpoint_training_provenance,
     }
 
 
@@ -1027,6 +1479,10 @@ def _fresh_resume_state():
         'legacy_augmentation_state': False,
         'legacy_sampler_seed_state': False,
         'trainer_state_version': None,
+        'run_id_missing': False,
+        'checkpoint_run_id': None,
+        'training_provenance_missing': False,
+        'checkpoint_training_provenance': None,
     }
 
 
@@ -1274,6 +1730,8 @@ def load_latest_checkpoint(
     sampler_contract=None,
     initial_checkpoint_path=None,
     checkpoint_extension=None,
+    run_id=None,
+    training_provenance=None,
 ):
     if resume_checkpoint_step is not None:
         checkpoint_path = os.path.join(checkpoint_dir, f'ckpt_step_{resume_checkpoint_step}.pth')
@@ -1323,6 +1781,8 @@ def load_latest_checkpoint(
                 fallback_seed,
                 global_seed,
                 sampler_contract,
+                run_id,
+                training_provenance,
             )
             model_state = checkpoint.get('model_state_dict')
             ema_state = checkpoint.get('ema_model_state_dict')
@@ -1446,11 +1906,39 @@ def save_checkpoint(
         raise ValueError("sampler_contract must be provided when saving a checkpoint")
     if sampler_contract.get('global_seed') != global_seed:
         raise ValueError("sampler_contract global_seed is inconsistent")
+    run_id = (
+        trainer_progress.get('run_id')
+        if isinstance(trainer_progress, dict)
+        else None
+    )
+    run_id_error = None
+    training_provenance = None
+    if not isinstance(trainer_progress, dict):
+        run_id_error = "trainer_progress must be a mapping"
+    elif not _valid_run_id(run_id):
+        run_id_error = "trainer_progress must contain a valid run_id"
+    else:
+        training_provenance = trainer_progress.get('training_provenance')
+        if training_provenance is not None:
+            try:
+                _validate_training_provenance_contract(training_provenance)
+            except Exception as error:
+                run_id_error = (
+                    "trainer_progress training_provenance is invalid: "
+                    f"{type(error).__name__}: {error}"
+                )
+    world_size = dist.get_world_size() if dist.is_initialized() else 1
+    # Keep validation failures collective.  In particular, rank 0 must not
+    # exit before the existing checkpoint-error broadcast can notify peers.
+    _synchronize_sealed_error(
+        run_id_error,
+        "Checkpoint persistence",
+        world_size,
+    )
     local_state = {
         'rank': dist.get_rank() if dist.is_initialized() else 0,
         'rng_state': _capture_rng_state(),
     }
-    world_size = dist.get_world_size() if dist.is_initialized() else 1
     rank_states = [None] * world_size
     if dist.is_initialized():
         dist.all_gather_object(rank_states, local_state)
@@ -1508,8 +1996,17 @@ def save_checkpoint(
                 checkpoint_payload[extension_key] = extension_state
             torch.save(checkpoint_payload, temporary_path)
             os.replace(temporary_path, checkpoint_path)
+            checkpoint_size = os.path.getsize(checkpoint_path)
+            checkpoint_sha256 = _sha256_file(checkpoint_path)
+            provenance_suffix = ''
+            if training_provenance is not None:
+                provenance_suffix = (
+                    f' launch_sha256={_json_sha256(training_provenance)}'
+                )
             logging.info(
-                f'********************* Checkpoint saved at {checkpoint_path}'
+                f'********************* Checkpoint saved at {checkpoint_path} '
+                f'run_id={run_id} step={step} size={checkpoint_size} '
+                f'sha256={checkpoint_sha256}{provenance_suffix}'
             )
         except Exception as error:
             save_error = f"{type(error).__name__}: {error}"
@@ -1617,6 +2114,28 @@ def worker(gpu, cfg):
     )
 
     cfg.output_dir = osp.join(cfg.output_dir, cfg.model_name, cfg.custom_cfg_name)
+    run_id, run_id_explicit = _broadcast_run_id()
+    training_provenance, provenance_strict = _broadcast_training_provenance(cfg)
+    training_provenance_sha256 = (
+        _json_sha256(training_provenance)
+        if training_provenance is not None
+        else None
+    )
+    if provenance_strict:
+        strict_output_error = None
+        if cfg.rank == 0:
+            try:
+                _validate_strict_output_bucket(
+                    cfg.output_dir,
+                    cfg.resume_checkpoint,
+                )
+            except Exception as error:
+                strict_output_error = f'{type(error).__name__}: {error}'
+        _synchronize_sealed_error(
+            strict_output_error,
+            'Strict output preflight',
+            cfg.world_size,
+        )
     setup_logging(cfg.output_dir, cfg.rank)
 
     global_seed = int(getattr(cfg, 'global_seed', 0))
@@ -1888,14 +2407,42 @@ def worker(gpu, cfg):
         logging.info(f"Train parameter {para_id}: {name} (requires_grad={param.requires_grad})")
 
     cfg.checkpoint_dir = osp.join(cfg.output_dir, 'checkpoints')
+    local_checkpoints = glob.glob(
+        os.path.join(cfg.checkpoint_dir, 'ckpt_step_*.pth')
+    )
+    persistent_checkpoint_entries = _persistent_checkpoint_entries(cfg.checkpoint_dir)
+    initial_checkpoint_owner = credit_controller or transcript_recorder
+    fresh_invocation = (
+        not persistent_checkpoint_entries
+        and initial_checkpoint_owner is None
+    )
+    def log_invocation_marker(is_fresh):
+        if cfg.rank != 0:
+            return
+        provenance_suffix = ''
+        if training_provenance is not None:
+            logging.info(
+                f"Training provenance: run_id={run_id} "
+                f"launch_sha256={training_provenance_sha256} "
+                f"git_commit={training_provenance['git']['commit']} "
+                "config_sha256="
+                f"{training_provenance['config']['payload_sha256']}"
+            )
+            provenance_suffix = (
+                f" launch_sha256={training_provenance_sha256}"
+            )
+        logging.info(
+            f"Fresh run marker: run_id={run_id} fresh={is_fresh} "
+            f"config={cfg.custom_cfg_name} output_dir={cfg.output_dir} "
+            f"global_seed={global_seed} world_size={cfg.world_size}"
+            f"{provenance_suffix}"
+        )
+    if cfg.rank == 0 and fresh_invocation:
+        log_invocation_marker(fresh_invocation)
     if cfg.resume_checkpoint:
         cfg.resume_checkpoint_step = getattr(cfg, 'resume_checkpoint_step', None)
         initial_checkpoint_path = None
-        initial_checkpoint_owner = credit_controller or transcript_recorder
         if initial_checkpoint_owner is not None:
-            local_checkpoints = glob.glob(
-                os.path.join(cfg.checkpoint_dir, 'ckpt_step_*.pth')
-            )
             if not local_checkpoints:
                 initial_checkpoint_owner.verify_initial_checkpoint()
             initial_checkpoint_path = str(
@@ -1920,6 +2467,13 @@ def worker(gpu, cfg):
                 sampler_contract=sampler_contract,
                 initial_checkpoint_path=initial_checkpoint_path,
                 checkpoint_extension=credit_controller,
+                # An explicitly supplied ID is a hard identity boundary.  For
+                # ordinary restarts, accept the checkpoint's ID and adopt it
+                # below so train.py remains restartable without launcher state.
+                run_id=run_id if run_id_explicit else None,
+                training_provenance=(
+                    training_provenance if provenance_strict else None
+                ),
             )
         except Exception as error:
             if credit_controller is None and transcript_recorder is None:
@@ -1938,12 +2492,30 @@ def worker(gpu, cfg):
                 raise RuntimeError(
                     "Credit checkpoint resume failed; " + "; ".join(failures)
                 )
+        checkpoint_run_id = resume_state.get('checkpoint_run_id')
+        if not run_id_explicit and checkpoint_run_id is not None:
+            run_id = checkpoint_run_id
+        checkpoint_training_provenance = resume_state.get(
+            'checkpoint_training_provenance'
+        )
+        if checkpoint_training_provenance is not None:
+            training_provenance = checkpoint_training_provenance
+            training_provenance_sha256 = _json_sha256(training_provenance)
+        if cfg.rank == 0 and not fresh_invocation:
+            log_invocation_marker(fresh_invocation)
+        if resume_state.get('run_id_missing'):
+            logging.warning(
+                "Resumed a legacy checkpoint without run_id; this trajectory "
+                "is not eligible for fresh-run provenance claims"
+            )
     else:
         if credit_controller is not None or transcript_recorder is not None:
             raise ValueError(
                 "Sealed credit instrumentation requires resume_checkpoint=True"
             )
         resume_state = _fresh_resume_state()
+        if cfg.rank == 0 and not fresh_invocation:
+            log_invocation_marker(fresh_invocation)
 
     step = resume_state['next_step']
     epoch = resume_state['sampler_epoch']
@@ -2226,19 +2798,23 @@ def worker(gpu, cfg):
                 data_batches_seen,
                 batches_per_epoch,
             )
+            trainer_progress = {
+                'next_step': step + 1,
+                'data_batches_seen': data_batches_seen,
+                'sampler_epoch': checkpoint_epoch,
+                'sampler_batch_offset': checkpoint_offset,
+                'grad_mix': cfg.grad_mix,
+                'batches_per_epoch': batches_per_epoch,
+                'run_id': run_id,
+            }
+            if training_provenance is not None:
+                trainer_progress['training_provenance'] = training_provenance
             save_checkpoint(
                 model,
                 model_ema,
                 optimizer,
                 step,
-                {
-                    'next_step': step + 1,
-                    'data_batches_seen': data_batches_seen,
-                    'sampler_epoch': checkpoint_epoch,
-                    'sampler_batch_offset': checkpoint_offset,
-                    'grad_mix': cfg.grad_mix,
-                    'batches_per_epoch': batches_per_epoch,
-                },
+                trainer_progress,
                 cfg.checkpoint_dir,
                 global_seed=global_seed,
                 sampler_contract=sampler_contract,
@@ -2276,7 +2852,9 @@ if __name__ == '__main__':
     with open(args.config, 'r') as file:
         custom_cfg = yaml.safe_load(file)
 
+    config_source_contract = _config_source_contract(args.config, custom_cfg)
     custom_cfg['custom_cfg_name'] = osp.splitext(osp.basename(args.config))[0]
+    custom_cfg['_config_source_contract'] = config_source_contract
     if args.vae_path is not None:
         custom_cfg['vae_path'] = args.vae_path
     main(**custom_cfg)

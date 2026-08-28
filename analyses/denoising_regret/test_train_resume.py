@@ -1,11 +1,13 @@
 import copy
 import datetime
 import io
+import os
 import pickle
 import random
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import torch
@@ -17,13 +19,21 @@ from train import (
     AUGMENTATION_SEED_VERSION,
     LatentFolder,
     ResumableBatchSampler,
+    RUN_ID_ENV,
+    TRAINING_PROVENANCE_VERSION,
     _augmentation_seed,
+    _broadcast_run_id,
     _build_latent_class_to_idx,
     _capture_rng_state,
+    _config_source_contract,
+    _collect_strict_training_provenance,
     _dataset_sampler_identity,
     _legacy_resume_state,
+    _validate_training_provenance_contract,
+    _valid_run_id,
     _resume_state_from_checkpoint,
     _restore_rng_state,
+    _validate_strict_output_bucket,
     load_latest_checkpoint,
     save_checkpoint,
 )
@@ -44,7 +54,7 @@ def _checkpoint_save_failure_worker(rank, world_size, init_file, blocker, queue)
                 ema_model=None,
                 optimizer=None,
                 step=7,
-                trainer_progress={},
+                trainer_progress={'run_id': 'a' * 32},
                 checkpoint_dir=blocker,
                 global_seed=0,
                 sampler_contract={'global_seed': 0},
@@ -58,6 +68,26 @@ def _checkpoint_save_failure_worker(rank, world_size, init_file, blocker, queue)
 
 
 class TrainResumeTests(unittest.TestCase):
+    @staticmethod
+    def _training_provenance(config_sha="b" * 64):
+        return {
+            'version': TRAINING_PROVENANCE_VERSION,
+            'strict': True,
+            'git': {
+                'commit': 'a' * 40,
+                'origin_repa_commit': 'a' * 40,
+                'status_clean': True,
+                'origin_repa_divergence': '0\t0',
+            },
+            'config': {
+                'version': TRAINING_PROVENANCE_VERSION,
+                'basename': '004_test.yaml',
+                'payload_sha256': config_sha,
+            },
+            'source_sha256': {'train.py': 'c' * 64},
+            'environment': {'cuda_devices': {}},
+        }
+
     @staticmethod
     def _sampler_contract(global_seed=0, sampler_type='distributed'):
         return {
@@ -254,6 +284,272 @@ class TrainResumeTests(unittest.TestCase):
         )
         self.assertEqual(resumed['next_step'], 9)
 
+    def test_resume_without_launcher_id_adopts_checkpoint_id(self):
+        run_id = 'a' * 32
+        checkpoint = {
+            'step': 8,
+            'trainer_state': {
+                **self._trainer_state(8),
+                'run_id': run_id,
+            },
+        }
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(RUN_ID_ENV, None)
+            resumed = _resume_state_from_checkpoint(
+                checkpoint,
+                rank=0,
+                world_size=1,
+                grad_mix=1,
+                batches_per_epoch=3,
+                fallback_seed=0,
+                sampler_contract=self._sampler_contract(),
+            )
+        self.assertEqual(resumed['checkpoint_run_id'], run_id)
+        self.assertFalse(resumed['run_id_missing'])
+
+    def test_explicit_launcher_id_must_match_checkpoint_id(self):
+        checkpoint = {
+            'step': 8,
+            'trainer_state': {
+                **self._trainer_state(8),
+                'run_id': 'a' * 32,
+            },
+        }
+        with self.assertRaisesRegex(ValueError, 'run_id'):
+            _resume_state_from_checkpoint(
+                checkpoint,
+                rank=0,
+                world_size=1,
+                grad_mix=1,
+                batches_per_epoch=3,
+                fallback_seed=0,
+                sampler_contract=self._sampler_contract(),
+                run_id='b' * 32,
+            )
+
+    def test_explicit_launcher_id_rejects_checkpoint_without_id(self):
+        checkpoint = {
+            'step': 8,
+            'trainer_state': self._trainer_state(8),
+        }
+        with self.assertRaisesRegex(ValueError, 'run_id'):
+            _resume_state_from_checkpoint(
+                checkpoint,
+                rank=0,
+                world_size=1,
+                grad_mix=1,
+                batches_per_epoch=3,
+                fallback_seed=0,
+                sampler_contract=self._sampler_contract(),
+                run_id='a' * 32,
+            )
+
+    def test_run_id_generation_is_stable_only_when_explicit(self):
+        explicit = 'run-' + 'a' * 28
+        with patch.dict(os.environ, {RUN_ID_ENV: explicit}, clear=False):
+            self.assertEqual(_broadcast_run_id(), (explicit, True))
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(RUN_ID_ENV, None)
+            first, first_explicit = _broadcast_run_id()
+            second, second_explicit = _broadcast_run_id()
+        self.assertTrue(_valid_run_id(first))
+        self.assertTrue(_valid_run_id(second))
+        self.assertFalse(first_explicit)
+        self.assertFalse(second_explicit)
+        self.assertNotEqual(first, second)
+
+    def test_config_source_contract_ignores_only_runtime_stop_boundary(self):
+        first = {
+            'model_name': 'ProMoE_TC_B',
+            'num_steps': 300001,
+            'lr': 1e-4,
+        }
+        second = {**first, 'num_steps': 501000}
+        first_contract = _config_source_contract('004_test.yaml', first)
+        second_contract = _config_source_contract('004_test.yaml', second)
+        self.assertEqual(
+            first_contract['payload_sha256'],
+            second_contract['payload_sha256'],
+        )
+        changed = _config_source_contract(
+            '004_test.yaml',
+            {**second, 'lr': 2e-4},
+        )
+        self.assertNotEqual(
+            first_contract['payload_sha256'],
+            changed['payload_sha256'],
+        )
+
+    def test_strict_training_provenance_must_match_on_resume(self):
+        provenance = self._training_provenance()
+        _validate_training_provenance_contract(provenance)
+        checkpoint = {
+            'step': 8,
+            'trainer_state': {
+                **self._trainer_state(8),
+                'run_id': 'a' * 32,
+                'training_provenance': provenance,
+            },
+        }
+        resumed = _resume_state_from_checkpoint(
+            checkpoint,
+            rank=0,
+            world_size=1,
+            grad_mix=1,
+            batches_per_epoch=3,
+            fallback_seed=0,
+            sampler_contract=self._sampler_contract(),
+            training_provenance=copy.deepcopy(provenance),
+        )
+        self.assertEqual(
+            resumed['checkpoint_training_provenance'], provenance
+        )
+        self.assertFalse(resumed['training_provenance_missing'])
+
+        with self.assertRaisesRegex(ValueError, 'requires strict provenance'):
+            _resume_state_from_checkpoint(
+                checkpoint,
+                rank=0,
+                world_size=1,
+                grad_mix=1,
+                batches_per_epoch=3,
+                fallback_seed=0,
+                sampler_contract=self._sampler_contract(),
+            )
+        changed = self._training_provenance(config_sha='d' * 64)
+        with self.assertRaisesRegex(ValueError, 'differs'):
+            _resume_state_from_checkpoint(
+                checkpoint,
+                rank=0,
+                world_size=1,
+                grad_mix=1,
+                batches_per_epoch=3,
+                fallback_seed=0,
+                sampler_contract=self._sampler_contract(),
+                training_provenance=changed,
+            )
+        missing_run_id = copy.deepcopy(checkpoint)
+        missing_run_id['trainer_state'].pop('run_id')
+        with self.assertRaisesRegex(ValueError, 'valid run_id'):
+            _resume_state_from_checkpoint(
+                missing_run_id,
+                rank=0,
+                world_size=1,
+                grad_mix=1,
+                batches_per_epoch=3,
+                fallback_seed=0,
+                sampler_contract=self._sampler_contract(),
+                training_provenance=provenance,
+            )
+
+    def test_strict_provenance_rejects_dirty_temporary_index_status(self):
+        config_contract = _config_source_contract(
+            '004_test.yaml',
+            {'model_name': 'ProMoE_TC_B', 'num_steps': 1},
+        )
+        fake_cfg = type('Config', (), {
+            'model_name': 'ProMoE_TC_B',
+            'custom_cfg_name': '004_test',
+            '_config_source_contract': config_contract,
+        })()
+        git_state = {
+            'commit': 'a' * 40,
+            'origin_repa': 'a' * 40,
+            'authoritative_remote_tip': 'a' * 40,
+            'status': ' M train.py\n',
+        }
+        with patch(
+            'train.repository_state',
+            return_value=git_state,
+        ), patch('train._git_output', return_value='0\t0'):
+            with self.assertRaisesRegex(RuntimeError, 'clean working tree'):
+                _collect_strict_training_provenance(fake_cfg)
+
+    def test_strict_provenance_rejects_unpushed_authoritative_tip(self):
+        config_contract = _config_source_contract(
+            '004_test.yaml',
+            {'model_name': 'ProMoE_TC_B', 'num_steps': 1},
+        )
+        fake_cfg = type('Config', (), {
+            'model_name': 'ProMoE_TC_B',
+            'custom_cfg_name': '004_test',
+            '_config_source_contract': config_contract,
+        })()
+        git_state = {
+            'commit': 'a' * 40,
+            'origin_repa': 'a' * 40,
+            'authoritative_remote_tip': 'b' * 40,
+            'status': '',
+        }
+        with patch(
+            'train.repository_state',
+            return_value=git_state,
+        ), patch('train._git_output', return_value='0\t0'):
+            with self.assertRaisesRegex(RuntimeError, 'pushed to origin/repa'):
+                _collect_strict_training_provenance(fake_cfg)
+
+    def test_strict_output_bucket_rejects_stale_non_checkpoint_artifacts(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            output_dir = root / 'fresh-output'
+            _validate_strict_output_bucket(output_dir, resume_checkpoint=True)
+
+            output_dir.mkdir()
+            _validate_strict_output_bucket(output_dir, resume_checkpoint=True)
+            (output_dir / 'sample').mkdir()
+            with self.assertRaisesRegex(RuntimeError, 'empty output bucket'):
+                _validate_strict_output_bucket(
+                    output_dir,
+                    resume_checkpoint=True,
+                )
+
+    def test_strict_output_bucket_allows_only_explicit_checkpoint_resume(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            output_dir = Path(temporary_dir) / 'resume-output'
+            checkpoint_dir = output_dir / 'checkpoints'
+            checkpoint_dir.mkdir(parents=True)
+            (checkpoint_dir / 'ckpt_step_50000.pth').touch()
+
+            _validate_strict_output_bucket(output_dir, resume_checkpoint=True)
+            with self.assertRaisesRegex(RuntimeError, 'cannot start fresh'):
+                _validate_strict_output_bucket(
+                    output_dir,
+                    resume_checkpoint=False,
+                )
+
+    def test_strict_output_bucket_does_not_treat_arbitrary_file_as_checkpoint(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            output_dir = Path(temporary_dir) / 'stale-output'
+            checkpoint_dir = output_dir / 'checkpoints'
+            checkpoint_dir.mkdir(parents=True)
+            (checkpoint_dir / 'README.txt').write_text(
+                'not a checkpoint',
+                encoding='utf-8',
+            )
+            (output_dir / 'sample').mkdir()
+
+            with self.assertRaisesRegex(RuntimeError, 'empty output bucket'):
+                _validate_strict_output_bucket(
+                    output_dir,
+                    resume_checkpoint=True,
+                )
+
+    def test_strict_output_bucket_rejects_symlink_checkpoint(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            output_dir = root / 'linked-output'
+            checkpoint_dir = output_dir / 'checkpoints'
+            checkpoint_dir.mkdir(parents=True)
+            external = root / 'external.pth'
+            external.touch()
+            (checkpoint_dir / 'ckpt_step_50000.pth').symlink_to(external)
+
+            with self.assertRaisesRegex(ValueError, 'regular file'):
+                _validate_strict_output_bucket(
+                    output_dir,
+                    resume_checkpoint=True,
+                )
+
     def test_legacy_checkpoint_resumes_after_saved_step(self):
         state = _legacy_resume_state(
             checkpoint_step=300000,
@@ -268,6 +564,36 @@ class TrainResumeTests(unittest.TestCase):
             divmod(600002, 5005),
         )
         self.assertTrue(state['legacy_checkpoint'])
+
+    def test_explicit_launcher_id_rejects_legacy_checkpoint(self):
+        checkpoint = {'step': 8}
+        with self.assertRaisesRegex(ValueError, 'run_id'):
+            _resume_state_from_checkpoint(
+                checkpoint,
+                rank=0,
+                world_size=1,
+                grad_mix=1,
+                batches_per_epoch=3,
+                fallback_seed=0,
+                sampler_contract=self._sampler_contract(),
+                run_id='a' * 32,
+            )
+
+    def test_explicit_launcher_id_rejects_v1_checkpoint(self):
+        state = self._trainer_state(8)
+        state['version'] = 1
+        checkpoint = {'step': 8, 'trainer_state': state}
+        with self.assertRaisesRegex(ValueError, 'run_id'):
+            _resume_state_from_checkpoint(
+                checkpoint,
+                rank=0,
+                world_size=1,
+                grad_mix=1,
+                batches_per_epoch=3,
+                fallback_seed=0,
+                sampler_contract=self._sampler_contract(),
+                run_id='a' * 32,
+            )
 
     def test_resumable_sampler_matches_uninterrupted_suffix(self):
         dataset = list(range(31))
