@@ -1,0 +1,9 @@
+实验 / Experiment: 1.2-B_seed1_control
+model_name: ProMoE_TC_B  |  config: configs/004_ProMoE_B_seed1_control.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分流、静态 cluster_centers、top-1 余弦原型路由、shared expert 和 routing contrastive guidance）；直接父变体 / Parent: Fresh Base seed0，模型和训练设置相同，seed1 只更换随机种子
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 独立随机种子对照 / independent seed control：`global_seed: 1`，训练产生一条不同于 seed0 的随机轨迹。它用于判断 Base 指标和路由现象本身会波动多少，不是一个新方法。
+2. 模型机制和公平设置不变：仍使用 `ProMoE_TC_B -> (ProMoE_TC, DiT_B_config)`；MoE 宽度、12 个 routed experts、top-1、shared expert、routing contrastive loss、学习率、global batch 256、16 个数据进程和 501K 训练边界都与 Fresh Base seed0 相同。
+3. 严格来源 / strict provenance：模型代码固定从主仓库提交 `257d51af287ea93103d7b4cad5ecab9dc1e3b541` 运行。启动脚本要求主仓库干净且 `HEAD == origin/repa`，也要求本实验的 config 和两个 wrapper 已经提交并推送；checkpoint 会记录代码和 config 的哈希以及 GPU 环境明细，并把它们共同纳入整体来源记录。
+4. 真正从零训练并完整评估：第一次启动时，严格检查会拒绝任何已有文件的输出桶，所以 `resume_checkpoint: True` 不会偷偷加载旧权重；它只用于 300K 评估后继续同一条 seed1 轨迹。结果单独写入 `outputs/ProMoE_TC_B/004_ProMoE_B_seed1_control/`，并在 300K、500K 各生成 50K 图片，按 CFG 1.0/1.5 运行同一 OpenAI FID/IS 评估。
