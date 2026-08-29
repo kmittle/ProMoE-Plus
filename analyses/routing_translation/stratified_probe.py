@@ -50,6 +50,7 @@ SPATIAL_CONTROL_CANDIDATES = 256
 SPATIAL_CONTROL_SEARCH_STEPS = 256
 SPATIAL_CONTROL_MIN_DERANGEMENT = 0.5
 SPATIAL_CONTROL_MAX_ADJACENCY_TV = 0.1
+CONTROL_SEED_HIGH = 2 ** 31
 INTERVENTION_NAMES = (
     "native",
     "noop_native",
@@ -135,7 +136,7 @@ def _build_stratum_routes(
     controls = {}
     control_seeds = torch.randint(
         0,
-        torch.iinfo(torch.int64).max,
+        CONTROL_SEED_HIGH,
         (len(STRATUM_NAMES), 2),
         generator=generator,
         device=generator.device,
@@ -344,6 +345,7 @@ def _spatially_matched_routes(
         "spatial_best_deranged_adjacency_tv": None,
         "spatial_best_deranged_differs_from_content_rate": None,
         "spatial_best_deranged_tv_minus_random": None,
+        "spatial_max_observed_derangement": None,
         "spatial_rejection_counts": {
             "below_minimum_derangement": 0,
             "above_maximum_adjacency_tv": 0,
@@ -480,6 +482,7 @@ def _spatially_matched_routes(
             if best_deranged_tv is not None
             else None
         ),
+        "spatial_max_observed_derangement": float(derangement.max().item()),
         "spatial_rejection_counts": {
             "below_minimum_derangement": int(
                 (~meets_derangement).sum().item()
@@ -998,7 +1001,7 @@ def run_routing_translation_stratified_probe(
     probe_seconds = time.perf_counter() - probe_start
 
     result = {
-        "routing_translation_stratified_probe_version": 5,
+        "routing_translation_stratified_probe_version": 6,
         "diagnostic_scope": (
             "teacher-forced fixed-compute stratum interventions with a spatially "
             "matched wrong-correspondence control; not a FID claim"

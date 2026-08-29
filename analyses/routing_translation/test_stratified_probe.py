@@ -144,6 +144,14 @@ class RoutingTranslationStratifiedProbeTests(unittest.TestCase):
                 short_controls[name]["spatial_control_seed"],
                 long_controls[name]["spatial_control_seed"],
             )
+            self.assertLess(
+                short_controls[name]["random_control_seed"],
+                2 ** 31,
+            )
+            self.assertLess(
+                short_controls[name]["spatial_control_seed"],
+                2 ** 31,
+            )
 
     def test_four_neighbor_histogram_uses_incident_edges(self):
         route = torch.tensor([0, 0, 1, 1])
@@ -212,6 +220,10 @@ class RoutingTranslationStratifiedProbeTests(unittest.TestCase):
         )
         self.assertLessEqual(diagnostics["spatial_unique_candidates"], 256)
         self.assertGreater(diagnostics["spatial_deranged_candidates"], 0)
+        self.assertGreaterEqual(
+            diagnostics["spatial_max_observed_derangement"],
+            diagnostics["spatial_differs_from_content_rate"],
+        )
         self.assertIsNotNone(
             diagnostics["spatial_best_deranged_adjacency_tv"]
         )
