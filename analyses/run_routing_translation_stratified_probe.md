@@ -7,9 +7,14 @@
 - `low_margin` / `high_margin`：按 shifted router 的 top-1/top-2 margin 稳定排序，较低的 `ceil(n/2)` 与较高的 `floor(n/2)` 分开干预；
 - `content_top2` / `content_rank3plus`：按 transported expert 在 shifted router 全部专家中的 rank 分开干预。
 
-每组都只改该组 token 的 expert ID，并与完全相同 changed-token support 和 replacement-expert histogram 的 random route 比较。所有执行保留 shifted input 自己的 router weight，每个 token 仍只计算一个同宽专家。因此 `*_content - *_random` 是固定计算量的主要因果量。
+每组都只改该组 token 的 expert ID，并放入两种错误对应：
 
-如果 `high_margin` 和 `content_rank3plus` 仍稳定优于各自 random control，就不能把问题解释成普通边界平滑；这更接近 prototype score 与 expert utility 的非局部错配。该探针本身不是训练方法，也不能替代 FID/IS 评估。
+- `spatial`：改动位置和替换专家数量完全相同，至少一半专家 ID 与正确内容对应不同，同时从 256 个候选中选择四邻域专家配对最接近正确图的一张；
+- `random`：旧版的完全随机错误对应，仍然匹配改动位置和替换专家数量。
+
+所有执行保留 shifted input 自己的 router weight，每个 token 仍只计算一个同宽专家。新版主要看 `*_content - *_spatial`；`*_content - *_random` 只用于连接旧结果。空间对照只有在四邻域专家配对分布的总变差不超过 0.10、且不差于旧随机图时才算有效。做不到时，该单元记为不可识别，原始 JSON 中对应的 `mse`、`mse_change` 和 `relative_mse_change` 都写成 `null`，不能退回旧随机对照。
+
+如果 `high_margin` 和 `content_rank3plus` 仍稳定优于各自 spatial control，才可以排除“只是连续路由图比打散路由图更好”这一解释。随后仍要检查 RCL 梯度是否强化这些错误，才能把问题归因到 ProMoE 的自分配原型学习。该探针本身不是训练方法，也不能替代 FID/IS 评估。
 
 ```bash
 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 \

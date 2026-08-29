@@ -46,11 +46,15 @@ STRATUM_NAMES = (
     "content_top2",
     "content_rank3plus",
 )
+SPATIAL_CONTROL_CANDIDATES = 256
+SPATIAL_CONTROL_MIN_DERANGEMENT = 0.5
+SPATIAL_CONTROL_MAX_ADJACENCY_TV = 0.1
 INTERVENTION_NAMES = (
     "native",
     "noop_native",
     *(name for stratum in STRATUM_NAMES for name in (
         f"{stratum}_content",
+        f"{stratum}_spatial",
         f"{stratum}_random",
     )),
 )
@@ -123,6 +127,7 @@ def _build_stratum_routes(
     stratum_masks,
     generator,
     num_routed_experts,
+    grid_size,
 ):
     routes = []
     controls = {}
@@ -151,7 +156,27 @@ def _build_stratum_routes(
             raise RuntimeError(
                 f"{name} random control changed the replacement histogram"
             )
-        routes.extend((content_route, random_route))
+        spatial_route, spatial_control = _spatially_matched_routes(
+            native_ids=native_ids,
+            content_ids=content_route,
+            changed_mask=mask,
+            random_ids=random_route,
+            generator=generator,
+            num_routed_experts=num_routed_experts,
+            grid_size=grid_size,
+        )
+        spatial_changed = spatial_route != native_ids
+        spatial_hist = torch.bincount(
+            spatial_route[mask],
+            minlength=num_routed_experts,
+        )
+        if not torch.equal(spatial_changed, mask):
+            raise RuntimeError(f"{name} spatial control changed its support")
+        if not torch.equal(content_hist, spatial_hist):
+            raise RuntimeError(
+                f"{name} spatial control changed the replacement histogram"
+            )
+        routes.extend((content_route, spatial_route, random_route))
         controls[name] = {
             "support_equal": True,
             "replacement_histogram_equal": True,
@@ -166,8 +191,211 @@ def _build_stratum_routes(
                 if random_control_available
                 else None
             ),
+            **spatial_control,
         }
     return routes, controls
+
+
+def _four_neighbor_pair_histograms(
+    route_ids,
+    changed_mask,
+    grid_size,
+    num_routed_experts,
+):
+    if route_ids.ndim == 1:
+        route_ids = route_ids.unsqueeze(0)
+        squeeze = True
+    elif route_ids.ndim == 2:
+        squeeze = False
+    else:
+        raise ValueError("Route IDs must be one route or a batch of routes")
+    if changed_mask.ndim != 1:
+        raise ValueError("Changed mask must be a flat vector")
+    if route_ids.shape[1] != changed_mask.numel():
+        raise ValueError("Route IDs and changed mask must align")
+    if grid_size < 2 or grid_size * grid_size != changed_mask.numel():
+        raise ValueError("Four-neighbor statistics require a square grid")
+    if num_routed_experts < 1:
+        raise ValueError("Number of routed experts must be positive")
+    if route_ids.numel() and (
+        route_ids.min() < 0 or route_ids.max() >= num_routed_experts
+    ):
+        raise ValueError("Route IDs are outside the routed expert range")
+
+    token_grid = torch.arange(
+        changed_mask.numel(),
+        device=changed_mask.device,
+    ).reshape(grid_size, grid_size)
+    left = torch.cat((token_grid[:, :-1].reshape(-1), token_grid[:-1].reshape(-1)))
+    right = torch.cat((token_grid[:, 1:].reshape(-1), token_grid[1:].reshape(-1)))
+    active_edges = changed_mask[left] | changed_mask[right]
+    left = left[active_edges]
+    right = right[active_edges]
+    if left.numel() == 0:
+        raise ValueError("Spatial control needs at least one incident grid edge")
+
+    left_ids = route_ids[:, left]
+    right_ids = route_ids[:, right]
+    pair_ids = (
+        torch.minimum(left_ids, right_ids) * num_routed_experts
+        + torch.maximum(left_ids, right_ids)
+    )
+    histograms = torch.zeros(
+        route_ids.shape[0],
+        num_routed_experts * num_routed_experts,
+        device=route_ids.device,
+        dtype=torch.float64,
+    )
+    histograms.scatter_add_(
+        1,
+        pair_ids,
+        torch.ones_like(pair_ids, dtype=torch.float64),
+    )
+    histograms /= float(left.numel())
+    return histograms[0] if squeeze else histograms
+
+
+def _spatially_matched_routes(
+    native_ids,
+    content_ids,
+    changed_mask,
+    random_ids,
+    generator,
+    num_routed_experts,
+    grid_size,
+    candidate_count=SPATIAL_CONTROL_CANDIDATES,
+    min_derangement=SPATIAL_CONTROL_MIN_DERANGEMENT,
+    max_adjacency_tv=SPATIAL_CONTROL_MAX_ADJACENCY_TV,
+):
+    if not (
+        native_ids.ndim == content_ids.ndim == changed_mask.ndim
+        == random_ids.ndim == 1
+    ):
+        raise ValueError("Spatial control inputs must be flat vectors")
+    if not (
+        native_ids.shape == content_ids.shape == changed_mask.shape
+        == random_ids.shape
+    ):
+        raise ValueError("Spatial control inputs must align")
+    if changed_mask.dtype != torch.bool:
+        raise ValueError("Changed mask must be boolean")
+    if candidate_count < 1:
+        raise ValueError("candidate_count must be positive")
+    if not 0 < min_derangement <= 1:
+        raise ValueError("min_derangement must be in (0, 1]")
+    if not 0 <= max_adjacency_tv <= 1:
+        raise ValueError("max_adjacency_tv must be in [0, 1]")
+    if not torch.equal(changed_mask, native_ids != content_ids):
+        raise ValueError("Changed mask must equal the content disagreement support")
+    if not torch.equal(changed_mask, native_ids != random_ids):
+        raise ValueError("Random control must preserve the disagreement support")
+
+    changed_indices = torch.where(changed_mask)[0]
+    changed_count = int(changed_indices.numel())
+    fallback = content_ids.clone()
+    base_diagnostics = {
+        "spatial_control_available": False,
+        "spatial_candidate_count": int(candidate_count),
+        "spatial_eligible_candidates": 0,
+        "spatial_min_derangement": float(min_derangement),
+        "spatial_max_adjacency_tv": float(max_adjacency_tv),
+        "spatial_differs_from_content_rate": None,
+        "spatial_adjacency_tv": None,
+        "random_adjacency_tv": None,
+        "spatial_not_worse_than_random": None,
+    }
+    if changed_count < 2:
+        return fallback, base_diagnostics
+
+    content_changed = content_ids[changed_indices]
+    native_changed = native_ids[changed_indices]
+    assignments = content_changed.unsqueeze(0).repeat(candidate_count, 1)
+    rows = torch.arange(candidate_count, device=native_ids.device)
+    for _ in range(max(64, changed_count * 8)):
+        pair = torch.randint(
+            changed_count,
+            (candidate_count, 2),
+            generator=generator,
+            device=native_ids.device,
+        )
+        left = pair[:, 0]
+        right = pair[:, 1]
+        left_values = assignments[rows, left]
+        right_values = assignments[rows, right]
+        can_swap = (
+            (left != right)
+            & (left_values != right_values)
+            & (right_values != native_changed[left])
+            & (left_values != native_changed[right])
+        )
+        valid_rows = rows[can_swap]
+        valid_left = left[can_swap]
+        valid_right = right[can_swap]
+        assignments[valid_rows, valid_left] = right_values[can_swap]
+        assignments[valid_rows, valid_right] = left_values[can_swap]
+
+    candidates = native_ids.unsqueeze(0).repeat(candidate_count, 1)
+    candidates[:, changed_indices] = assignments
+    derangement = (assignments != content_changed).double().mean(dim=1)
+    reference_histogram = _four_neighbor_pair_histograms(
+        content_ids,
+        changed_mask,
+        grid_size,
+        num_routed_experts,
+    )
+    candidate_histograms = _four_neighbor_pair_histograms(
+        candidates,
+        changed_mask,
+        grid_size,
+        num_routed_experts,
+    )
+    candidate_tv = 0.5 * (
+        candidate_histograms - reference_histogram.unsqueeze(0)
+    ).abs().sum(dim=1)
+    random_histogram = _four_neighbor_pair_histograms(
+        random_ids,
+        changed_mask,
+        grid_size,
+        num_routed_experts,
+    )
+    random_tv = float(
+        (0.5 * (random_histogram - reference_histogram).abs().sum()).item()
+    )
+    eligible = (
+        (derangement >= min_derangement)
+        & (candidate_tv <= max_adjacency_tv)
+        & (candidate_tv <= random_tv + 1e-12)
+    )
+    eligible_count = int(eligible.sum().item())
+    diagnostics = {
+        **base_diagnostics,
+        "spatial_eligible_candidates": eligible_count,
+        "random_adjacency_tv": random_tv,
+    }
+    if eligible_count == 0:
+        return fallback, diagnostics
+
+    eligible_indices = torch.where(eligible)[0]
+    best_local = torch.argmin(candidate_tv[eligible_indices])
+    best_index = eligible_indices[best_local]
+    spatial_ids = candidates[best_index].clone()
+    spatial_tv = float(candidate_tv[best_index].item())
+    spatial_derangement = float(derangement[best_index].item())
+    diagnostics.update({
+        "spatial_control_available": True,
+        "spatial_differs_from_content_rate": spatial_derangement,
+        "spatial_adjacency_tv": spatial_tv,
+        "spatial_not_worse_than_random": spatial_tv <= random_tv + 1e-12,
+    })
+    return spatial_ids, diagnostics
+
+
+def _redact_unavailable_spatial_metrics(metrics, stratum_controls):
+    redacted = dict(metrics)
+    for stratum in STRATUM_NAMES:
+        if not stratum_controls[stratum]["spatial_control_available"]:
+            redacted[f"{stratum}_spatial"] = None
+    return redacted
 
 
 def _masked_summary(values, mask):
@@ -300,6 +528,7 @@ def _probe_stratified_cell(
         stratum_masks,
         generator,
         num_routed_experts,
+        grid_size,
     )
     route_matrix = torch.stack([
         shifted_ids,
@@ -335,6 +564,15 @@ def _probe_stratified_cell(
         name: float((losses[index] - native_loss).item())
         for index, name in enumerate(INTERVENTION_NAMES)
     }
+    mse = _redact_unavailable_spatial_metrics(mse, stratum_controls)
+    mse_change = _redact_unavailable_spatial_metrics(
+        mse_change,
+        stratum_controls,
+    )
+    relative_mse_change = _redact_unavailable_spatial_metrics(
+        relative_mse_change,
+        stratum_controls,
+    )
 
     unforced_shifted_loss = _per_sample_mse(
         shifted_prediction,
@@ -446,21 +684,33 @@ def _summarize_stratified_records(records):
             record for record in records
             if record["strata"][stratum]["tokens"] > 0
         ]
-        paired = [
+        random_paired = [
             record for record in nonempty
             if record["numerical_controls"]["stratum_random_controls"]
             [stratum]["random_control_available"]
         ]
+        spatial_paired = [
+            record for record in nonempty
+            if record["numerical_controls"]["stratum_random_controls"]
+            [stratum]["spatial_control_available"]
+        ]
         content_key = f"{stratum}_content"
+        spatial_key = f"{stratum}_spatial"
         random_key = f"{stratum}_random"
-        contrasts = np.asarray([
+        random_contrasts = np.asarray([
             record["relative_mse_change"][content_key]
             - record["relative_mse_change"][random_key]
-            for record in paired
+            for record in random_paired
+        ], dtype=np.float64)
+        spatial_contrasts = np.asarray([
+            record["relative_mse_change"][content_key]
+            - record["relative_mse_change"][spatial_key]
+            for record in spatial_paired
         ], dtype=np.float64)
         summary["strata"][stratum] = {
             "nonempty_cells": len(nonempty),
-            "valid_random_control_cells": len(paired),
+            "valid_random_control_cells": len(random_paired),
+            "valid_spatial_control_cells": len(spatial_paired),
             "mean_tokens": (
                 float(np.mean([
                     record["strata"][stratum]["tokens"]
@@ -480,16 +730,30 @@ def _summarize_stratified_records(records):
             "random_mean_relative_mse_change": (
                 float(np.mean([
                     record["relative_mse_change"][random_key]
-                    for record in paired
+                    for record in random_paired
                 ]))
-                if paired
+                if random_paired
+                else None
+            ),
+            "spatial_mean_relative_mse_change": (
+                float(np.mean([
+                    record["relative_mse_change"][spatial_key]
+                    for record in spatial_paired
+                ]))
+                if spatial_paired
                 else None
             ),
             "content_minus_random_mean": (
-                float(contrasts.mean()) if paired else None
+                float(random_contrasts.mean()) if random_paired else None
             ),
             "content_beats_random_rate": (
-                float((contrasts < 0).mean()) if paired else None
+                float((random_contrasts < 0).mean()) if random_paired else None
+            ),
+            "content_minus_spatial_mean": (
+                float(spatial_contrasts.mean()) if spatial_paired else None
+            ),
+            "content_beats_spatial_rate": (
+                float((spatial_contrasts < 0).mean()) if spatial_paired else None
             ),
         }
     return summary
@@ -606,9 +870,10 @@ def run_routing_translation_stratified_probe(
     probe_seconds = time.perf_counter() - probe_start
 
     result = {
-        "routing_translation_stratified_probe_version": 1,
+        "routing_translation_stratified_probe_version": 2,
         "diagnostic_scope": (
-            "teacher-forced fixed-compute stratum interventions; not a FID claim"
+            "teacher-forced fixed-compute stratum interventions with a spatially "
+            "matched wrong-correspondence control; not a FID claim"
         ),
         "stratum_definition": {
             "low_margin": (
@@ -628,6 +893,17 @@ def run_routing_translation_stratified_probe(
             "change only one pre-router stratum at one MoE block; preserve the "
             "shifted input's router weights and top-1 expert compute"
         ),
+        "spatial_control": {
+            "candidate_count": SPATIAL_CONTROL_CANDIDATES,
+            "minimum_derangement": SPATIAL_CONTROL_MIN_DERANGEMENT,
+            "maximum_four_neighbor_pair_tv": (
+                SPATIAL_CONTROL_MAX_ADJACENCY_TV
+            ),
+            "edge_scope": (
+                "horizontal and vertical token-grid edges incident to the "
+                "intervened stratum"
+            ),
+        },
         "checkpoint": str(checkpoint_path),
         "weights_checkpoint": str(weights_checkpoint_path),
         "checkpoint_step": checkpoint_step,
