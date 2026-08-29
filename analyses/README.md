@@ -34,6 +34,7 @@ Each Python entrypoint in this directory has a matching Markdown guide with the 
 - [`run_fresh_base_routing_audit.py`](run_fresh_base_routing_audit.py): sealed 50K/100K/150K/200K audit of routing accuracy, exact expert-count-preserving reassignment, and phase-dependent expert utility on one fresh-from-zero Base trajectory. See [`run_fresh_base_routing_audit.md`](run_fresh_base_routing_audit.md).
 - [`run_finite_horizon_routing_probe.py`](run_finite_horizon_routing_probe.py): compares immediate and 1/2/4/8-step utility of exact-count-preserving expert swaps. See [`run_finite_horizon_routing_probe.md`](run_finite_horizon_routing_probe.md).
 - [`run_finite_horizon_routing_probe_batch.py`](run_finite_horizon_routing_probe_batch.py): sealed plumbing/discovery/confirmation gate with image-cluster bootstrap and within-cell candidate-label permutation. See [`run_finite_horizon_routing_probe_batch.md`](run_finite_horizon_routing_probe_batch.md).
+- [`run_rcl_responsibility_probe_batch.py`](run_rcl_responsibility_probe_batch.py): sealed support/query gate for testing whether ProMoE's direct RCL prototype update improves held-out grouping while harming tied routed responsibility. See [`run_rcl_responsibility_probe_batch.md`](run_rcl_responsibility_probe_batch.md).
 
 ## Shared Modules
 
@@ -48,3 +49,4 @@ Phase-default helpers live in [`analyses/phase_default/`](phase_default/), inclu
 Phase-Metric checkpoint-gate helpers live in [`analyses/routing_metric/`](routing_metric/), including factorial router overrides, fixed-weight route counterfactuals, image-level bootstrap gates, and split-lock tests.
 Fresh Base longitudinal-audit helpers live in [`analyses/fresh_base_routing/`](fresh_base_routing/), including deterministic held-out selection, provenance sealing, multi-GPU execution, and cross-checkpoint decisions.
 Finite-horizon routing helpers live in [`analyses/finite_horizon_routing/`](finite_horizon_routing/), including the locked Euler schedule, exact-count swap validation, paired rollouts, and immediate-versus-future rank statistics.
+RCL-responsibility helpers live in [`analyses/affinity_responsibility/`](affinity_responsibility/), including deterministic four-rank support selection, DDP-mean direct prototype gradients, fixed-dispatch exact MSE interventions, image-level gates, and sealed multi-GPU execution.

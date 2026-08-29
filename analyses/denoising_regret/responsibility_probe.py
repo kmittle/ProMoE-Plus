@@ -216,9 +216,41 @@ def summarize_global_records(records, candidate_scales):
     }
 
 
+def _validate_expected_expert_indices(expected_expert_indices, name):
+    if expected_expert_indices is None:
+        return None
+    expected_expert_indices = torch.as_tensor(
+        expected_expert_indices,
+        dtype=torch.long,
+    )
+    if expected_expert_indices.ndim != 1:
+        raise ValueError(f"{name} must be a one-dimensional expert-index vector")
+    return expected_expert_indices
+
+
+def _record_dispatch_mismatches(dispatch_statistics, mismatch_count):
+    if dispatch_statistics is None:
+        return
+    if not isinstance(dispatch_statistics, dict):
+        raise TypeError("dispatch_statistics must be a mutable mapping")
+    dispatch_statistics["fixed_dispatch_mismatches"] = int(
+        dispatch_statistics.get("fixed_dispatch_mismatches", 0)
+    ) + int(mismatch_count)
+
+
 @contextmanager
-def _forced_token_route_weights(moe_layer, token_indices, route_weights):
+def _forced_token_route_weights(
+    moe_layer,
+    token_indices,
+    route_weights,
+    expected_expert_indices=None,
+    dispatch_statistics=None,
+):
     original_compute_router = moe_layer.compute_router
+    expected_expert_indices = _validate_expected_expert_indices(
+        expected_expert_indices,
+        "expected_expert_indices",
+    )
 
     def compute_router_with_override(
         this,
@@ -241,6 +273,23 @@ def _forced_token_route_weights(moe_layer, token_indices, route_weights):
             )
         if weights.shape[-1] != 1:
             raise RuntimeError("Responsibility overrides require top_k == 1")
+        if expected_expert_indices is not None:
+            if expected_expert_indices.numel() != token_indices.numel():
+                raise ValueError(
+                    "expected_expert_indices must align with token_indices"
+                )
+            observed_indices = indices[:, token_indices, 0]
+            expected_indices = expected_expert_indices.to(
+                device=observed_indices.device,
+            ).unsqueeze(0).expand_as(observed_indices)
+            mismatch_count = int(
+                (observed_indices != expected_indices).sum().item()
+            )
+            _record_dispatch_mismatches(dispatch_statistics, mismatch_count)
+            if mismatch_count:
+                raise RuntimeError(
+                    "Scale intervention changed the native expert IDs"
+                )
         rows = torch.arange(hidden_states.shape[0], device=hidden_states.device)
         if route_weights is None:
             current_weights = weights[rows, token_indices, 0].clone()
@@ -262,8 +311,17 @@ def _forced_token_route_weights(moe_layer, token_indices, route_weights):
 
 
 @contextmanager
-def _forced_route_weight_matrix(moe_layer, route_weight_matrix):
+def _forced_route_weight_matrix(
+    moe_layer,
+    route_weight_matrix,
+    expected_expert_indices=None,
+    dispatch_statistics=None,
+):
     original_compute_router = moe_layer.compute_router
+    expected_expert_indices = _validate_expected_expert_indices(
+        expected_expert_indices,
+        "expected_expert_indices",
+    )
 
     def compute_router_with_override(
         this,
@@ -282,6 +340,23 @@ def _forced_route_weight_matrix(moe_layer, route_weight_matrix):
         weights, indices, auxiliary_loss = router_result
         if weights.shape[-1] != 1:
             raise RuntimeError("Responsibility overrides require top_k == 1")
+        if expected_expert_indices is not None:
+            if expected_expert_indices.numel() != indices.shape[1]:
+                raise ValueError(
+                    "expected_expert_indices must match the route sequence length"
+                )
+            observed_indices = indices[:, :, 0]
+            expected_indices = expected_expert_indices.to(
+                device=observed_indices.device,
+            ).unsqueeze(0).expand_as(observed_indices)
+            mismatch_count = int(
+                (observed_indices != expected_indices).sum().item()
+            )
+            _record_dispatch_mismatches(dispatch_statistics, mismatch_count)
+            if mismatch_count:
+                raise RuntimeError(
+                    "Scale intervention changed the native expert IDs"
+                )
         if route_weight_matrix is not None and weights.shape[:2] != route_weight_matrix.shape:
             raise RuntimeError(
                 "Forced route-weight matrix must match batch and sequence dimensions"
@@ -315,6 +390,8 @@ def _exact_token_weight_changes(
     token_indices,
     route_weights,
     batch_size,
+    expected_expert_indices=None,
+    dispatch_statistics=None,
 ):
     changes = []
     target_channels = target.shape[1]
@@ -339,6 +416,12 @@ def _exact_token_weight_changes(
                 moe_layer,
                 token_indices[start:stop],
                 chunk_route_weights,
+                expected_expert_indices=(
+                    None
+                    if expected_expert_indices is None
+                    else expected_expert_indices[start:stop]
+                ),
+                dispatch_statistics=dispatch_statistics,
             ):
                 alternative_output = model(
                     batch_latent,
@@ -366,6 +449,8 @@ def _exact_global_weight_changes(
     target,
     route_weight_matrix,
     batch_size,
+    expected_expert_indices=None,
+    dispatch_statistics=None,
 ):
     changes = []
     target_channels = target.shape[1]
@@ -390,6 +475,8 @@ def _exact_global_weight_changes(
             with _forced_route_weight_matrix(
                 moe_layer,
                 chunk_route_weight_matrix,
+                expected_expert_indices=expected_expert_indices,
+                dispatch_statistics=dispatch_statistics,
             ):
                 alternative_output = model(
                     batch_latent,

@@ -30,6 +30,8 @@ ProMoE 的分配员在当前去噪步给每位专家打分。但生成图片不�
 | [REFLEX](https://arxiv.org/abs/2608.01784) 和 [TEAM](https://arxiv.org/abs/2602.08404) | 已在扩散语言模型中按去噪进展分配专家计算，并利用相邻去噪步的路由一致性 | 即使对象不是图像，也不能把时间一致性或按去噪进展分配计算本身说成新想法 |
 | [ERMoE](https://arxiv.org/abs/2511.10971) | 把路由分数直接绑定到专家学到的子空间 | 不能只把 prototype 换成专家权重或专家子空间的相似度 |
 | [FreqOrtho-SR](https://arxiv.org/abs/2606.28745) | 在扩散超分中让多位专家学习互补的正交方向 | 不能只加普通正交约束，就声称解决了专家解耦 |
+| [Routers Learn the Geometry of Their Experts](https://arxiv.org/abs/2605.12476) | 证明普通稀疏 MoE 中，router 和被选专家会沿同一个 token 方向收到梯度；还比较了在线 K-Means router | 不能把“prototype 跟着已分配 token 的均值移动”或“router 应贴近 expert 几何”当作新贡献 |
+| [Beyond Routing](https://arxiv.org/abs/2608.08853) | 在 Top-8 和 Top-6 语言 MoE 中把“选谁”和“选中后给多大权重”分开，并训练额外聚合头 | 不能把 dispatch/aggregation 解耦、固定专家后的权重 oracle，或额外 aggregation head 当作新贡献 |
 
 DDPO、DPOK 和 DrAFT-K 等扩散强化学习工作也已经研究最终奖励、截断反传和多步信用。仅仅把它们的动作换成专家编号，不够支撑 TPAMI 扩展。
 
@@ -81,3 +83,15 @@ DDPO、DPOK 和 DrAFT-K 等扩散强化学习工作也已经研究最终奖励�
 - 给专家输出或权重加一个通用正交损失。
 
 这些做法分别与 SharpMoE、边界平滑、MoE-GRPO、TreeGRPO、ERMoE 或 FreqOrtho-SR 太接近。下一步只有在解释出 ProMoE 自身特有的机制，并能设计“正确依据”和“打乱依据”两条等成本对照后，才值得实现。
+
+## 文献更新后的判断
+
+`Beyond Routing` 让“同一个 router 分数不该同时负责选专家和加权专家”这句话本身不再新。它没有实验 Top-1，也没有研究图像扩散，但只把它搬到 ProMoE 上仍然是换模型复现，不足以成为 TPAMI 方法。
+
+ProMoE 还剩一个更具体、可以被否证的问题：RCL 会根据 router 自己当前的分组，把 prototype 拉向这一组 token 的均值；同一个 prototype cosine 又直接乘在 routed expert 输出上。于是，一个本来只想整理分组的辅助损失，可能顺手改变 shared expert 和 routed expert 的责任比例，而且这个改变未必降低去噪损失。
+
+这个问题与两篇近邻的差别是：
+
+1. `Routers Learn the Geometry of Their Experts` 研究任务损失怎样让普通 router 和 expert 形成共同几何；这里检查的是 ProMoE 额外 RCL 梯度是否与去噪责任方向冲突。
+2. `Beyond Routing` 证明预训练语言 MoE 的多专家聚合权重可以改进；这里不先添加聚合头，而是检查 Top-1、shared+routed ProMoE 中，现有 RCL 是否正通过同一个 cosine 造成副作用。
+3. 即便这个检查通过，也不能直接声称方法创新。最直接的独立 aggregation head 已被近邻覆盖。后续方法必须利用 ProMoE 的自分组 prototype、去噪责任和专家学习之间的特有关系，并做正确分组与打乱分组的从头训练对照。
