@@ -158,6 +158,11 @@ class RoutingTranslationStratifiedProbeTests(unittest.TestCase):
             diagnostics["random_adjacency_tv"] + 1e-12,
         )
         self.assertEqual(diagnostics["spatial_evaluated_candidates"], 256)
+        self.assertEqual(diagnostics["spatial_search_steps"], 256)
+        self.assertEqual(
+            diagnostics["spatial_search_strategy"],
+            "reach_minimum_derangement_then_nonincreasing_adjacency_tv",
+        )
         self.assertLessEqual(diagnostics["spatial_unique_candidates"], 256)
         self.assertGreater(diagnostics["spatial_deranged_candidates"], 0)
         self.assertIsNotNone(
@@ -191,6 +196,30 @@ class RoutingTranslationStratifiedProbeTests(unittest.TestCase):
             "fewer_than_two_changed_tokens",
         )
 
+    def test_minimum_mismatches_matches_the_final_ratio_comparison(self):
+        native = torch.full((4,), 2, dtype=torch.long)
+        content = torch.tensor([0, 0, 1, 1])
+        changed = native != content
+        random_route, _, _ = _random_matched_routes(
+            native,
+            content,
+            changed,
+            torch.Generator().manual_seed(5),
+        )
+        _, diagnostics = _spatially_matched_routes(
+            native_ids=native,
+            content_ids=content,
+            changed_mask=changed,
+            random_ids=random_route,
+            generator=torch.Generator().manual_seed(7),
+            num_routed_experts=3,
+            grid_size=2,
+            candidate_count=1,
+            search_steps=1,
+            min_derangement=0.5000000000000001,
+        )
+        self.assertEqual(diagnostics["spatial_minimum_mismatches"], 3)
+
     def test_unavailable_spatial_control_never_exposes_random_metrics(self):
         native = torch.tensor([0, 0, 1, 2])
         content = torch.tensor([1, 2, 1, 2])
@@ -206,12 +235,14 @@ class RoutingTranslationStratifiedProbeTests(unittest.TestCase):
             num_routed_experts=3,
             grid_size=2,
             candidate_count=1,
+            search_steps=1,
             min_derangement=1.0,
             max_adjacency_tv=0.0,
         )
         self.assertFalse(diagnostics["spatial_control_available"])
         self.assertTrue(torch.equal(spatial_route, content))
         self.assertEqual(diagnostics["spatial_evaluated_candidates"], 1)
+        self.assertEqual(diagnostics["spatial_search_steps"], 1)
         self.assertEqual(
             sum(diagnostics["spatial_rejection_counts"].values())
             + diagnostics["spatial_eligible_candidates"],

@@ -47,6 +47,7 @@ STRATUM_NAMES = (
     "content_rank3plus",
 )
 SPATIAL_CONTROL_CANDIDATES = 256
+SPATIAL_CONTROL_SEARCH_STEPS = 256
 SPATIAL_CONTROL_MIN_DERANGEMENT = 0.5
 SPATIAL_CONTROL_MAX_ADJACENCY_TV = 0.1
 INTERVENTION_NAMES = (
@@ -264,6 +265,7 @@ def _spatially_matched_routes(
     num_routed_experts,
     grid_size,
     candidate_count=SPATIAL_CONTROL_CANDIDATES,
+    search_steps=SPATIAL_CONTROL_SEARCH_STEPS,
     min_derangement=SPATIAL_CONTROL_MIN_DERANGEMENT,
     max_adjacency_tv=SPATIAL_CONTROL_MAX_ADJACENCY_TV,
 ):
@@ -281,6 +283,8 @@ def _spatially_matched_routes(
         raise ValueError("Changed mask must be boolean")
     if candidate_count < 1:
         raise ValueError("candidate_count must be positive")
+    if search_steps < 1:
+        raise ValueError("search_steps must be positive")
     if not 0 < min_derangement <= 1:
         raise ValueError("min_derangement must be in (0, 1]")
     if not 0 <= max_adjacency_tv <= 1:
@@ -292,15 +296,29 @@ def _spatially_matched_routes(
 
     changed_indices = torch.where(changed_mask)[0]
     changed_count = int(changed_indices.numel())
+    minimum_mismatches = (
+        next(
+            count
+            for count in range(changed_count + 1)
+            if count / changed_count >= min_derangement
+        )
+        if changed_count
+        else 0
+    )
     fallback = content_ids.clone()
     base_diagnostics = {
         "spatial_control_available": False,
         "spatial_candidate_count": int(candidate_count),
+        "spatial_search_steps": int(search_steps),
+        "spatial_search_strategy": (
+            "reach_minimum_derangement_then_nonincreasing_adjacency_tv"
+        ),
         "spatial_evaluated_candidates": 0,
         "spatial_unique_candidates": 0,
         "spatial_deranged_candidates": 0,
         "spatial_eligible_candidates": 0,
         "spatial_min_derangement": float(min_derangement),
+        "spatial_minimum_mismatches": int(minimum_mismatches),
         "spatial_max_adjacency_tv": float(max_adjacency_tv),
         "spatial_differs_from_content_rate": None,
         "spatial_adjacency_tv": None,
@@ -324,9 +342,26 @@ def _spatially_matched_routes(
 
     content_changed = content_ids[changed_indices]
     native_changed = native_ids[changed_indices]
+    reference_histogram = _four_neighbor_pair_histograms(
+        content_ids,
+        changed_mask,
+        grid_size,
+        num_routed_experts,
+    )
+
     assignments = content_changed.unsqueeze(0).repeat(candidate_count, 1)
     rows = torch.arange(candidate_count, device=native_ids.device)
-    for _ in range(max(64, changed_count * 8)):
+    candidate_tv = torch.zeros(
+        candidate_count,
+        device=native_ids.device,
+        dtype=torch.float64,
+    )
+    mismatch_counts = torch.zeros(
+        candidate_count,
+        device=native_ids.device,
+        dtype=torch.long,
+    )
+    for _ in range(search_steps):
         pair = torch.randint(
             changed_count,
             (candidate_count, 2),
@@ -346,27 +381,47 @@ def _spatially_matched_routes(
         valid_rows = rows[can_swap]
         valid_left = left[can_swap]
         valid_right = right[can_swap]
-        assignments[valid_rows, valid_left] = right_values[can_swap]
-        assignments[valid_rows, valid_right] = left_values[can_swap]
+        proposed_assignments = assignments.clone()
+        proposed_assignments[valid_rows, valid_left] = right_values[can_swap]
+        proposed_assignments[valid_rows, valid_right] = left_values[can_swap]
+
+        proposed_candidates = native_ids.unsqueeze(0).repeat(
+            candidate_count,
+            1,
+        )
+        proposed_candidates[:, changed_indices] = proposed_assignments
+        proposed_histograms = _four_neighbor_pair_histograms(
+            proposed_candidates,
+            changed_mask,
+            grid_size,
+            num_routed_experts,
+        )
+        proposed_tv = 0.5 * (
+            proposed_histograms - reference_histogram.unsqueeze(0)
+        ).abs().sum(dim=1)
+        proposed_mismatch_counts = (
+            proposed_assignments != content_changed.unsqueeze(0)
+        ).sum(dim=1)
+
+        below_minimum = mismatch_counts < minimum_mismatches
+        reaches_or_approaches_minimum = (
+            proposed_mismatch_counts >= mismatch_counts
+        )
+        stays_deranged_and_improves_tv = (
+            (proposed_mismatch_counts >= minimum_mismatches)
+            & (proposed_tv <= candidate_tv + 1e-12)
+        )
+        accept = can_swap & (
+            (below_minimum & reaches_or_approaches_minimum)
+            | (~below_minimum & stays_deranged_and_improves_tv)
+        )
+        assignments[accept] = proposed_assignments[accept]
+        candidate_tv[accept] = proposed_tv[accept]
+        mismatch_counts[accept] = proposed_mismatch_counts[accept]
 
     candidates = native_ids.unsqueeze(0).repeat(candidate_count, 1)
     candidates[:, changed_indices] = assignments
     derangement = (assignments != content_changed).double().mean(dim=1)
-    reference_histogram = _four_neighbor_pair_histograms(
-        content_ids,
-        changed_mask,
-        grid_size,
-        num_routed_experts,
-    )
-    candidate_histograms = _four_neighbor_pair_histograms(
-        candidates,
-        changed_mask,
-        grid_size,
-        num_routed_experts,
-    )
-    candidate_tv = 0.5 * (
-        candidate_histograms - reference_histogram.unsqueeze(0)
-    ).abs().sum(dim=1)
     random_histogram = _four_neighbor_pair_histograms(
         random_ids,
         changed_mask,
@@ -926,7 +981,7 @@ def run_routing_translation_stratified_probe(
     probe_seconds = time.perf_counter() - probe_start
 
     result = {
-        "routing_translation_stratified_probe_version": 3,
+        "routing_translation_stratified_probe_version": 4,
         "diagnostic_scope": (
             "teacher-forced fixed-compute stratum interventions with a spatially "
             "matched wrong-correspondence control; not a FID claim"
@@ -951,6 +1006,12 @@ def run_routing_translation_stratified_probe(
         ),
         "spatial_control": {
             "candidate_count": SPATIAL_CONTROL_CANDIDATES,
+            "search_steps_per_candidate": SPATIAL_CONTROL_SEARCH_STEPS,
+            "search_strategy": (
+                "start from the content correspondence, use support-safe "
+                "histogram-preserving swaps to reach the minimum derangement, "
+                "then accept only nonincreasing adjacency TV"
+            ),
             "minimum_derangement": SPATIAL_CONTROL_MIN_DERANGEMENT,
             "maximum_four_neighbor_pair_tv": (
                 SPATIAL_CONTROL_MAX_ADJACENCY_TV
