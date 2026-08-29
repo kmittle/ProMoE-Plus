@@ -34,6 +34,7 @@ from analyses.finite_horizon_routing.probe import (
     _verified_checkpoint_for_loading,
     _verified_latent_for_loading,
 )
+from analyses.finite_horizon_routing.runner import _torch_load_handle
 from analyses.t_SNE.checkpoint_utils import (
     load_runtime_cfg,
     parse_checkpoint_step,
@@ -126,15 +127,7 @@ def _validate_probe_contract(model, runtime_cfg, block_indices):
 def _load_online_checkpoint_model(runtime_cfg, checkpoint_handle, device):
     model = _build_model(runtime_cfg)
     load_start = time.perf_counter()
-    load_kwargs = {"map_location": "cpu", "weights_only": True}
-    checkpoint_handle.seek(0)
-    try:
-        checkpoint = torch.load(checkpoint_handle, **load_kwargs)
-    except TypeError:
-        load_kwargs.pop("weights_only")
-        checkpoint_handle.seek(0)
-        checkpoint = torch.load(checkpoint_handle, **load_kwargs)
-    checkpoint_handle.seek(0)
+    checkpoint = _torch_load_handle(checkpoint_handle)
     if ONLINE_CHECKPOINT_STATE not in checkpoint:
         raise KeyError(f"Checkpoint is missing {ONLINE_CHECKPOINT_STATE}")
     checkpoint_step = checkpoint.get("step")

@@ -1,6 +1,7 @@
 """Tests for sealed stage execution and cross-process locking."""
 
 import json
+import io
 import os
 import signal
 import tempfile
@@ -11,6 +12,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import torch
+from easydict import EasyDict
+from torch.torch_version import TorchVersion
 
 from analyses.finite_horizon_routing.runner import (
     LOCKED_BRANCH,
@@ -74,6 +77,24 @@ class SealedResultTest(unittest.TestCase):
                         {"protocol_sha256": "b" * 64},
                         "discovery",
                     )
+
+
+class CheckpointLoadCompatibilityTest(unittest.TestCase):
+    def test_restricted_loader_allows_project_metadata_types(self):
+        from analyses.finite_horizon_routing.runner import _torch_load_handle
+
+        payload = {
+            "cfg": EasyDict({"model_name": "ProMoE_TC_B"}),
+            "torch_version": TorchVersion(str(torch.__version__)),
+            "tensor": torch.ones(2),
+        }
+        buffer = io.BytesIO()
+        torch.save(payload, buffer)
+        loaded = _torch_load_handle(buffer)
+        self.assertIsInstance(loaded["cfg"], dict)
+        self.assertEqual(loaded["cfg"]["model_name"], "ProMoE_TC_B")
+        self.assertEqual(str(loaded["torch_version"]), str(torch.__version__))
+        torch.testing.assert_close(loaded["tensor"], payload["tensor"])
 
 
 class ProtocolRebuildTest(unittest.TestCase):

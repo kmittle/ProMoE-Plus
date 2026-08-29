@@ -221,11 +221,41 @@ def _file_identity(path, description, expected_sha256=None):
         }
 
 
+@contextmanager
+def _checkpoint_safe_globals():
+    """Allow only metadata classes used by this project's trusted checkpoints.
+
+    PyTorch 2.6 defaults to ``weights_only=True``.  ProMoE checkpoints contain
+    an ``EasyDict`` configuration and a ``TorchVersion`` metadata value in
+    addition to tensors, so the default restricted unpickler needs these two
+    explicitly scoped types.  The caller has already opened and hashed a
+    stable regular file before entering this context.
+    """
+
+    safe_globals = getattr(getattr(torch, "serialization", None), "safe_globals", None)
+    if safe_globals is None:
+        yield
+        return
+
+    try:
+        from easydict import EasyDict
+        from torch.torch_version import TorchVersion
+    except ImportError as error:
+        raise RuntimeError(
+            "The restricted checkpoint loader cannot import its locked "
+            "metadata types"
+        ) from error
+
+    with safe_globals([EasyDict, TorchVersion]):
+        yield
+
+
 def _torch_load_handle(handle):
     load_kwargs = {"map_location": "cpu", "weights_only": True}
     handle.seek(0)
     try:
-        checkpoint = torch.load(handle, **load_kwargs)
+        with _checkpoint_safe_globals():
+            checkpoint = torch.load(handle, **load_kwargs)
     except TypeError:
         load_kwargs.pop("weights_only")
         handle.seek(0)
