@@ -296,6 +296,9 @@ def _spatially_matched_routes(
     base_diagnostics = {
         "spatial_control_available": False,
         "spatial_candidate_count": int(candidate_count),
+        "spatial_evaluated_candidates": 0,
+        "spatial_unique_candidates": 0,
+        "spatial_deranged_candidates": 0,
         "spatial_eligible_candidates": 0,
         "spatial_min_derangement": float(min_derangement),
         "spatial_max_adjacency_tv": float(max_adjacency_tv),
@@ -303,8 +306,20 @@ def _spatially_matched_routes(
         "spatial_adjacency_tv": None,
         "random_adjacency_tv": None,
         "spatial_not_worse_than_random": None,
+        "spatial_best_deranged_adjacency_tv": None,
+        "spatial_best_deranged_differs_from_content_rate": None,
+        "spatial_best_deranged_tv_minus_random": None,
+        "spatial_rejection_counts": {
+            "below_minimum_derangement": 0,
+            "above_maximum_adjacency_tv": 0,
+            "worse_than_random": 0,
+        },
+        "spatial_unavailable_reason": None,
     }
     if changed_count < 2:
+        base_diagnostics["spatial_unavailable_reason"] = (
+            "fewer_than_two_changed_tokens"
+        )
         return fallback, base_diagnostics
 
     content_changed = content_ids[changed_indices]
@@ -361,18 +376,58 @@ def _spatially_matched_routes(
     random_tv = float(
         (0.5 * (random_histogram - reference_histogram).abs().sum()).item()
     )
-    eligible = (
-        (derangement >= min_derangement)
-        & (candidate_tv <= max_adjacency_tv)
-        & (candidate_tv <= random_tv + 1e-12)
-    )
+    meets_derangement = derangement >= min_derangement
+    meets_max_tv = candidate_tv <= max_adjacency_tv
+    not_worse_than_random = candidate_tv <= random_tv + 1e-12
+    eligible = meets_derangement & meets_max_tv & not_worse_than_random
     eligible_count = int(eligible.sum().item())
+    deranged_indices = torch.where(meets_derangement)[0]
+    if deranged_indices.numel():
+        best_deranged_local = torch.argmin(candidate_tv[deranged_indices])
+        best_deranged_index = deranged_indices[best_deranged_local]
+        best_deranged_tv = float(candidate_tv[best_deranged_index].item())
+        best_deranged_rate = float(derangement[best_deranged_index].item())
+    else:
+        best_deranged_tv = None
+        best_deranged_rate = None
     diagnostics = {
         **base_diagnostics,
+        "spatial_evaluated_candidates": int(candidate_count),
+        "spatial_unique_candidates": int(
+            torch.unique(assignments, dim=0).shape[0]
+        ),
+        "spatial_deranged_candidates": int(meets_derangement.sum().item()),
         "spatial_eligible_candidates": eligible_count,
         "random_adjacency_tv": random_tv,
+        "spatial_best_deranged_adjacency_tv": best_deranged_tv,
+        "spatial_best_deranged_differs_from_content_rate": (
+            best_deranged_rate
+        ),
+        "spatial_best_deranged_tv_minus_random": (
+            best_deranged_tv - random_tv
+            if best_deranged_tv is not None
+            else None
+        ),
+        "spatial_rejection_counts": {
+            "below_minimum_derangement": int(
+                (~meets_derangement).sum().item()
+            ),
+            "above_maximum_adjacency_tv": int(
+                (meets_derangement & ~meets_max_tv).sum().item()
+            ),
+            "worse_than_random": int(
+                (
+                    meets_derangement
+                    & meets_max_tv
+                    & ~not_worse_than_random
+                ).sum().item()
+            ),
+        },
     }
     if eligible_count == 0:
+        diagnostics["spatial_unavailable_reason"] = (
+            "no_candidate_met_all_constraints"
+        )
         return fallback, diagnostics
 
     eligible_indices = torch.where(eligible)[0]
@@ -386,6 +441,7 @@ def _spatially_matched_routes(
         "spatial_differs_from_content_rate": spatial_derangement,
         "spatial_adjacency_tv": spatial_tv,
         "spatial_not_worse_than_random": spatial_tv <= random_tv + 1e-12,
+        "spatial_unavailable_reason": None,
     })
     return spatial_ids, diagnostics
 
@@ -870,7 +926,7 @@ def run_routing_translation_stratified_probe(
     probe_seconds = time.perf_counter() - probe_start
 
     result = {
-        "routing_translation_stratified_probe_version": 2,
+        "routing_translation_stratified_probe_version": 3,
         "diagnostic_scope": (
             "teacher-forced fixed-compute stratum interventions with a spatially "
             "matched wrong-correspondence control; not a FID claim"
@@ -902,6 +958,12 @@ def run_routing_translation_stratified_probe(
             "edge_scope": (
                 "horizontal and vertical token-grid edges incident to the "
                 "intervened stratum"
+            ),
+            "reachability_diagnostics": (
+                "report evaluated and unique candidates, candidates meeting "
+                "the minimum derangement, the best deranged adjacency TV, and "
+                "mutually exclusive rejection counts without relaxing any "
+                "acceptance threshold"
             ),
         },
         "checkpoint": str(checkpoint_path),

@@ -157,6 +157,18 @@ class RoutingTranslationStratifiedProbeTests(unittest.TestCase):
             diagnostics["spatial_adjacency_tv"],
             diagnostics["random_adjacency_tv"] + 1e-12,
         )
+        self.assertEqual(diagnostics["spatial_evaluated_candidates"], 256)
+        self.assertLessEqual(diagnostics["spatial_unique_candidates"], 256)
+        self.assertGreater(diagnostics["spatial_deranged_candidates"], 0)
+        self.assertIsNotNone(
+            diagnostics["spatial_best_deranged_adjacency_tv"]
+        )
+        self.assertEqual(
+            sum(diagnostics["spatial_rejection_counts"].values())
+            + diagnostics["spatial_eligible_candidates"],
+            diagnostics["spatial_evaluated_candidates"],
+        )
+        self.assertIsNone(diagnostics["spatial_unavailable_reason"])
 
     def test_spatial_control_marks_single_changed_token_unavailable(self):
         native = torch.zeros(4, dtype=torch.long)
@@ -173,6 +185,11 @@ class RoutingTranslationStratifiedProbeTests(unittest.TestCase):
         )
         self.assertFalse(diagnostics["spatial_control_available"])
         self.assertTrue(torch.equal(spatial_route, content))
+        self.assertEqual(diagnostics["spatial_evaluated_candidates"], 0)
+        self.assertEqual(
+            diagnostics["spatial_unavailable_reason"],
+            "fewer_than_two_changed_tokens",
+        )
 
     def test_unavailable_spatial_control_never_exposes_random_metrics(self):
         native = torch.tensor([0, 0, 1, 2])
@@ -194,6 +211,25 @@ class RoutingTranslationStratifiedProbeTests(unittest.TestCase):
         )
         self.assertFalse(diagnostics["spatial_control_available"])
         self.assertTrue(torch.equal(spatial_route, content))
+        self.assertEqual(diagnostics["spatial_evaluated_candidates"], 1)
+        self.assertEqual(
+            sum(diagnostics["spatial_rejection_counts"].values())
+            + diagnostics["spatial_eligible_candidates"],
+            1,
+        )
+        self.assertEqual(
+            diagnostics["spatial_unavailable_reason"],
+            "no_candidate_met_all_constraints",
+        )
+        if diagnostics["spatial_deranged_candidates"]:
+            self.assertIsNotNone(
+                diagnostics["spatial_best_deranged_adjacency_tv"]
+            )
+            self.assertAlmostEqual(
+                diagnostics["spatial_best_deranged_tv_minus_random"],
+                diagnostics["spatial_best_deranged_adjacency_tv"]
+                - diagnostics["random_adjacency_tv"],
+            )
 
         controls = {
             name: {"spatial_control_available": name != "high_margin"}
