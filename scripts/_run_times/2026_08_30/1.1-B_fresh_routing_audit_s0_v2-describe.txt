@@ -1,0 +1,8 @@
+实验 / Experiment: 1.1-B_fresh_routing_audit_s0_v2
+model_name: ProMoE_TC_B  |  config: configs/004_ProMoE_B_fresh_routing_audit_s0_v2.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分流、静态 cluster_centers、top-1 cosine 路由、shared expert 和 routing contrastive guidance）；直接父变体 / Parent: 原 fresh routing audit seed0 control（模型机制相同）。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 这是与原 seed0 control 分开的全新 clean from-scratch 轨迹；模型仍是注册的 `ProMoE_TC_B`，没有加入新的路由或表征对齐机制，用来隔离训练提交变化对结果的影响。
+2. 使用新的 `_v2` 配置名和空的输出桶；严格 provenance 会在 step 0 记录当前已推送的 Git 提交、关键训练源码、实际配置、环境和 GPU 信息，避免旧 300K checkpoint 被误恢复。
+3. 保持公平设置不变：global batch 256、learning rate `1e-4`、16 个 data workers、GPU 0-3、总训练 501K steps，并在 300K/500K 用 CFG 1.0/1.5 各生成 50K 图片，沿用 OpenAI evaluator 协议。
