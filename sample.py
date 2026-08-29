@@ -25,9 +25,58 @@ from tqdm import tqdm
 import math
 import inspect
 from concurrent.futures import ThreadPoolExecutor
-from utils import InceptionV3, deep_update, find_free_port, load_vae, str_to_float_list, str_to_int_list
+from utils import (
+    InceptionV3,
+    deep_update,
+    find_free_port,
+    load_vae,
+    str_to_float_list,
+    str_to_int_list,
+)
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+
+
+def _load_project_checkpoint(path_or_file, map_location='cpu'):
+    """Load a project checkpoint across PyTorch checkpoint-loading APIs."""
+
+    try:
+        supports_weights_only = 'weights_only' in inspect.signature(
+            torch.load
+        ).parameters
+    except (TypeError, ValueError):
+        supports_weights_only = True
+    load_kwargs = {'map_location': map_location}
+    serialization = getattr(torch, 'serialization', None)
+    safe_globals = getattr(serialization, 'safe_globals', None)
+    restricted_load = supports_weights_only and safe_globals is not None
+    is_file_like = hasattr(path_or_file, 'seek')
+    try:
+        if is_file_like:
+            path_or_file.seek(0)
+        if restricted_load:
+            try:
+                from easydict import EasyDict
+                from torch.torch_version import TorchVersion
+            except (ImportError, AttributeError):
+                restricted_load = False
+            else:
+                load_kwargs['weights_only'] = True
+                with safe_globals([EasyDict, TorchVersion]):
+                    return torch.load(path_or_file, **load_kwargs)
+
+        # Some older PyTorch releases expose weights_only but not safe_globals.
+        # Their restricted unpickler cannot restore the metadata in our trusted
+        # project checkpoints, so use the legacy loader explicitly.
+        if is_file_like:
+            path_or_file.seek(0)
+        if supports_weights_only:
+            load_kwargs['weights_only'] = False
+        return torch.load(path_or_file, **load_kwargs)
+    finally:
+        if is_file_like:
+            path_or_file.seek(0)
+
 
 def setup_logging(output_dir, rank):
     os.makedirs(output_dir, exist_ok=True)
@@ -266,7 +315,7 @@ def worker(gpu, cfg):
             logging.info(f'model_cfg: {model_cfg}')
             model = model_class(**model_cfg)
 
-            checkpoint = torch.load(ckpt_path, map_location='cpu')
+            checkpoint = _load_project_checkpoint(ckpt_path, map_location='cpu')
             missing_key, unexpected_key = model.load_state_dict(checkpoint['ema_model_state_dict'], strict=False)
             logging.info(f"missing key: {missing_key}")
             logging.info(f"unexpected key: {unexpected_key}")
