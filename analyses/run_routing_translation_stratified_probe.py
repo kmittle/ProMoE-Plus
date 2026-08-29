@@ -16,6 +16,9 @@ from analyses.denoising_regret.io import write_json_atomic
 from analyses.routing_translation import (
     run_routing_translation_stratified_probe,
 )
+from analyses.routing_translation.stratified_probe import (
+    EXACT_SPATIAL_TIME_LIMIT_SECONDS,
+)
 from analyses.run_routing_translation_probe import (
     _parse_float_list,
     _parse_shifts,
@@ -71,6 +74,20 @@ def build_parser():
         help="Torch device; CPU is the default and never claims a GPU implicitly",
     )
     parser.add_argument("--num-threads", type=int, default=8)
+    parser.add_argument(
+        "--exact-spatial-diagnostics",
+        action="store_true",
+        help=(
+            "Run Hungarian/MILP feasibility diagnostics without replacing the "
+            "locked 256-candidate spatial control"
+        ),
+    )
+    parser.add_argument(
+        "--exact-spatial-time-limit",
+        type=float,
+        default=EXACT_SPATIAL_TIME_LIMIT_SECONDS,
+        help="Maximum MILP seconds per failed stratum control",
+    )
     parser.add_argument("--output", help="Optional JSON output path")
     parser.add_argument("--no-save", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
@@ -100,6 +117,8 @@ def main():
         seed=args.seed,
         device=args.device,
         num_threads=args.num_threads,
+        exact_spatial_diagnostics=args.exact_spatial_diagnostics,
+        exact_spatial_time_limit=args.exact_spatial_time_limit,
     )
     print(json.dumps(result["summary"], indent=2, sort_keys=True))
     print(json.dumps(result["per_sigma"], indent=2, sort_keys=True))

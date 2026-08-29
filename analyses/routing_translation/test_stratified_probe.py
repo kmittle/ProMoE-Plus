@@ -6,6 +6,7 @@ from analyses.routing_translation.stratified_probe import (
     STRATUM_NAMES,
     _build_stratum_masks,
     _build_stratum_routes,
+    _exact_diagnostic_status,
     _four_neighbor_pair_histograms,
     _redact_unavailable_spatial_metrics,
     _spatially_matched_routes,
@@ -195,9 +196,27 @@ class RoutingTranslationStratifiedProbeTests(unittest.TestCase):
             num_routed_experts=3,
             grid_size=4,
         )
+        diagnostic_route, diagnostic_metadata = _spatially_matched_routes(
+            native_ids=native,
+            content_ids=content,
+            changed_mask=mask,
+            random_ids=random_route,
+            generator=torch.Generator().manual_seed(2002),
+            num_routed_experts=3,
+            grid_size=4,
+            exact_diagnostics=True,
+        )
         self.assertTrue(diagnostics["spatial_control_available"])
         self.assertTrue(torch.equal(spatial_route, repeated_route))
+        self.assertTrue(torch.equal(spatial_route, diagnostic_route))
         self.assertEqual(diagnostics, repeated_diagnostics)
+        self.assertEqual(
+            diagnostic_metadata["spatial_exact_diagnostic_status"],
+            "not_needed_finite_search_proved_feasible",
+        )
+        self.assertIsNone(
+            diagnostic_metadata["spatial_exact_diagnostic"]
+        )
         self.assertTrue(torch.equal(spatial_route != native, mask))
         self.assertTrue(torch.equal(
             torch.bincount(spatial_route, minlength=3),
@@ -254,6 +273,43 @@ class RoutingTranslationStratifiedProbeTests(unittest.TestCase):
             diagnostics["spatial_unavailable_reason"],
             "fewer_than_two_changed_tokens",
         )
+
+    def test_exact_diagnostic_does_not_replace_an_unavailable_control(self):
+        native = torch.tensor([0, 0, 1, 1])
+        content = torch.tensor([1, 1, 0, 0])
+        changed = native != content
+        spatial_route, diagnostics = _spatially_matched_routes(
+            native_ids=native,
+            content_ids=content,
+            changed_mask=changed,
+            random_ids=content,
+            generator=torch.Generator().manual_seed(11),
+            num_routed_experts=2,
+            grid_size=2,
+            candidate_count=1,
+            search_steps=1,
+            exact_diagnostics=True,
+        )
+        self.assertFalse(diagnostics["spatial_control_available"])
+        self.assertTrue(torch.equal(spatial_route, content))
+        self.assertEqual(
+            diagnostics["spatial_exact_diagnostic_status"],
+            "proven_derangement_infeasible",
+        )
+        exact = diagnostics["spatial_exact_diagnostic"]
+        self.assertEqual(exact["maximum_mismatches"], 0)
+        self.assertFalse(exact["derangement_feasible"])
+        self.assertIsNone(exact["milp"])
+
+    def test_nonoptimal_exact_solver_status_remains_unresolved(self):
+        status = _exact_diagnostic_status({
+            "derangement_feasible": True,
+            "milp": {
+                "proven_optimal": False,
+                "status": "limit_reached",
+            },
+        })
+        self.assertEqual(status, "unresolved_limit_reached")
 
     def test_minimum_mismatches_matches_the_final_ratio_comparison(self):
         native = torch.full((4,), 2, dtype=torch.long)

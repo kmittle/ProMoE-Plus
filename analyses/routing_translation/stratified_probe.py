@@ -38,6 +38,7 @@ from .probe import (
     _valid_translation_mse,
     _validate_shifts,
 )
+from .spatial_control import exact_spatial_control_diagnostic
 
 
 STRATUM_NAMES = (
@@ -50,6 +51,7 @@ SPATIAL_CONTROL_CANDIDATES = 256
 SPATIAL_CONTROL_SEARCH_STEPS = 256
 SPATIAL_CONTROL_MIN_DERANGEMENT = 0.5
 SPATIAL_CONTROL_MAX_ADJACENCY_TV = 0.1
+EXACT_SPATIAL_TIME_LIMIT_SECONDS = 300.0
 CONTROL_SEED_HIGH = 2 ** 31
 INTERVENTION_NAMES = (
     "native",
@@ -131,6 +133,8 @@ def _build_stratum_routes(
     num_routed_experts,
     grid_size,
     spatial_search_steps=SPATIAL_CONTROL_SEARCH_STEPS,
+    exact_spatial_diagnostics=False,
+    exact_spatial_time_limit=EXACT_SPATIAL_TIME_LIMIT_SECONDS,
 ):
     routes = []
     controls = {}
@@ -181,6 +185,8 @@ def _build_stratum_routes(
             num_routed_experts=num_routed_experts,
             grid_size=grid_size,
             search_steps=spatial_search_steps,
+            exact_diagnostics=exact_spatial_diagnostics,
+            exact_time_limit_seconds=exact_spatial_time_limit,
         )
         spatial_changed = spatial_route != native_ids
         spatial_hist = torch.bincount(
@@ -274,6 +280,17 @@ def _four_neighbor_pair_histograms(
     return histograms[0] if squeeze else histograms
 
 
+def _exact_diagnostic_status(diagnostic):
+    if not diagnostic["derangement_feasible"]:
+        return "proven_derangement_infeasible"
+    milp_result = diagnostic["milp"]
+    if milp_result is None:
+        return "unresolved_missing_milp_result"
+    if milp_result["proven_optimal"]:
+        return "proven_optimal"
+    return f"unresolved_{milp_result['status']}"
+
+
 def _spatially_matched_routes(
     native_ids,
     content_ids,
@@ -286,6 +303,8 @@ def _spatially_matched_routes(
     search_steps=SPATIAL_CONTROL_SEARCH_STEPS,
     min_derangement=SPATIAL_CONTROL_MIN_DERANGEMENT,
     max_adjacency_tv=SPATIAL_CONTROL_MAX_ADJACENCY_TV,
+    exact_diagnostics=False,
+    exact_time_limit_seconds=EXACT_SPATIAL_TIME_LIMIT_SECONDS,
 ):
     if not (
         native_ids.ndim == content_ids.ndim == changed_mask.ndim
@@ -346,6 +365,10 @@ def _spatially_matched_routes(
         "spatial_best_deranged_differs_from_content_rate": None,
         "spatial_best_deranged_tv_minus_random": None,
         "spatial_max_observed_derangement": None,
+        "spatial_exact_diagnostic_status": (
+            "pending" if exact_diagnostics else "disabled"
+        ),
+        "spatial_exact_diagnostic": None,
         "spatial_rejection_counts": {
             "below_minimum_derangement": 0,
             "above_maximum_adjacency_tv": 0,
@@ -354,6 +377,42 @@ def _spatially_matched_routes(
         "spatial_unavailable_reason": None,
     }
     if changed_count < 2:
+        if exact_diagnostics and changed_count:
+            reference_histogram = _four_neighbor_pair_histograms(
+                content_ids,
+                changed_mask,
+                grid_size,
+                num_routed_experts,
+            )
+            random_histogram = _four_neighbor_pair_histograms(
+                random_ids,
+                changed_mask,
+                grid_size,
+                num_routed_experts,
+            )
+            random_tv = float((
+                0.5 * (random_histogram - reference_histogram).abs().sum()
+            ).item())
+            _, exact_diagnostic = exact_spatial_control_diagnostic(
+                native_ids=native_ids.detach().cpu().numpy(),
+                content_ids=content_ids.detach().cpu().numpy(),
+                changed_mask=changed_mask.detach().cpu().numpy(),
+                grid_size=grid_size,
+                num_routed_experts=num_routed_experts,
+                minimum_mismatches=minimum_mismatches,
+                max_adjacency_tv=max_adjacency_tv,
+                random_adjacency_tv=random_tv,
+                time_limit_seconds=exact_time_limit_seconds,
+            )
+            base_diagnostics["random_adjacency_tv"] = random_tv
+            base_diagnostics["spatial_exact_diagnostic_status"] = (
+                _exact_diagnostic_status(exact_diagnostic)
+            )
+            base_diagnostics["spatial_exact_diagnostic"] = exact_diagnostic
+        elif exact_diagnostics:
+            base_diagnostics["spatial_exact_diagnostic_status"] = (
+                "not_run_empty_support"
+            )
         base_diagnostics["spatial_unavailable_reason"] = (
             "fewer_than_two_changed_tokens"
         )
@@ -366,6 +425,15 @@ def _spatially_matched_routes(
         changed_mask,
         grid_size,
         num_routed_experts,
+    )
+    random_histogram = _four_neighbor_pair_histograms(
+        random_ids,
+        changed_mask,
+        grid_size,
+        num_routed_experts,
+    )
+    random_tv = float(
+        (0.5 * (random_histogram - reference_histogram).abs().sum()).item()
     )
 
     assignments = content_changed.unsqueeze(0).repeat(candidate_count, 1)
@@ -441,20 +509,32 @@ def _spatially_matched_routes(
     candidates = native_ids.unsqueeze(0).repeat(candidate_count, 1)
     candidates[:, changed_indices] = assignments
     derangement = (assignments != content_changed).double().mean(dim=1)
-    random_histogram = _four_neighbor_pair_histograms(
-        random_ids,
-        changed_mask,
-        grid_size,
-        num_routed_experts,
-    )
-    random_tv = float(
-        (0.5 * (random_histogram - reference_histogram).abs().sum()).item()
-    )
     meets_derangement = derangement >= min_derangement
     meets_max_tv = candidate_tv <= max_adjacency_tv
     not_worse_than_random = candidate_tv <= random_tv + 1e-12
     eligible = meets_derangement & meets_max_tv & not_worse_than_random
     eligible_count = int(eligible.sum().item())
+    if exact_diagnostics:
+        if eligible_count:
+            base_diagnostics["spatial_exact_diagnostic_status"] = (
+                "not_needed_finite_search_proved_feasible"
+            )
+        else:
+            _, exact_diagnostic = exact_spatial_control_diagnostic(
+                native_ids=native_ids.detach().cpu().numpy(),
+                content_ids=content_ids.detach().cpu().numpy(),
+                changed_mask=changed_mask.detach().cpu().numpy(),
+                grid_size=grid_size,
+                num_routed_experts=num_routed_experts,
+                minimum_mismatches=minimum_mismatches,
+                max_adjacency_tv=max_adjacency_tv,
+                random_adjacency_tv=random_tv,
+                time_limit_seconds=exact_time_limit_seconds,
+            )
+            base_diagnostics["spatial_exact_diagnostic_status"] = (
+                _exact_diagnostic_status(exact_diagnostic)
+            )
+            base_diagnostics["spatial_exact_diagnostic"] = exact_diagnostic
     deranged_indices = torch.where(meets_derangement)[0]
     if deranged_indices.numel():
         best_deranged_local = torch.argmin(candidate_tv[deranged_indices])
@@ -578,6 +658,8 @@ def _probe_stratified_cell(
     patch_size,
     num_routed_experts,
     generator,
+    exact_spatial_diagnostics,
+    exact_spatial_time_limit,
 ):
     dy, dx = shift
     sigma_tensor = torch.tensor(
@@ -660,6 +742,8 @@ def _probe_stratified_cell(
         generator,
         num_routed_experts,
         grid_size,
+        exact_spatial_diagnostics=exact_spatial_diagnostics,
+        exact_spatial_time_limit=exact_spatial_time_limit,
     )
     route_matrix = torch.stack([
         shifted_ids,
@@ -902,6 +986,8 @@ def run_routing_translation_stratified_probe(
     device="cpu",
     num_threads=8,
     weights_checkpoint_path=None,
+    exact_spatial_diagnostics=False,
+    exact_spatial_time_limit=EXACT_SPATIAL_TIME_LIMIT_SECONDS,
 ):
     shifts = _validate_shifts(shifts)
     checkpoint_path = Path(checkpoint_path).resolve()
@@ -926,6 +1012,12 @@ def run_routing_translation_stratified_probe(
         raise ValueError("Sigmas must be unique and strictly between zero and one")
     if num_threads < 1:
         raise ValueError("num_threads must be positive")
+    exact_spatial_time_limit = float(exact_spatial_time_limit)
+    if (
+        not math.isfinite(exact_spatial_time_limit)
+        or exact_spatial_time_limit <= 0
+    ):
+        raise ValueError("Exact spatial time limit must be finite and positive")
 
     thread_config = _configure_torch_threads(num_threads)
     device = torch.device(device)
@@ -995,13 +1087,15 @@ def run_routing_translation_stratified_probe(
                     patch_size=patch_size,
                     num_routed_experts=moe_layer.num_routed_experts,
                     generator=generator,
+                    exact_spatial_diagnostics=exact_spatial_diagnostics,
+                    exact_spatial_time_limit=exact_spatial_time_limit,
                 ))
     finally:
         capture.close()
     probe_seconds = time.perf_counter() - probe_start
 
     result = {
-        "routing_translation_stratified_probe_version": 6,
+        "routing_translation_stratified_probe_version": 7,
         "diagnostic_scope": (
             "teacher-forced fixed-compute stratum interventions with a spatially "
             "matched wrong-correspondence control; not a FID claim"
@@ -1050,6 +1144,17 @@ def run_routing_translation_stratified_probe(
                 "draw fixed per-cell, per-stratum seeds for random and spatial "
                 "controls before either control consumes random numbers"
             ),
+            "exact_feasibility_diagnostic": {
+                "enabled": bool(exact_spatial_diagnostics),
+                "time_limit_seconds_per_failed_stratum_control": (
+                    exact_spatial_time_limit
+                ),
+                "role": (
+                    "prove the maximum support-safe derangement and, when it is "
+                    "reachable, the minimum four-neighbor pair TV without "
+                    "replacing the locked 256-candidate control"
+                ),
+            },
         },
         "checkpoint": str(checkpoint_path),
         "weights_checkpoint": str(weights_checkpoint_path),
