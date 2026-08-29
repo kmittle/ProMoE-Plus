@@ -98,6 +98,53 @@ class RoutingTranslationStratifiedProbeTests(unittest.TestCase):
                 bool((random_route[mask] != content_route[mask]).any()),
             )
 
+    def test_random_controls_do_not_depend_on_spatial_search_length(self):
+        masks, _ = _build_stratum_masks(
+            self.scores,
+            self.native,
+            self.content,
+            self.valid,
+        )
+        short_generator = torch.Generator().manual_seed(29)
+        long_generator = torch.Generator().manual_seed(29)
+        short_routes, short_controls = _build_stratum_routes(
+            self.native,
+            self.content,
+            self.valid,
+            masks,
+            short_generator,
+            num_routed_experts=4,
+            grid_size=3,
+            spatial_search_steps=1,
+        )
+        long_routes, long_controls = _build_stratum_routes(
+            self.native,
+            self.content,
+            self.valid,
+            masks,
+            long_generator,
+            num_routed_experts=4,
+            grid_size=3,
+            spatial_search_steps=32,
+        )
+        self.assertTrue(torch.equal(
+            short_generator.get_state(),
+            long_generator.get_state(),
+        ))
+        for index, name in enumerate(STRATUM_NAMES):
+            self.assertTrue(torch.equal(
+                short_routes[3 * index + 2],
+                long_routes[3 * index + 2],
+            ))
+            self.assertEqual(
+                short_controls[name]["random_control_seed"],
+                long_controls[name]["random_control_seed"],
+            )
+            self.assertEqual(
+                short_controls[name]["spatial_control_seed"],
+                long_controls[name]["spatial_control_seed"],
+            )
+
     def test_four_neighbor_histogram_uses_incident_edges(self):
         route = torch.tensor([0, 0, 1, 1])
         mask = torch.ones(4, dtype=torch.bool)

@@ -129,19 +129,33 @@ def _build_stratum_routes(
     generator,
     num_routed_experts,
     grid_size,
+    spatial_search_steps=SPATIAL_CONTROL_SEARCH_STEPS,
 ):
     routes = []
     controls = {}
-    for name in STRATUM_NAMES:
+    control_seeds = torch.randint(
+        0,
+        torch.iinfo(torch.int64).max,
+        (len(STRATUM_NAMES), 2),
+        generator=generator,
+        device=generator.device,
+        dtype=torch.int64,
+    ).cpu().tolist()
+    for stratum_index, name in enumerate(STRATUM_NAMES):
+        random_seed, spatial_seed = control_seeds[stratum_index]
+        random_generator = torch.Generator(device=native_ids.device)
+        random_generator.manual_seed(random_seed)
+        spatial_generator = torch.Generator(device=native_ids.device)
+        spatial_generator.manual_seed(spatial_seed)
         mask = stratum_masks[name]
         content_route = native_ids.clone()
         content_route[mask] = content_ids[mask]
         random_route, random_changed, random_control_available = \
             _random_matched_routes(
-            native_ids,
-            content_route,
-            valid_mask,
-            generator,
+                native_ids,
+                content_route,
+                valid_mask,
+                random_generator,
             )
         if not torch.equal(random_changed, mask):
             raise RuntimeError(f"{name} random control changed its support")
@@ -162,9 +176,10 @@ def _build_stratum_routes(
             content_ids=content_route,
             changed_mask=mask,
             random_ids=random_route,
-            generator=generator,
+            generator=spatial_generator,
             num_routed_experts=num_routed_experts,
             grid_size=grid_size,
+            search_steps=spatial_search_steps,
         )
         spatial_changed = spatial_route != native_ids
         spatial_hist = torch.bincount(
@@ -181,6 +196,8 @@ def _build_stratum_routes(
         controls[name] = {
             "support_equal": True,
             "replacement_histogram_equal": True,
+            "random_control_seed": int(random_seed),
+            "spatial_control_seed": int(spatial_seed),
             "random_control_available": random_control_available,
             "random_differs_from_content_rate": (
                 float(
@@ -981,7 +998,7 @@ def run_routing_translation_stratified_probe(
     probe_seconds = time.perf_counter() - probe_start
 
     result = {
-        "routing_translation_stratified_probe_version": 4,
+        "routing_translation_stratified_probe_version": 5,
         "diagnostic_scope": (
             "teacher-forced fixed-compute stratum interventions with a spatially "
             "matched wrong-correspondence control; not a FID claim"
@@ -1025,6 +1042,10 @@ def run_routing_translation_stratified_probe(
                 "the minimum derangement, the best deranged adjacency TV, and "
                 "mutually exclusive rejection counts without relaxing any "
                 "acceptance threshold"
+            ),
+            "random_streams": (
+                "draw fixed per-cell, per-stratum seeds for random and spatial "
+                "controls before either control consumes random numbers"
             ),
         },
         "checkpoint": str(checkpoint_path),
