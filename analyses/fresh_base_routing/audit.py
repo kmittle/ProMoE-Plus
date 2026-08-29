@@ -866,14 +866,31 @@ def _validate_training_provenance_contract(
     return contract, observed_sha256
 
 
-def _resolve_logged_path(value):
+def _resolve_logged_path(value, project_root=PROJECT_ROOT):
     path = Path(value)
     if not path.is_absolute():
-        path = PROJECT_ROOT / path
+        path = Path(project_root) / path
     return path.resolve()
 
 
-def _fresh_training_log_snapshot(run_dir):
+def _normalize_checkpoint_steps(checkpoint_steps):
+    steps = tuple(int(step) for step in checkpoint_steps)
+    if (
+        not steps
+        or any(step < 1 for step in steps)
+        or tuple(sorted(set(steps))) != steps
+    ):
+        raise ValueError("Checkpoint steps must be unique positive integers in order")
+    return steps
+
+
+def _fresh_training_log_snapshot(
+    run_dir,
+    checkpoint_steps=CHECKPOINT_STEPS,
+    project_root=PROJECT_ROOT,
+):
+    checkpoint_steps = _normalize_checkpoint_steps(checkpoint_steps)
+    project_root = _absolute_path(project_root)
     run_dir = _absolute_path(run_dir)
     expected_run_dir = run_dir.resolve(strict=True)
     log_path = run_dir / "training.log"
@@ -936,7 +953,7 @@ def _fresh_training_log_snapshot(run_dir):
         raise ValueError("Fresh run marker config does not match the audit")
     if marker_match["global_seed"] != "0" or marker_match["world_size"] != "4":
         raise ValueError("Fresh run marker seed/world size does not match the audit")
-    if _resolve_logged_path(marker_match["output_dir"]) != expected_run_dir:
+    if _resolve_logged_path(marker_match["output_dir"], project_root) != expected_run_dir:
         raise ValueError("Fresh run marker output_dir does not match the run directory")
 
     seed_candidates = []
@@ -982,7 +999,7 @@ def _fresh_training_log_snapshot(run_dir):
         empty_match = _NO_CHECKPOINTS_PATTERN.search(lines[index])
         if empty_match is None:
             continue
-        if _resolve_logged_path(empty_match["path"]) != expected_checkpoint_dir:
+        if _resolve_logged_path(empty_match["path"], project_root) != expected_checkpoint_dir:
             raise ValueError(
                 "Fresh run log names a checkpoint directory other than the current run"
             )
@@ -1013,8 +1030,10 @@ def _fresh_training_log_snapshot(run_dir):
         lines,
         run_id,
         expected_checkpoint_dir,
+        checkpoint_steps,
+        project_root,
     )
-    expected_marker_keys = {str(step) for step in CHECKPOINT_STEPS}
+    expected_marker_keys = {str(step) for step in checkpoint_steps}
     if set(checkpoint_candidates) != expected_marker_keys:
         raise ValueError("Training log checkpoint marker set is not canonical")
     if any(len(matches) != 1 for matches in checkpoint_candidates.values()):
@@ -1025,7 +1044,7 @@ def _fresh_training_log_snapshot(run_dir):
 
     checkpoint_markers = {}
     previous_index = step_zero_index
-    for step in CHECKPOINT_STEPS:
+    for step in checkpoint_steps:
         expected_path = expected_checkpoint_dir / f"ckpt_step_{step}.pth"
         match_index, match = checkpoint_candidates[str(step)][0]
         if match_index <= previous_index:
@@ -1064,6 +1083,7 @@ def _fresh_training_log_snapshot(run_dir):
         "path": str(log_path.resolve()),
         "run_dir": str(run_dir),
         "resolved_run_dir": str(expected_run_dir),
+        "project_root": str(project_root),
         "run_id": run_id,
         "training_provenance_sha256": launch_sha256,
         "training_provenance_line_index": provenance_index,
@@ -1082,17 +1102,25 @@ def _fresh_training_log_snapshot(run_dir):
         "step_zero_line": lines[step_zero_index],
         "segment_line_count": step_zero_index - marker_index + 1,
         "segment_sha256": hashlib.sha256(segment.encode("utf-8")).hexdigest(),
+        "checkpoint_steps": list(checkpoint_steps),
         "checkpoint_markers": checkpoint_markers,
     }
 
 
-def _checkpoint_marker_candidates(lines, run_id, checkpoint_dir):
+def _checkpoint_marker_candidates(
+    lines,
+    run_id,
+    checkpoint_dir,
+    checkpoint_steps=CHECKPOINT_STEPS,
+    project_root=PROJECT_ROOT,
+):
     """Collect every locked-step marker for one run, preserving line order."""
 
+    checkpoint_steps = _normalize_checkpoint_steps(checkpoint_steps)
     checkpoint_dir = Path(checkpoint_dir)
     expected = {
         str(step): checkpoint_dir / f"ckpt_step_{step}.pth"
-        for step in CHECKPOINT_STEPS
+        for step in checkpoint_steps
     }
     candidates = {key: [] for key in expected}
     for index, line in enumerate(lines):
@@ -1104,7 +1132,7 @@ def _checkpoint_marker_candidates(lines, run_id, checkpoint_dir):
         step_key = str(int(parsed["step"]))
         if step_key not in expected:
             continue
-        if _resolve_logged_path(parsed["path"]) != expected[step_key].resolve():
+        if _resolve_logged_path(parsed["path"], project_root) != expected[step_key].resolve():
             raise ValueError(
                 f"Training log checkpoint path is not canonical at line {index}"
             )
@@ -1112,12 +1140,24 @@ def _checkpoint_marker_candidates(lines, run_id, checkpoint_dir):
     return candidates
 
 
-def _verify_training_log(snapshot, checkpoints=None, run_dir=None):
+def _verify_training_log(
+    snapshot,
+    checkpoints=None,
+    checkpoint_steps_to_bind=None,
+    run_dir=None,
+    output_root=OUTPUT_ROOT,
+    project_root=None,
+):
+    project_root = _absolute_path(
+        project_root or snapshot.get("project_root", PROJECT_ROOT)
+    )
+    if snapshot.get("project_root", str(project_root)) != str(project_root):
+        raise RuntimeError("Training log project root changed")
     path = Path(snapshot["path"])
     if path.is_symlink() or not path.is_file():
         raise FileNotFoundError(f"Training log is missing: {path}")
     if run_dir is not None:
-        expected_run_dir = _validate_run_dir(run_dir)
+        expected_run_dir = _validate_run_dir(run_dir, output_root=output_root)
         if snapshot.get("run_dir") != str(expected_run_dir):
             raise RuntimeError("Training log snapshot is bound to another run path")
         if snapshot.get("resolved_run_dir") != str(expected_run_dir.resolve(strict=True)):
@@ -1162,10 +1202,13 @@ def _verify_training_log(snapshot, checkpoints=None, run_dir=None):
         marker_match["config"] != CONFIG_STEM
         or marker_match["global_seed"] != "0"
         or marker_match["world_size"] != "4"
-        or _resolve_logged_path(marker_match["output_dir"])
-        != Path(snapshot["resolved_run_dir"]).resolve()
     ):
         raise RuntimeError("Training log fresh marker is bound to another run")
+    if _resolve_logged_path(
+        marker_match["output_dir"],
+        project_root,
+    ) != Path(snapshot["resolved_run_dir"]).resolve():
+        raise RuntimeError("Training log fresh marker project root changed")
     provenance_index = snapshot.get("training_provenance_line_index")
     provenance_indices = [
         index
@@ -1217,13 +1260,32 @@ def _verify_training_log(snapshot, checkpoints=None, run_dir=None):
     if empty_match is None:
         raise RuntimeError("Training log empty-directory evidence is malformed")
     expected_checkpoint_dir = Path(snapshot["resolved_run_dir"]).resolve() / "checkpoints"
-    if _resolve_logged_path(empty_match["path"]) != expected_checkpoint_dir:
+    if _resolve_logged_path(empty_match["path"], project_root) != expected_checkpoint_dir:
         raise RuntimeError("Training log empty-directory path changed")
     if lines[step_zero_index] != snapshot["step_zero_line"]:
         raise RuntimeError("Training log step-0 evidence changed")
 
+    checkpoint_steps = _normalize_checkpoint_steps(
+        snapshot.get("checkpoint_steps", CHECKPOINT_STEPS)
+    )
+    if checkpoints is None:
+        if checkpoint_steps_to_bind is not None:
+            raise RuntimeError("Checkpoint binding steps require checkpoint records")
+        checkpoint_steps_to_bind = ()
+    else:
+        checkpoint_steps_to_bind = _normalize_checkpoint_steps(
+            checkpoint_steps_to_bind or checkpoint_steps
+        )
+        if not set(checkpoint_steps_to_bind).issubset(set(checkpoint_steps)):
+            raise RuntimeError("Checkpoint binding steps are absent from the log snapshot")
+        expected_checkpoint_keys = {
+            str(step) for step in checkpoint_steps_to_bind
+        }
+        if not isinstance(checkpoints, dict) or set(checkpoints) != expected_checkpoint_keys:
+            raise RuntimeError("Checkpoint records do not match the requested binding steps")
+    checkpoint_steps_to_bind = set(checkpoint_steps_to_bind)
     marker_records = snapshot.get("checkpoint_markers")
-    expected_marker_keys = {str(step) for step in CHECKPOINT_STEPS}
+    expected_marker_keys = {str(step) for step in checkpoint_steps}
     if not isinstance(marker_records, dict) or set(marker_records) != expected_marker_keys:
         raise RuntimeError("Training log checkpoint marker set is not canonical")
     try:
@@ -1231,6 +1293,8 @@ def _verify_training_log(snapshot, checkpoints=None, run_dir=None):
             lines,
             snapshot["run_id"],
             expected_checkpoint_dir,
+            checkpoint_steps,
+            project_root,
         )
     except (KeyError, ValueError) as error:
         raise RuntimeError(str(error)) from error
@@ -1243,7 +1307,7 @@ def _verify_training_log(snapshot, checkpoints=None, run_dir=None):
         )
 
     previous_index = step_zero_index
-    for step in CHECKPOINT_STEPS:
+    for step in checkpoint_steps:
         marker = marker_records[str(step)]
         candidate_index, candidate = candidates[str(step)][0]
         if candidate_index != marker.get("line_index"):
@@ -1266,7 +1330,10 @@ def _verify_training_log(snapshot, checkpoints=None, run_dir=None):
             raise RuntimeError(
                 f"Training log checkpoint step changed for step {step}"
             )
-        if _resolve_logged_path(parsed["path"]) != Path(marker["path"]).resolve():
+        if _resolve_logged_path(
+            parsed["path"],
+            project_root,
+        ) != Path(marker["path"]).resolve():
             raise RuntimeError(
                 f"Training log checkpoint path changed for step {step}"
             )
@@ -1282,7 +1349,7 @@ def _verify_training_log(snapshot, checkpoints=None, run_dir=None):
             raise RuntimeError(
                 f"Training log checkpoint provenance changed for step {step}"
             )
-        if checkpoints is not None:
+        if step in checkpoint_steps_to_bind:
             checkpoint = checkpoints.get(str(step))
             if not isinstance(checkpoint, dict):
                 raise RuntimeError(f"Protocol lacks checkpoint step {step}")
@@ -1771,16 +1838,17 @@ def _output_dir(path):
     return path
 
 
-def _validate_run_dir(run_dir):
+def _validate_run_dir(run_dir, output_root=OUTPUT_ROOT):
     run_dir = _absolute_path(run_dir)
+    output_root = _absolute_path(output_root)
     # Keep the lexical repository path in the protocol.  The path may be a
     # symlink, so resolving it before this check would reject the normal
     # runtime layout on the experiment server.
     try:
-        run_dir.relative_to(_absolute_path(OUTPUT_ROOT))
+        run_dir.relative_to(output_root)
     except ValueError as error:
         raise ValueError(
-            f"Fresh Base run path must stay lexically under {OUTPUT_ROOT}"
+            f"Fresh Base run path must stay lexically under {output_root}"
         ) from error
     if run_dir.name != CONFIG_STEM or run_dir.parent.name != MODEL_NAME:
         raise ValueError(
@@ -1793,7 +1861,7 @@ def _validate_run_dir(run_dir):
         raise ValueError(
             "Fresh Base run symlink target does not preserve the canonical run name"
         )
-    lexical_output_root = _absolute_path(OUTPUT_ROOT)
+    lexical_output_root = output_root
     allowed_roots = []
     # If outputs/ itself is a link, its target must be registered explicitly.
     # Otherwise resolving it here would silently turn any target into an
@@ -1821,10 +1889,10 @@ def _validate_run_dir(run_dir):
     return run_dir
 
 
-def _checkpoint_path(run_dir, step):
+def _checkpoint_path(run_dir, step, output_root=OUTPUT_ROOT):
     """Return a real checkpoint directly inside this run's checkpoint dir."""
 
-    run_dir = _validate_run_dir(run_dir)
+    run_dir = _validate_run_dir(run_dir, output_root=output_root)
     checkpoint_dir = run_dir / "checkpoints"
     if checkpoint_dir.is_symlink() or not checkpoint_dir.is_dir():
         raise NotADirectoryError(

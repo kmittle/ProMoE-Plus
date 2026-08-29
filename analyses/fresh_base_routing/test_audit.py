@@ -78,6 +78,13 @@ def _training_provenance():
     }
 
 
+def _checkpoint_rng_state():
+    state = _capture_rng_state()
+    if "cuda" not in state:
+        state["cuda"] = torch.get_rng_state()
+    return state
+
+
 class FreshBaseRoutingAuditTests(unittest.TestCase):
     def test_git_contract_rejects_dirty_temporary_index_status(self):
         completed = type('Completed', (), {'stdout': '0\t0\n'})()
@@ -548,7 +555,10 @@ class FreshBaseRoutingAuditTests(unittest.TestCase):
                 "ALLOWED_EXTERNAL_OUTPUT_ROOTS",
                 (external_outputs,),
             ):
-                self.assertEqual(_validate_run_dir(link), link)
+                self.assertEqual(
+                    _validate_run_dir(link, output_root=lexical_outputs),
+                    link,
+                )
 
     def test_run_dir_rejects_unregistered_output_symlink_target(self):
         import analyses.fresh_base_routing.audit as audit
@@ -568,7 +578,7 @@ class FreshBaseRoutingAuditTests(unittest.TestCase):
                 (),
             ):
                 with self.assertRaisesRegex(ValueError, "symlink target"):
-                    _validate_run_dir(link)
+                    _validate_run_dir(link, output_root=lexical_outputs)
 
     def test_symlinked_output_root_does_not_authorize_its_target(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
@@ -587,7 +597,7 @@ class FreshBaseRoutingAuditTests(unittest.TestCase):
                 (registered,),
             ):
                 with self.assertRaisesRegex(ValueError, "registered output roots"):
-                    _validate_run_dir(run_dir)
+                    _validate_run_dir(run_dir, output_root=lexical_outputs)
 
     def test_stage_summary_print_payload_has_no_eager_default_lookup(self):
         gate = {"passed": True}
@@ -695,7 +705,51 @@ class FreshBaseRoutingAuditTests(unittest.TestCase):
             (run_dir / "training.log").write_text("\n".join(lines) + "\n")
             snapshot = _fresh_training_log_snapshot(run_dir)
             _verify_training_log(snapshot, checkpoints)
+            first_step = CHECKPOINT_STEPS[0]
+            _verify_training_log(
+                snapshot,
+                {str(first_step): checkpoints[str(first_step)]},
+                checkpoint_steps_to_bind=(first_step,),
+            )
             original_log = (run_dir / "training.log").read_text()
+
+            extended_steps = CHECKPOINT_STEPS + (250000, 300000)
+            extended_checkpoints = copy.deepcopy(checkpoints)
+            extended_lines = original_log.splitlines()
+            for step in extended_steps[len(CHECKPOINT_STEPS):]:
+                path = checkpoint_dir / f"ckpt_step_{step}.pth"
+                content = f"checkpoint-{step}".encode("ascii")
+                path.write_bytes(content)
+                digest = hashlib.sha256(content).hexdigest()
+                marker_line = (
+                    f"[time-INFO]: ********************* Checkpoint saved at {path} "
+                    f"run_id={run_id} step={step} size={len(content)} "
+                    f"sha256={digest} launch_sha256={launch_sha256}"
+                )
+                extended_lines.append(marker_line)
+                extended_checkpoints[str(step)] = {
+                    "path": str(path),
+                    "size": len(content),
+                    "sha256": digest,
+                    "run_id": run_id,
+                    "trainer_contract": {
+                        "training_provenance_sha256": launch_sha256,
+                    },
+                }
+            (run_dir / "training.log").write_text(
+                "\n".join(extended_lines) + "\n"
+            )
+            extended_snapshot = _fresh_training_log_snapshot(
+                run_dir,
+                checkpoint_steps=extended_steps,
+            )
+            self.assertEqual(
+                extended_snapshot["checkpoint_steps"],
+                list(extended_steps),
+            )
+            _verify_training_log(extended_snapshot, extended_checkpoints)
+            (run_dir / "training.log").write_text(original_log)
+
             (run_dir / "training.log").write_text(
                 (run_dir / "training.log").read_text().replace(
                     f"size={len(f'checkpoint-{CHECKPOINT_STEPS[0]}')} ",
@@ -727,6 +781,82 @@ class FreshBaseRoutingAuditTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(RuntimeError, "exactly one"):
                 _verify_training_log(snapshot, checkpoints)
+
+    def test_fresh_log_resolves_relative_paths_from_training_worktree(self):
+        run_id = "a" * 32
+        launch_sha256 = "b" * 64
+        checkpoint_step = CHECKPOINT_STEPS[0]
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            root = Path(temporary_dir)
+            training_root = root / "training-worktree"
+            analysis_root = root / "analysis-worktree"
+            output_root = training_root / "outputs"
+            run_dir = output_root / audit.MODEL_NAME / audit.CONFIG_STEM
+            checkpoint_dir = run_dir / "checkpoints"
+            checkpoint_dir.mkdir(parents=True)
+            analysis_root.mkdir()
+            checkpoint_path = checkpoint_dir / f"ckpt_step_{checkpoint_step}.pth"
+            checkpoint_content = b"checkpoint"
+            checkpoint_path.write_bytes(checkpoint_content)
+            checkpoint_sha256 = hashlib.sha256(checkpoint_content).hexdigest()
+            relative_run = Path("outputs") / audit.MODEL_NAME / audit.CONFIG_STEM
+            relative_checkpoint_dir = relative_run / "checkpoints"
+            relative_checkpoint = (
+                relative_checkpoint_dir / f"ckpt_step_{checkpoint_step}.pth"
+            )
+            lines = [
+                "[time-INFO]: Training RNG seed: 0 "
+                "(global_seed=0, rank=0, world_size=4)",
+                (
+                    f"[time-INFO]: Training provenance: run_id={run_id} "
+                    f"launch_sha256={launch_sha256} git_commit={'a' * 40} "
+                    f"config_sha256={CANONICAL_TRAINING_CONFIG_SHA256}"
+                ),
+                (
+                    f"[time-INFO]: Fresh run marker: run_id={run_id} fresh=True "
+                    f"config={audit.CONFIG_STEM} output_dir={relative_run} "
+                    f"global_seed=0 world_size=4 launch_sha256={launch_sha256}"
+                ),
+                (
+                    "[time-ERROR]: No checkpoints found in directory: "
+                    f"{relative_checkpoint_dir}"
+                ),
+                "[time-INFO]: Resume progress: next_step=0, data_batches_seen=0, "
+                "sampler_epoch=0, sampler_batch_offset=0",
+                "[time-INFO]: epoch 0-step 0 mse_loss: 1.0 total_loss: 1.0",
+                (
+                    f"[time-INFO]: ********************* Checkpoint saved at "
+                    f"{relative_checkpoint} run_id={run_id} step={checkpoint_step} "
+                    f"size={len(checkpoint_content)} sha256={checkpoint_sha256} "
+                    f"launch_sha256={launch_sha256}"
+                ),
+            ]
+            (run_dir / "training.log").write_text("\n".join(lines) + "\n")
+            checkpoints = {
+                str(checkpoint_step): {
+                    "size": len(checkpoint_content),
+                    "sha256": checkpoint_sha256,
+                    "run_id": run_id,
+                    "trainer_contract": {
+                        "training_provenance_sha256": launch_sha256,
+                    },
+                }
+            }
+
+            with patch.object(audit, "PROJECT_ROOT", analysis_root):
+                snapshot = _fresh_training_log_snapshot(
+                    run_dir,
+                    checkpoint_steps=(checkpoint_step,),
+                    project_root=training_root,
+                )
+                _verify_training_log(
+                    snapshot,
+                    checkpoints,
+                    run_dir=run_dir,
+                    output_root=output_root,
+                    project_root=training_root,
+                )
+            self.assertEqual(snapshot["project_root"], str(training_root))
 
     def test_fresh_log_rejects_multiple_valid_fresh_invocations(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
@@ -858,7 +988,7 @@ class FreshBaseRoutingAuditTests(unittest.TestCase):
             "rank_states": [
                 {
                     "rank": rank,
-                    "rng_state": _capture_rng_state(),
+                    "rng_state": _checkpoint_rng_state(),
                 }
                 for rank in range(4)
             ],

@@ -1,0 +1,75 @@
+{
+  "locked_before_any_fresh_finite_horizon_result": true,
+  "name": "finite-horizon-routing-gate-v1",
+  "candidate_label_permutation": {
+    "included_in_pass": false,
+    "reason": "Shuffling candidate labels calibrates positive label association; it does not provide a valid null test for the preregistered misalignment gate.",
+    "resamples": 10000,
+    "role": "diagnostic_only",
+    "seeds": {
+      "confirmatory": 888041,
+      "discovery": 777031
+    },
+    "tail": "greater_association"
+  },
+  "source_case_manifest": {
+    "path": "analyses/fresh_base_routing/manifests/fresh_base_routing_audit_v1.json",
+    "sha256": "41affd3a92f7c407fba33f894a10ee2392fc0cd25d105750c6dc095ea22a4824"
+  },
+  "safety_requirements": {
+    "maximum_forced_native_output_drift": 0.000005,
+    "maximum_forced_native_relative_mse_drift": 0.0000001,
+    "maximum_h1_state_velocity_identity_relative_error": 0.00001,
+    "maximum_paired_native_output_drift": 0.000005,
+    "maximum_paired_native_relative_mse_drift": 0.0000001,
+    "maximum_reference_duplicate_output_drift": 0.000005,
+    "maximum_reference_duplicate_relative_mse_drift": 0.0000001,
+    "required_count_mismatches": 0,
+    "required_h1_rank_mismatches": 0
+  },
+  "splits": {
+    "confirmatory": {
+      "expected_case_count": 24,
+      "requirements": {
+        "maximum_immediate_h8_spearman_ucb95": 0.65,
+        "maximum_mean_immediate_h8_spearman": 0.5,
+        "maximum_mean_top_quartile_overlap": 0.5,
+        "maximum_top_quartile_overlap_ucb95": 0.65,
+        "minimum_h8_gain_range_lcb95": 0.000001,
+        "minimum_decisive_candidate_rate_lcb95": 0.35,
+        "minimum_mean_decisive_candidate_rate": 0.5,
+        "minimum_mean_h8_gain_range": 0.000005,
+        "minimum_mean_regret_fraction": 0.15,
+        "minimum_mean_sign_disagreement": 0.2,
+        "minimum_misaligned_block_strata": 4,
+        "minimum_misaligned_sigma_strata": 2,
+        "minimum_regret_fraction_lcb95": 0.1,
+        "minimum_sign_disagreement_lcb95": 0.1
+      }
+    },
+    "discovery": {
+      "expected_case_count": 8,
+      "requirements": {
+        "maximum_immediate_h8_spearman_ucb95": 0.85,
+        "maximum_mean_immediate_h8_spearman": 0.65,
+        "maximum_mean_top_quartile_overlap": 0.75,
+        "maximum_top_quartile_overlap_ucb95": 0.95,
+        "minimum_h8_gain_range_lcb95": 0.0,
+        "minimum_decisive_candidate_rate_lcb95": 0.1,
+        "minimum_mean_decisive_candidate_rate": 0.25,
+        "minimum_mean_h8_gain_range": 0.000001,
+        "minimum_mean_regret_fraction": 0.1,
+        "minimum_mean_sign_disagreement": 0.1,
+        "minimum_misaligned_block_strata": 3,
+        "minimum_misaligned_sigma_strata": 2,
+        "minimum_regret_fraction_lcb95": 0.0,
+        "minimum_sign_disagreement_lcb95": 0.0
+      }
+    },
+    "plumbing": {
+      "expected_case_count": 4,
+      "efficacy_statistics_withheld": true
+    }
+  },
+  "version": 1
+}
