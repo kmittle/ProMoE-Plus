@@ -54,6 +54,7 @@ GPU_IDS="${YAML_INFO[4]}"
 STEP_LIST_STR="${YAML_INFO[5]}"
 ORIG_NUM_STEPS="${YAML_INFO[6]}"
 SAMPLE_BASE="${REPO_ROOT}/outputs/${MODEL_NAME}/${CUSTOM_CFG_NAME}/sample"
+CHECKPOINT_BASE="${REPO_ROOT}/outputs/${MODEL_NAME}/${CUSTOM_CFG_NAME}/checkpoints"
 
 PYTHON="/mnt/workspace/yujie/.conda/envs/promoe/bin/python"
 PYTHON_EVAL="/mnt/workspace/yujie/.conda/envs/fid_eval/bin/python"
@@ -61,6 +62,9 @@ PYTHON_EVAL="/mnt/workspace/yujie/.conda/envs/fid_eval/bin/python"
 # This flag makes train.py fail before step 0 unless HEAD is clean, pushed,
 # and bound to the exact Base source/config/environment contract.
 export PROMOE_STRICT_PROVENANCE=1
+# Each train process drops the token before sample/eval. A later phase receives
+# it again only until a current-provenance checkpoint is confirmed on disk.
+AUDITED_BASE_TRANSITION_PENDING=1
 
 if [ -z "$STEP_LIST_STR" ]; then
     echo "ERROR: step_list_for_sample is empty or missing in ${CONFIG}" >&2
@@ -92,6 +96,24 @@ sample_and_eval_step() {
     fi
 
     echo "[$(date '+%H:%M:%S')] Sample+eval step ${step} done" | tee -a "$LOG"
+}
+
+latest_checkpoint_step() {
+    local latest=-1
+    local checkpoint
+    local basename
+    local checkpoint_step
+    while IFS= read -r checkpoint; do
+        basename="$(basename "$checkpoint")"
+        checkpoint_step="${basename#ckpt_step_}"
+        checkpoint_step="${checkpoint_step%.pth}"
+        if [[ "$checkpoint_step" =~ ^[0-9]+$ ]] \
+            && [ "$checkpoint_step" -gt "$latest" ]; then
+            latest="$checkpoint_step"
+        fi
+    done < <(find "$CHECKPOINT_BASE" -maxdepth 1 -type f \
+        -name 'ckpt_step_*.pth' 2>/dev/null)
+    printf '%s\n' "$latest"
 }
 
 echo "============================================================" | tee "$LOG"
@@ -126,16 +148,28 @@ PY
     echo "Phase ${phase}/${NUM_ALL_STEPS}: Train to step ${step} (num_steps=${TARGET_NUM_STEPS})" | tee -a "$LOG"
     echo "============================================================" | tee -a "$LOG"
 
+    LATEST_CHECKPOINT_STEP_BEFORE="$(latest_checkpoint_step)"
+    if [ "$AUDITED_BASE_TRANSITION_PENDING" -eq 1 ]; then
+        export PROMOE_AUDITED_BASE_RESUME=fresh-routing-audit-v2-provenance-only-v1
+    fi
     set +e
     CUDA_VISIBLE_DEVICES="${GPU_IDS}" $PYTHON train.py \
         --config "${TEMP_CONFIG}" \
         >> "$LOG" 2>&1
     TRAIN_RC=$?
     set -e
+    unset PROMOE_AUDITED_BASE_RESUME
 
     if [ $TRAIN_RC -ne 0 ]; then
         echo "Training FAILED at phase ${phase} (exit code $TRAIN_RC)" | tee -a "$LOG"
         exit $TRAIN_RC
+    fi
+    if [ "$AUDITED_BASE_TRANSITION_PENDING" -eq 1 ] \
+        && [ "$LATEST_CHECKPOINT_STEP_BEFORE" -lt "$step" ] \
+        && [ -s "${CHECKPOINT_BASE}/ckpt_step_${step}.pth" ]; then
+        # A successful current-code process crossed this boundary and persisted
+        # the current provenance. Later phases must use ordinary exact resume.
+        AUDITED_BASE_TRANSITION_PENDING=0
     fi
     echo "Phase ${phase} training completed successfully" | tee -a "$LOG"
 

@@ -16,6 +16,13 @@ import torch.nn as nn
 from torch.utils.data import BatchSampler, DataLoader, DistributedSampler
 
 from train import (
+    AUDITED_BASE_RESUME_COMMIT,
+    AUDITED_BASE_RESUME_CONFIG_BASENAME,
+    AUDITED_BASE_RESUME_CONFIG_SHA256,
+    AUDITED_BASE_RESUME_CURRENT_AST_SHA256,
+    AUDITED_BASE_RESUME_ENV,
+    AUDITED_BASE_RESUME_TOKEN,
+    AUDITED_BASE_RESUME_TRAIN_SHA256,
     AUGMENTATION_SEED_VERSION,
     LatentFolder,
     ResumableBatchSampler,
@@ -28,11 +35,15 @@ from train import (
     _config_source_contract,
     _collect_strict_training_provenance,
     _dataset_sampler_identity,
+    _audited_base_training_semantics_match,
+    _audited_base_current_ast_sha256,
     _legacy_resume_state,
+    _training_provenance_matches,
     _validate_training_provenance_contract,
     _valid_run_id,
     _resume_state_from_checkpoint,
     _restore_rng_state,
+    _resumed_with_audited_provenance_transition,
     _validate_strict_output_bucket,
     load_latest_checkpoint,
     save_checkpoint,
@@ -441,6 +452,91 @@ class TrainResumeTests(unittest.TestCase):
                 sampler_contract=self._sampler_contract(),
                 training_provenance=provenance,
             )
+
+    def test_only_audited_base_provenance_transition_is_allowed(self):
+        source_paths = {
+            "requirements.txt",
+            "config.py",
+            "utils.py",
+            "train.py",
+            "models/models_ProMoE_TC.py",
+            "models/modules.py",
+            "models/phase_metric.py",
+            "credit_redistribution/git_provenance.py",
+        }
+        checkpoint = self._training_provenance()
+        checkpoint["git"]["commit"] = AUDITED_BASE_RESUME_COMMIT
+        checkpoint["git"]["origin_repa_commit"] = AUDITED_BASE_RESUME_COMMIT
+        checkpoint["config"] = {
+            "version": TRAINING_PROVENANCE_VERSION,
+            "basename": AUDITED_BASE_RESUME_CONFIG_BASENAME,
+            "payload_sha256": AUDITED_BASE_RESUME_CONFIG_SHA256,
+        }
+        checkpoint["source_sha256"] = {
+            path: (
+                AUDITED_BASE_RESUME_TRAIN_SHA256
+                if path == "train.py"
+                else "c" * 64
+            )
+            for path in source_paths
+        }
+        current = copy.deepcopy(checkpoint)
+        current["git"]["commit"] = "f" * 40
+        current["git"]["origin_repa_commit"] = "f" * 40
+        current["source_sha256"]["train.py"] = "d" * 64
+
+        self.assertFalse(_training_provenance_matches(checkpoint, current))
+        with patch.dict(
+            os.environ,
+            {AUDITED_BASE_RESUME_ENV: AUDITED_BASE_RESUME_TOKEN},
+            clear=False,
+        ), patch(
+            "train._audited_base_training_semantics_match",
+            return_value=True,
+        ):
+            self.assertTrue(_training_provenance_matches(checkpoint, current))
+            changed = copy.deepcopy(current)
+            changed["source_sha256"]["utils.py"] = "e" * 64
+            self.assertFalse(
+                _training_provenance_matches(checkpoint, changed)
+            )
+            self.assertTrue(
+                _resumed_with_audited_provenance_transition(
+                    checkpoint,
+                    current,
+                )
+            )
+            self.assertFalse(
+                _resumed_with_audited_provenance_transition(
+                    current,
+                    copy.deepcopy(current),
+                )
+            )
+
+    def test_audited_base_transition_changes_no_training_semantics(self):
+        self.assertTrue(
+            _audited_base_training_semantics_match(
+                AUDITED_BASE_RESUME_COMMIT,
+                "HEAD",
+            )
+        )
+
+    def test_audited_base_transition_rejects_ignored_helper_drift(self):
+        source = Path(__file__).resolve().parents[2].joinpath("train.py").read_text(
+            encoding="utf-8"
+        )
+        original = "def _training_provenance_matches(checkpoint, current):\n"
+        changed = (
+            original
+            + "    global _UINT64_MASK\n"
+            + "    _UINT64_MASK = 0\n"
+        )
+        self.assertEqual(source.count(original), 1)
+        mutated = source.replace(original, changed, 1)
+        self.assertNotEqual(
+            _audited_base_current_ast_sha256(mutated),
+            AUDITED_BASE_RESUME_CURRENT_AST_SHA256,
+        )
 
     def test_strict_provenance_rejects_dirty_temporary_index_status(self):
         config_contract = _config_source_contract(

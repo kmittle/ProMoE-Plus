@@ -10,8 +10,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "$REPO_ROOT"
 
-CONFIG="configs/004_ProMoE_B_expert_contra_output_tau5_fresh_s0.yaml"
-LOG="${REPO_ROOT}/logs/log_ProMoE_B_expert_contra_output_tau5_fresh_s0_train_sample_eval.log"
+CONFIG="configs/004_ProMoE_B_expert_contra_output_tau5_fresh_s0_v2.yaml"
+LOG="${REPO_ROOT}/logs/log_ProMoE_B_expert_contra_output_tau5_fresh_s0_v2_train_sample_eval.log"
 mkdir -p "$(dirname "$LOG")"
 
 readarray -t YAML_INFO < <(python - "$CONFIG" <<'PY'
@@ -57,6 +57,9 @@ SAMPLE_BASE="${REPO_ROOT}/outputs/${MODEL_NAME}/${CUSTOM_CFG_NAME}/sample"
 
 PYTHON="/mnt/workspace/yujie/.conda/envs/promoe/bin/python"
 PYTHON_EVAL="/mnt/workspace/yujie/.conda/envs/fid_eval/bin/python"
+
+# Fail before step 0 unless this exact code/config is clean and pushed.
+export PROMOE_STRICT_PROVENANCE=1
 
 if [ -z "$STEP_LIST_STR" ]; then
     echo "ERROR: step_list_for_sample is empty or missing in ${CONFIG}" >&2

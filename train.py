@@ -1,3 +1,4 @@
+import ast
 import os
 import os.path as osp
 import torch
@@ -43,6 +44,7 @@ from credit_redistribution import CreditRedistributionController
 from credit_redistribution.benchmark import DistributedThroughputTimer
 from credit_redistribution.git_provenance import (
     repository_state,
+    run_git,
     verify_worktree_source_manifest,
 )
 from credit_redistribution.transcript import TranscriptOnlyRecorder
@@ -149,7 +151,31 @@ STRICT_PROVENANCE_SOURCE_PATHS = {
         "models/phase_metric.py",
         "credit_redistribution/git_provenance.py",
     ),
+    "ProMoE_TC_B_expert_contra": (
+        "requirements.txt",
+        "config.py",
+        "utils.py",
+        "train.py",
+        "models/models_ProMoE_TC_expert_contra.py",
+        "models/modules.py",
+        "credit_redistribution/git_provenance.py",
+    ),
 }
+AUDITED_BASE_RESUME_ENV = "PROMOE_AUDITED_BASE_RESUME"
+AUDITED_BASE_RESUME_TOKEN = "fresh-routing-audit-v2-provenance-only-v1"
+AUDITED_BASE_RESUME_CONFIG_BASENAME = (
+    "004_ProMoE_B_fresh_routing_audit_s0_v2.yaml"
+)
+AUDITED_BASE_RESUME_CONFIG_SHA256 = (
+    "c11983626dd8e65cf6074be4792c3f37a662acb01561537baca968a7db2ccca9"
+)
+AUDITED_BASE_RESUME_COMMIT = "3465ec3cd166c74a066970422b9e2a7134e1f9cb"
+AUDITED_BASE_RESUME_TRAIN_SHA256 = (
+    "e1f2f88413b7dd240a7178392fdc5ca8b6b83fc8f7da564176c8e808da345041"
+)
+AUDITED_BASE_RESUME_CURRENT_AST_SHA256 = (
+    "9238cc53b6b318db50dd74807a981df2d227c95ed9402379a2c323b639911192"
+)
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -1052,6 +1078,221 @@ def _validate_training_provenance_contract(contract):
     return contract
 
 
+def _canonical_training_semantics(source):
+    """Remove only the provenance-only edits allowed for the live Base run."""
+
+    class ResumeProvenanceNormalizer(ast.NodeTransformer):
+        @staticmethod
+        def _is_original_mismatch(test):
+            return (
+                isinstance(test, ast.Compare)
+                and isinstance(test.left, ast.Name)
+                and test.left.id == "checkpoint_training_provenance"
+                and len(test.ops) == 1
+                and isinstance(test.ops[0], ast.NotEq)
+                and len(test.comparators) == 1
+                and isinstance(test.comparators[0], ast.Name)
+                and test.comparators[0].id == "training_provenance"
+            )
+
+        @staticmethod
+        def _is_audited_mismatch(test):
+            if not isinstance(test, ast.UnaryOp) or not isinstance(test.op, ast.Not):
+                return False
+            call = test.operand
+            return (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and call.func.id == "_training_provenance_matches"
+                and len(call.args) == 2
+                and isinstance(call.args[0], ast.Name)
+                and call.args[0].id == "checkpoint_training_provenance"
+                and isinstance(call.args[1], ast.Name)
+                and call.args[1].id == "training_provenance"
+                and not call.keywords
+            )
+
+        def visit_If(self, node):
+            self.generic_visit(node)
+            if (
+                isinstance(node.test, ast.Call)
+                and isinstance(node.test.func, ast.Name)
+                and node.test.func.id
+                == "_resumed_with_audited_provenance_transition"
+                and len(node.test.args) == 2
+                and not node.test.keywords
+            ):
+                return None
+            if self._is_original_mismatch(node.test) or self._is_audited_mismatch(
+                node.test
+            ):
+                node.test = ast.Name(
+                    id="__strict_provenance_mismatch__",
+                    ctx=ast.Load(),
+                )
+            return node
+
+    tree = ast.parse(source)
+    ignored_functions = {
+        "_audited_base_current_ast_sha256",
+        "_canonical_training_semantics",
+        "_audited_base_training_semantics_match",
+        "_is_audited_base_provenance_transition",
+        "_resumed_with_audited_provenance_transition",
+        "_training_provenance_matches",
+    }
+    body = []
+    for node in tree.body:
+        if (
+            isinstance(node, ast.Import)
+            and len(node.names) == 1
+            and node.names[0].name == "ast"
+        ):
+            continue
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.module == "credit_redistribution.git_provenance"
+        ):
+            node = copy.deepcopy(node)
+            node.names = [alias for alias in node.names if alias.name != "run_git"]
+        assigned_names = {
+            target.id
+            for target in getattr(node, "targets", ())
+            if isinstance(target, ast.Name)
+        }
+        if "STRICT_PROVENANCE_SOURCE_PATHS" in assigned_names or any(
+            name.startswith("AUDITED_BASE_RESUME_") for name in assigned_names
+        ):
+            continue
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name in ignored_functions:
+                continue
+            if node.name in {"_resume_state_from_checkpoint", "worker"}:
+                node = ResumeProvenanceNormalizer().visit(copy.deepcopy(node))
+        body.append(node)
+    canonical = ast.Module(body=body, type_ignores=[])
+    return hashlib.sha256(
+        ast.dump(canonical, include_attributes=False).encode("utf-8")
+    ).hexdigest()
+
+
+def _audited_base_current_ast_sha256(source):
+    """Hash the reviewed train.py AST without the digest's own value."""
+
+    tree = ast.parse(source)
+    body = []
+    digest_assignment_found = False
+    for node in tree.body:
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == "AUDITED_BASE_RESUME_CURRENT_AST_SHA256"
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+            and _SHA256_PATTERN.fullmatch(node.value.value)
+        ):
+            digest_assignment_found = True
+            continue
+        body.append(node)
+    if not digest_assignment_found:
+        raise ValueError("Audited Base current-AST digest assignment is malformed")
+    normalized = ast.Module(body=body, type_ignores=[])
+    return hashlib.sha256(
+        ast.dump(normalized, include_attributes=False).encode("utf-8")
+    ).hexdigest()
+
+
+def _audited_base_training_semantics_match(checkpoint_commit, current_commit):
+    project_root = Path(__file__).resolve().parent
+    ancestry = run_git(
+        project_root,
+        "merge-base",
+        "--is-ancestor",
+        checkpoint_commit,
+        current_commit,
+        text=True,
+    )
+    if ancestry.returncode != 0:
+        return False
+    old_blob = run_git(
+        project_root,
+        "cat-file",
+        "blob",
+        f"{checkpoint_commit}:train.py",
+        text=False,
+    )
+    if old_blob.returncode != 0:
+        return False
+    current_source = Path(__file__).read_bytes()
+    if hashlib.sha256(old_blob.stdout).hexdigest() != (
+        AUDITED_BASE_RESUME_TRAIN_SHA256
+    ):
+        return False
+    try:
+        if _audited_base_current_ast_sha256(current_source.decode("utf-8")) != (
+            AUDITED_BASE_RESUME_CURRENT_AST_SHA256
+        ):
+            return False
+        old_canonical = _canonical_training_semantics(
+            old_blob.stdout.decode("utf-8")
+        )
+        current_canonical = _canonical_training_semantics(
+            current_source.decode("utf-8")
+        )
+    except (SyntaxError, UnicodeDecodeError):
+        return False
+    return old_canonical == current_canonical
+
+
+def _is_audited_base_provenance_transition(checkpoint, current):
+    if os.environ.get(AUDITED_BASE_RESUME_ENV) != AUDITED_BASE_RESUME_TOKEN:
+        return False
+    expected_config = {
+        "version": TRAINING_PROVENANCE_VERSION,
+        "basename": AUDITED_BASE_RESUME_CONFIG_BASENAME,
+        "payload_sha256": AUDITED_BASE_RESUME_CONFIG_SHA256,
+    }
+    if checkpoint["config"] != expected_config or current["config"] != expected_config:
+        return False
+    checkpoint_git = checkpoint["git"]
+    current_git = current["git"]
+    if checkpoint_git["commit"] != AUDITED_BASE_RESUME_COMMIT:
+        return False
+    checkpoint_sources = checkpoint["source_sha256"]
+    current_sources = current["source_sha256"]
+    expected_sources = set(STRICT_PROVENANCE_SOURCE_PATHS["ProMoE_TC_B"])
+    if set(checkpoint_sources) != expected_sources or set(current_sources) != expected_sources:
+        return False
+    if checkpoint_sources["train.py"] != AUDITED_BASE_RESUME_TRAIN_SHA256:
+        return False
+    for relative in expected_sources - {"train.py"}:
+        if checkpoint_sources[relative] != current_sources[relative]:
+            return False
+    if checkpoint["environment"] != current["environment"]:
+        return False
+    return _audited_base_training_semantics_match(
+        checkpoint_git["commit"],
+        current_git["commit"],
+    )
+
+
+def _training_provenance_matches(checkpoint, current):
+    if checkpoint == current:
+        return True
+    allowed = _is_audited_base_provenance_transition(checkpoint, current)
+    if allowed:
+        logging.warning(
+            "Accepted the audited provenance-only transition for %s",
+            AUDITED_BASE_RESUME_CONFIG_BASENAME,
+        )
+    return allowed
+
+
+def _resumed_with_audited_provenance_transition(checkpoint, current):
+    return checkpoint is not None and current is not None and checkpoint != current
+
+
 def _broadcast_training_provenance(cfg):
     local_contract = None
     local_error = None
@@ -1369,7 +1610,10 @@ def _resume_state_from_checkpoint(
             raise ValueError(
                 "Checkpoint training provenance is missing for a strict run"
             )
-        if checkpoint_training_provenance != training_provenance:
+        if not _training_provenance_matches(
+            checkpoint_training_provenance,
+            training_provenance,
+        ):
             raise ValueError(
                 "Checkpoint training provenance differs from this invocation"
             )
@@ -2498,6 +2742,14 @@ def worker(gpu, cfg):
         checkpoint_training_provenance = resume_state.get(
             'checkpoint_training_provenance'
         )
+        if _resumed_with_audited_provenance_transition(
+            checkpoint_training_provenance,
+            training_provenance,
+        ):
+            # The strict loader already proved this is the single audited Base
+            # transition. Keep the current provenance so the next checkpoint
+            # resumes by ordinary exact equality instead of repeating it.
+            checkpoint_training_provenance = None
         if checkpoint_training_provenance is not None:
             training_provenance = checkpoint_training_provenance
             training_provenance_sha256 = _json_sha256(training_provenance)
