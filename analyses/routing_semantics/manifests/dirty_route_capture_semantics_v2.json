@@ -1,0 +1,188 @@
+{
+  "protocol_version": 2,
+  "protocol_name": "dirty-route-capture-semantics-v2",
+  "scope": "discovery only; the captured 50K Base run lacks the sealed training provenance required for paper evidence",
+  "question": "Do Base ProMoE route IDs agree with independent DINOv2 patch semantics more than controls that preserve route counts or spatial route structure?",
+  "expected": {
+    "route_ids_sha256": "a0970482b7f3a9ff428530f8b1fe18a34c85a7fa92e2c8d0c29674764da0c5a0",
+    "capture_summary_sha256": "d999f4ca581c224053f09db0549ab110a3513fd6e836439ee446c091b5ed6f88",
+    "dino_state_dict_sha256": "8e2abd4e3e90a1d3bbb9b6f0869157d9af08027f984d7e7cbea967ccd9396c69",
+    "dino_source_tree_sha256": "955480c511ee3b6dc3ad2a6cfa5dfa0b6e79b7bd9c80cd1f488030baf475088b",
+    "vae_config_sha256": "44ced7d11f21b60cc66ca65c8be1a44c271a6299aab96914cfdf50240b8389b7",
+    "vae_state_dict_sha256": "2aa1f43011b553a4cba7f37456465cdbd48aab7b54b9348b890e8058ea7683ec",
+    "route_prefix": "base",
+    "sample_count": 32,
+    "token_grid_size": 16,
+    "num_routed_experts": 12,
+    "blocks": [1, 3, 5, 7, 9, 11],
+    "sigmas": [0.2, 0.5, 0.8],
+    "sample_latents": [
+      {
+        "relative_path": "n01632777/n01632777_1000.latent.npz",
+        "sha256": "feb68a81780a210dc951f3e93fdbcde8465e74f514ff126e280743c49da64c4d"
+      },
+      {
+        "relative_path": "n01818515/n01818515_10.latent.npz",
+        "sha256": "c40bf2c8b90a863bc158e0f9d018fbded840b163e13bb1940b8562be8e80b775"
+      },
+      {
+        "relative_path": "n01980166/n01980166_1001.latent.npz",
+        "sha256": "9dcefa49ab904ab7e15d4c0856343e4634193668173d6d87e79905410c207f36"
+      },
+      {
+        "relative_path": "n02100735/n02100735_10007.latent.npz",
+        "sha256": "c711976a9c20d1a0f773c192b2b184b23c38336adc7ce8c8edc3af6b19e02651"
+      },
+      {
+        "relative_path": "n02105251/n02105251_10.latent.npz",
+        "sha256": "2cc6ca9e327635b934ab995d736d448697a4acf871e27ee3bc0f08e1daac1f5d"
+      },
+      {
+        "relative_path": "n02119789/n02119789_10007.latent.npz",
+        "sha256": "efd1b9bfa90f452275c34266ecbf21b54133fb628aea1a4d35f9c5bdff41d6ce"
+      },
+      {
+        "relative_path": "n02123045/n02123045_10001.latent.npz",
+        "sha256": "e577dc06a44eaa9fefa4d7ad5b1cac42b3d9454839be203b2f662b5bd284c039"
+      },
+      {
+        "relative_path": "n02363005/n02363005_10010.latent.npz",
+        "sha256": "1385e9d328af49b8c0dc87296d23a328b43e0ee1db3ecf33d9894c123fb15fa5"
+      },
+      {
+        "relative_path": "n02488702/n02488702_1.latent.npz",
+        "sha256": "b65c2de0caaf3ce7bd2e20bab7c6a640f382d9a684b896f68d864803db049b97"
+      },
+      {
+        "relative_path": "n02493793/n02493793_1000.latent.npz",
+        "sha256": "209cf569b91aa1ad11e089507b3111062c286a5351f41b22e5f25bf2ebbdf165"
+      },
+      {
+        "relative_path": "n02641379/n02641379_1000.latent.npz",
+        "sha256": "25e883b9b8f7aea9d1a57471957cb2ee1ca088bfd5d9600f57abffcd2d4be976"
+      },
+      {
+        "relative_path": "n02939185/n02939185_10006.latent.npz",
+        "sha256": "51458b16a5a9881da6f38a75d9feea1b0fcba421ba0832389a5a951807eefc5c"
+      },
+      {
+        "relative_path": "n03063689/n03063689_10009.latent.npz",
+        "sha256": "d2303a37ee248910ff04a96c10d4015519f8edeff0e28d9a2c91b1c7de7a32ba"
+      },
+      {
+        "relative_path": "n03271574/n03271574_100.latent.npz",
+        "sha256": "a14be0c64da45a74bffa1516474d5ef90fa09593a3c2dadf5071ecb086739cbf"
+      },
+      {
+        "relative_path": "n03457902/n03457902_100263.latent.npz",
+        "sha256": "0f55351e81700ec6ed6d011823b1ce6fdaf82198676ab6006389b9d15637de7b"
+      },
+      {
+        "relative_path": "n03482405/n03482405_10061.latent.npz",
+        "sha256": "b5c93122fc390d65bbe5c802894965cc1f46cb6daa33ccc8c706967c012dd176"
+      },
+      {
+        "relative_path": "n03492542/n03492542_10107.latent.npz",
+        "sha256": "106a8107121e5e512f1606ca902b25d33336bbe3a579f081d292bc98959ecb57"
+      },
+      {
+        "relative_path": "n03527444/n03527444_1001.latent.npz",
+        "sha256": "5ecbd1ce644c2505c0dd85a161abc70d2b777773135ba4142cf798d575b44f82"
+      },
+      {
+        "relative_path": "n03721384/n03721384_10004.latent.npz",
+        "sha256": "67ef3835e6af57c7465e7bb565c615748d1adc2160bfe00e3985fbbeeffe5655"
+      },
+      {
+        "relative_path": "n03840681/n03840681_10007.latent.npz",
+        "sha256": "6ab980fd86a9cd4db51489a13afb812171eabfd53e20bfc0c6b2f996b2cf2296"
+      },
+      {
+        "relative_path": "n04141327/n04141327_1.latent.npz",
+        "sha256": "9fc453ad653ff25d384df5de7974a18fb963a353327979b224678a075dee7f47"
+      },
+      {
+        "relative_path": "n04179913/n04179913_10042.latent.npz",
+        "sha256": "8062c03b204019532b0e543b18c2dece9d5c0fa42edee0418ab041ed00ccc9fc"
+      },
+      {
+        "relative_path": "n04204347/n04204347_1.latent.npz",
+        "sha256": "5e946e42c31f522b7b297b6a7fed5dea697aea56c3e8ead5a7262086ee6e8031"
+      },
+      {
+        "relative_path": "n04330267/n04330267_1000.latent.npz",
+        "sha256": "993268eb2b1d7587e522247f45ff85e8e526a4c7f82b38937e1bcf58e81a7635"
+      },
+      {
+        "relative_path": "n04344873/n04344873_10013.latent.npz",
+        "sha256": "a03e5e8717d94a11cf032bd4e143769a7deb817fa489547d740e7f3b4943f8be"
+      },
+      {
+        "relative_path": "n07248320/n07248320_10021.latent.npz",
+        "sha256": "72288957a473c2cd3ce95dcb2fee654daf0269d92884b2519c4ff00dae685839"
+      },
+      {
+        "relative_path": "n07714990/n07714990_100.latent.npz",
+        "sha256": "0c8cd37e7b7d2bcfb5e2e0da32e3b29828b929cbb6a32fea0c4341c8d97c700e"
+      },
+      {
+        "relative_path": "n07716906/n07716906_10062.latent.npz",
+        "sha256": "f9270978f1753f7b655b698955d3647b5549d9ccd863de53752e615b44fc29db"
+      },
+      {
+        "relative_path": "n07753275/n07753275_10049.latent.npz",
+        "sha256": "71db07fc4a7400f5bc8870dc7cea583a652dbf19625de724e974f52ff3f6adc2"
+      },
+      {
+        "relative_path": "n07753592/n07753592_1003.latent.npz",
+        "sha256": "8edef2deeb3dcaa043a23924519ade803d4f63fda221cb47533435c2c5a054ef"
+      },
+      {
+        "relative_path": "n09246464/n09246464_1001.latent.npz",
+        "sha256": "398ebd0cf0facaadea54b41fe9e06ef2646f3911c0cf4d3fe2694a78547c3649"
+      },
+      {
+        "relative_path": "n09288635/n09288635_10029.latent.npz",
+        "sha256": "c783fc0a0c7dd9c27bb2f90d206bd27e982a782dc73192c1cc426734cf4825b7"
+      }
+    ]
+  },
+  "feature_extractor": {
+    "encoder": "dinov2-vit-b",
+    "attention_backend": "torch_no_xformers",
+    "dino_source_revision": "7764ea0f912e53c92e82eb78a2a1631e92725fc8",
+    "encoder_input_size": 224,
+    "latent_decode": "posterior_mode",
+    "latent_key": "latent",
+    "latent_shape": [8, 32, 32],
+    "device": "cpu",
+    "batch_size": 4,
+    "software_versions": {
+      "python": "3.10.21",
+      "numpy": "1.26.4",
+      "torch": "2.6.0+cu124",
+      "torchvision": "0.21.0+cu124",
+      "diffusers": "0.32.2",
+      "timm": "1.0.15"
+    },
+    "cross_image_token_stride": 2,
+    "route_separation_pair_count": 4096
+  },
+  "statistics": {
+    "control_resamples": 4999,
+    "bootstrap_resamples": 10000,
+    "seed": 2026083001,
+    "image_is_the_independent_unit": true,
+    "cross_image_bootstrap": "two_way_query_gallery_image_cluster_with_control_draw",
+    "multiple_testing": "holm_bonferroni_across_all_54_cell_metrics"
+  },
+  "gates": {
+    "minimum_within_image_knn_delta": 0.02,
+    "minimum_cross_image_knn_delta": 0.02,
+    "minimum_route_separation_delta": 0.01,
+    "maximum_one_sided_control_p": 0.05,
+    "minimum_passing_cells": 9,
+    "minimum_passing_blocks": 4,
+    "minimum_passing_sigmas": 2
+  }
+}

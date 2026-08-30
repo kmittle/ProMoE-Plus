@@ -35,6 +35,7 @@ Each Python entrypoint in this directory has a matching Markdown guide with the 
 - [`run_finite_horizon_routing_probe.py`](run_finite_horizon_routing_probe.py): compares immediate and 1/2/4/8-step utility of exact-count-preserving expert swaps. See [`run_finite_horizon_routing_probe.md`](run_finite_horizon_routing_probe.md).
 - [`run_finite_horizon_routing_probe_batch.py`](run_finite_horizon_routing_probe_batch.py): sealed plumbing/discovery/confirmation gate with image-cluster bootstrap and within-cell candidate-label permutation. See [`run_finite_horizon_routing_probe_batch.md`](run_finite_horizon_routing_probe_batch.md).
 - [`run_rcl_responsibility_probe_batch.py`](run_rcl_responsibility_probe_batch.py): sealed support/query gate for testing whether ProMoE's direct RCL prototype update improves held-out grouping while harming tied routed responsibility. See [`run_rcl_responsibility_probe_batch.md`](run_rcl_responsibility_probe_batch.md).
+- [`run_routing_semantic_audit.py`](run_routing_semantic_audit.py): locked dirty-discovery audit of whether historical Base ProMoE route IDs agree with independent DINOv2 patch semantics beyond spatial-shift and wrong-image controls. See [`run_routing_semantic_audit.md`](run_routing_semantic_audit.md).
 
 ## Shared Modules
 
@@ -50,3 +51,4 @@ Phase-Metric checkpoint-gate helpers live in [`analyses/routing_metric/`](routin
 Fresh Base longitudinal-audit helpers live in [`analyses/fresh_base_routing/`](fresh_base_routing/), including deterministic held-out selection, provenance sealing, multi-GPU execution, and cross-checkpoint decisions.
 Finite-horizon routing helpers live in [`analyses/finite_horizon_routing/`](finite_horizon_routing/), including the locked Euler schedule, exact-count swap validation, paired rollouts, and immediate-versus-future rank statistics.
 RCL-responsibility helpers live in [`analyses/affinity_responsibility/`](affinity_responsibility/), including deterministic four-rank support selection, DDP-mean direct prototype gradients, fixed-dispatch exact MSE interventions, image-level gates, and sealed multi-GPU execution.
+Routing-semantics helpers live in [`analyses/routing_semantics/`](routing_semantics/), including locked input validation, VAE posterior-mode reconstruction, frozen DINOv2 patch measurement, structure-preserving controls, and image-level statistics.
