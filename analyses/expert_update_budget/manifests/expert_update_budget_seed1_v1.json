@@ -1,0 +1,32 @@
+{
+  "protocol_version": 1,
+  "protocol_name": "expert-update-budget-seed1-v1",
+  "scope": "independent-seed trajectory diagnostic using the seed-0 thresholds; passing permits a paired frozen route-count and learning-credit comparison, not a training method",
+  "expected": {
+    "model_name": "ProMoE_TC_B",
+    "config_basename": "004_ProMoE_B_seed1_control.yaml",
+    "config_payload_sha256": "4f64ff14ec1083e8be639cd37c34f8610f09c0727d4ab8d0cd675a85b71402d9",
+    "training_git_commit": "257d51af287ea93103d7b4cad5ecab9dc1e3b541",
+    "global_seed": 1,
+    "world_size": 4,
+    "total_train_batch_size": 256,
+    "learning_rate": 0.0001,
+    "weight_decay": 0,
+    "gpu_ids": [4, 5, 6, 7],
+    "checkpoint_steps": [50000, 100000, 150000, 200000, 250000, 300000],
+    "moe_blocks": [1, 3, 5, 7, 9, 11],
+    "conditional_experts_per_block": 12
+  },
+  "gate_thresholds": {
+    "minimum_interval_block_cells": 30,
+    "minimum_cell_relative_displacement_gini": 0.08,
+    "minimum_median_relative_displacement_gini": 0.08,
+    "minimum_fraction_cells_above_displacement_effect_size": 0.67,
+    "minimum_median_relative_adamw_update_gini": 0.08,
+    "minimum_valid_within_cell_correlation_fraction": 0.9,
+    "minimum_median_displacement_update_spearman": 0.3,
+    "minimum_valid_block_persistence_fraction": 1.0,
+    "minimum_median_adjacent_interval_displacement_spearman": 0.3,
+    "minimum_fraction_blocks_with_positive_median_adjacent_spearman": 0.67
+  }
+}
