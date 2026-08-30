@@ -1,8 +1,0 @@
-实验 / Experiment: 1.2-B_expert_contra_output_lam1_fresh_s0
-model_name: ProMoE_TC_B_expert_contra  |  config: configs/004_ProMoE_B_expert_contra_output_lam1_fresh_s0.yaml
-基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分流、learnable cluster_centers 余弦 top-1 路由、shared expert 和 routing contrastive guidance）；直接父变体 / Parent: 旧 expert_contra_output 使用相同的专家输出分离方法，loss 系数为 0.5。
-
-核心改动 / Core changes（相对基线，重点优先）:
-1. 只调整专家输出分离强度：在 0-based blocks [1, 3, 5, 7, 9, 11] 中，仍然对不同 conditional routed experts 的平均输出计算 exp(-L2 distance / 0.5)，但 expert_contrastive_lam 从 0.5 加倍到 1.0。这项实验检查旧收益是否随有效正则强度增加。
-2. 其他模型行为不变：top-1 路由、token dispatch、shared/uncond experts 和系数为 1 的 routing contrastive loss 都保持不变；该辅助损失只在训练时计算，不增加可学习参数，也不增加采样时激活的专家数。
-3. 公平的从头训练：global_seed=0、4 GPUs [4, 5, 6, 7]、global batch=256、lr=1e-4、16 data workers，并读取 /home/dev/imagenet-1k 下的 encoded latents。新输出目录从 step 0 开始，在 300K 和 500K 分别生成 CFG 1.0/1.5 的 50K 样本并评估。
