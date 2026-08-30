@@ -1,8 +1,0 @@
-实验 / Experiment: 1.2-B_expert_contra_output_fresh_s0
-model_name: ProMoE_TC_B_expert_contra  |  config: configs/004_ProMoE_B_expert_contra_output_fresh_s0.yaml
-基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分流、learnable cluster_centers 余弦 top-1 路由、shared expert 和 routing contrastive guidance）；直接父变体 / Parent: 旧 004_ProMoE_B_expert_contra_output，使用相同的全 MoE 层 expert-output 正则，本实验只重建干净且可比的训练设置。
-
-核心改动 / Core changes（相对基线，重点优先）:
-1. 专家输出分离 / expert-output separation：在 0-based Transformer blocks [1, 3, 5, 7, 9, 11] 中，分别平均每个 conditional routed expert 实际处理的 token 输出，再最小化专家两两之间的 exp(-L2 distance / 0.5)；系数 expert_contrastive_lam 为 0.5。它推动不同专家的实际输出彼此远离，但不改变 top-1 路由和 token dispatch。
-2. 这是训练损失而不是新模块：实现只增加 auxiliary loss 计算，不增加可学习参数；该项仅在 training mode 生效，采样仍使用原有 ProMoE-TC 前向结构。基础 routing contrastive loss 保持开启，系数仍为 1。
-3. 干净对照 / clean comparison：global_seed=0、4 GPUs [4, 5, 6, 7]、global batch=256、lr=1e-4、16 data workers，并直接读取 /home/dev/imagenet-1k 下的 encoded latents。首次启动使用经 output guard 确认为空的新目录，从 step 0 训练；在 300K 和 500K 分别生成 CFG 1.0/1.5 的 50K 样本并评估。

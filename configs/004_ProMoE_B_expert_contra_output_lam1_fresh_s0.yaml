@@ -35,7 +35,7 @@ DiT_B_config:
     routing_contrastive_lam: 1
     use_top_k_for_routing_contrastive: True
     routing_contrastive_temperature: 0.07
-    expert_contrastive_lam: 0.5
+    expert_contrastive_lam: 1.0
     expert_contrastive_temperature: 0.5
     expert_contrastive_mode: "output"
     expert_contrastive_blocks: [1, 3, 5, 7, 9, 11]

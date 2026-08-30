@@ -5,4 +5,4 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/../../.." && pwd)"
-exec bash "${REPO_ROOT}/scripts/expert_contra/run_B_expert_contra_output_fresh_s0_train_sample_eval.sh"
+exec bash "${REPO_ROOT}/scripts/expert_contra/run_B_expert_contra_output_lam1_fresh_s0_train_sample_eval.sh"

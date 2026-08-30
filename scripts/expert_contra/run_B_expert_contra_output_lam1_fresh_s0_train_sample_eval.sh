@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Clean seed-0 replication of the full-block expert-output regularizer.
+# Clean seed-0 coefficient ablation of the full-block expert-output regularizer.
 # Train, sample, and evaluate sequentially at the configured checkpoints.
 #
 
@@ -10,8 +10,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "$REPO_ROOT"
 
-CONFIG="configs/004_ProMoE_B_expert_contra_output_fresh_s0.yaml"
-LOG="${REPO_ROOT}/logs/log_ProMoE_B_expert_contra_output_fresh_s0_train_sample_eval.log"
+CONFIG="configs/004_ProMoE_B_expert_contra_output_lam1_fresh_s0.yaml"
+LOG="${REPO_ROOT}/logs/log_ProMoE_B_expert_contra_output_lam1_fresh_s0_train_sample_eval.log"
 mkdir -p "$(dirname "$LOG")"
 
 readarray -t YAML_INFO < <(python - "$CONFIG" <<'PY'
