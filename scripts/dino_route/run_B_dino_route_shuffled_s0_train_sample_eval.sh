@@ -30,6 +30,12 @@ custom_cfg_name = os.path.splitext(os.path.basename(cfg_path))[0]
 step_list = cfg.get("step_list_for_sample", [])
 step_str = ",".join(map(str, step_list)) if step_list else ""
 orig_num_steps = int(cfg.get("num_steps", 0))
+dino_route = (
+    cfg.get("DiT_B_config", {})
+    .get("MoE_config", {})
+    .get("dino_route_config", {})
+)
+dino_table_path = os.path.expanduser(str(dino_route.get("table_path", "")))
 
 print(model_name)
 print(custom_cfg_name)
@@ -38,6 +44,7 @@ print(eval_gpu)
 print(gpu_str)
 print(step_str)
 print(orig_num_steps)
+print(dino_table_path)
 PY
 )
 
@@ -48,6 +55,7 @@ EVAL_GPU="${YAML_INFO[3]}"
 GPU_IDS="${YAML_INFO[4]}"
 STEP_LIST_STR="${YAML_INFO[5]}"
 ORIG_NUM_STEPS="${YAML_INFO[6]}"
+DINO_TABLE_PATH="${YAML_INFO[7]}"
 SAMPLE_BASE="${REPO_ROOT}/outputs/${MODEL_NAME}/${CUSTOM_CFG_NAME}/sample"
 
 PYTHON="/mnt/workspace/yujie/.conda/envs/promoe/bin/python"
@@ -56,6 +64,14 @@ PYTHON_EVAL="/mnt/workspace/yujie/.conda/envs/fid_eval/bin/python"
 if [ -z "$STEP_LIST_STR" ]; then
     echo "ERROR: step_list_for_sample is empty or missing in ${CONFIG}" >&2
     exit 1
+fi
+if [ "$MODEL_NAME" = "ProMoE_TC_B_dino_route" ]; then
+    if [ -z "$DINO_TABLE_PATH" ] || [ ! -f "$DINO_TABLE_PATH" ] \
+        || [ ! -f "${DINO_TABLE_PATH}.json" ]; then
+        echo "ERROR: DINO route table and metadata are required: ${DINO_TABLE_PATH}" >&2
+        echo "Build with preprocess/build_dino_route_table.py before launching." >&2
+        exit 1
+    fi
 fi
 IFS=',' read -ra ALL_STEPS <<< "$STEP_LIST_STR"
 NUM_ALL_STEPS=${#ALL_STEPS[@]}

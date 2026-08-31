@@ -1,0 +1,10 @@
+实验 / Experiment: 1.2-B_dino_route_uncertainty_s0
+model_name: ProMoE_TC_B_dino_route  |  config: configs/004_ProMoE_B_dino_route_uncertainty_s0.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分离、静态 `cluster_centers` 原型路由、shared expert 和 routing contrastive guidance）；直接父变体 / Parent: 基础 ProMoE-TC
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. DINOv2 只用于路由：离线表为每个 ImageNet 类别计算一个不确定度，不把 DINO 特征和 DiT 表征做 cosine/MSE 对齐。
+2. 负载感知的 assignment：不确定度乘以近期较低负载专家的 detached preference，只改变 top-k expert assignment；专家输出仍使用原始 cosine 权重。参数为 `strength: 0.08`、`ema_decay: 0.99`、`warmup_updates: 2000`、`bias_cap: 0.20`。
+3. 正确语义对应：`mapping: correct` 使用类别自身的不确定度；与基础 ProMoE 和 `mapping: shuffled` 控制保持 seed、batch、步数、采样和评估协议一致，以判断 DINO 是否真正帮助 MoE 路由。
+
+运行前置条件 / Prerequisite: 先执行 `CUDA_VISIBLE_DEVICES=4 /home/dev/miniforge3/envs/promoe/bin/python preprocess/build_dino_route_table.py --latent-root /home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz --output /home/dev/imagenet-1k/dino_route_table_s8.npz --dino-path /mnt/cubefs/caoboyuan/ProMoE-Plus/pretrained_ckpt/encoder/dinov2_vitb14/state_dict.pth --vae-path /mnt/cubefs/caoboyuan/ProMoE-Plus/pretrained_ckpt/vae/stabilityai--sd-vae-ft-mse --samples-per-class 8 --batch-size 32 --device cuda:0` 生成 route table 及其 `.json` 元数据；wrapper 会在训练前检查这两个文件。
