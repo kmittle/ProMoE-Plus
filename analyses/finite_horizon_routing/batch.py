@@ -227,6 +227,55 @@ def _relative_control_max(cell, control_name):
     return relative_mse, output
 
 
+def _has_decisive_h1_rank_inversion(cell):
+    """Ignore H1 order flips that fit inside the measured Euler error bound."""
+
+    candidates = cell["candidates"]
+    immediate = np.asarray(
+        [candidate["immediate_gain_relative"] for candidate in candidates],
+        dtype=np.float64,
+    )
+    h1 = np.asarray(
+        [candidate["h1_gain_relative"] for candidate in candidates],
+        dtype=np.float64,
+    )
+    native_h1 = np.asarray(
+        [candidate["h1_native_mse"] for candidate in candidates],
+        dtype=np.float64,
+    )
+    identity_error = float(
+        cell["numerical_controls"][
+            "max_abs_h1_state_velocity_identity_error"
+        ]
+    )
+    if (
+        immediate.ndim != 1
+        or immediate.size < 2
+        or h1.shape != immediate.shape
+        or native_h1.shape != immediate.shape
+        or not np.isfinite(immediate).all()
+        or not np.isfinite(h1).all()
+        or not np.isfinite(native_h1).all()
+        or not math.isfinite(identity_error)
+        or identity_error < 0
+        or np.any(native_h1 <= 0)
+    ):
+        raise ValueError("H1 rank safety inputs must be finite positive vectors")
+
+    relative_error = identity_error / native_h1
+    for left in range(immediate.size):
+        for right in range(left + 1, immediate.size):
+            immediate_delta = immediate[left] - immediate[right]
+            h1_delta = h1[left] - h1[right]
+            if (
+                immediate_delta * h1_delta < 0
+                and abs(h1_delta)
+                > relative_error[left] + relative_error[right]
+            ):
+                return True
+    return False
+
+
 def _case_metrics(result):
     cells = result.get("cells", [])
     expected_cells = len(BLOCK_INDICES) * len(START_INDICES)
@@ -305,14 +354,9 @@ def _case_metrics(result):
         safety["count_mismatches"] += int(
             cell["numerical_controls"]["count_mismatches"]
         )
-        h1 = cell["summary"]["per_horizon"]["1"]
-        h1_rho = h1["immediate_future_spearman"]
-        h1_mismatch = (
-            h1_rho is not None and float(h1_rho) < 1.0 - 1e-12
-        ) or float(h1["top_quartile_overlap"]) != 1.0 or not bool(
-            h1["best_candidate_matches"]
+        safety["h1_rank_mismatches"] += int(
+            _has_decisive_h1_rank_inversion(cell)
         )
-        safety["h1_rank_mismatches"] += int(h1_mismatch)
 
     return {
         "case_id": result["batch_case"]["id"],

@@ -27,6 +27,7 @@ from analyses.finite_horizon_routing.probe import (
 )
 from analyses.finite_horizon_routing.protocol import (
     BLOCK_INDICES,
+    HORIZONS,
     START_INDICES,
     analytic_flow_state,
     sampling_sigmas,
@@ -42,6 +43,7 @@ class FakeMoe(nn.Module):
         self.top_k = 1
         self.router_weight_mode = "identity"
         self.phase_metric = None
+        self.batch_weight_offset = 0.0
         self.cluster_centers = nn.Parameter(
             torch.tensor([[-1.0], [1.0]]),
             requires_grad=False,
@@ -51,6 +53,9 @@ class FakeMoe(nn.Module):
         del labels, timestep
         indices = (hidden_states[..., 0] >= 0).long().unsqueeze(-1)
         weights = torch.ones_like(indices, dtype=hidden_states.dtype)
+        weights = weights * (
+            1.0 + self.batch_weight_offset * (hidden_states.shape[0] - 1)
+        )
         return weights, indices, None
 
     def forward(self, hidden_states, labels, timestep=None):
@@ -307,6 +312,37 @@ class LatentIdentityTest(unittest.TestCase):
 
 
 class ProbeCellTest(unittest.TestCase):
+    def test_native_control_captures_weights_at_intervention_batch_size(self):
+        model = FakeModel(num_patches=16).eval()
+        for block_index in BLOCK_INDICES:
+            model.blocks[block_index].mlp.batch_weight_offset = 0.001
+        clean = torch.linspace(-1.0, 1.0, steps=16).reshape(1, 1, 1, 4, 4)
+        noise = torch.linspace(1.0, -1.0, steps=16).reshape(1, 1, 1, 4, 4)
+        cell = _probe_cell(
+            model=model,
+            clean_latent=clean,
+            noise=noise,
+            label=torch.tensor([7], dtype=torch.long),
+            sigmas=sampling_sigmas(),
+            start_index=50,
+            block_index=1,
+            num_train_timesteps=1000,
+            seed=123,
+            candidate_count=16,
+            candidate_chunk_size=8,
+        )
+
+        for control_name in (
+            "forced_native_vs_unforced",
+            "paired_native_vs_reference",
+        ):
+            control = cell["numerical_controls"][control_name]
+            self.assertEqual(control["first_prediction"], 0.0)
+            self.assertEqual(control["immediate_mse"], 0.0)
+            for horizon in HORIZONS:
+                self.assertEqual(control["horizons"][str(horizon)]["state"], 0.0)
+                self.assertEqual(control["horizons"][str(horizon)]["mse"], 0.0)
+
     def test_complete_cell_preserves_counts_and_tracks_propagation(self):
         model = FakeModel(num_patches=16).eval()
         clean = torch.linspace(-1.0, 1.0, steps=16).reshape(1, 1, 1, 4, 4)

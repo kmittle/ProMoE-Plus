@@ -11,7 +11,7 @@ from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
 from analyses.denoising_regret.probe import _correlation, _rankdata
 
 
-PROBE_VERSION = 1
+PROBE_VERSION = 2
 SAMPLE_STEPS = 250
 SAMPLE_SHIFT = 1.0
 SCHEDULER_SHIFT = 1.0

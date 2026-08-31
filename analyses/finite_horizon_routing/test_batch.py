@@ -4,7 +4,10 @@ import unittest
 
 import numpy as np
 
-from analyses.finite_horizon_routing.batch import aggregate_case_results
+from analyses.finite_horizon_routing.batch import (
+    _has_decisive_h1_rank_inversion,
+    aggregate_case_results,
+)
 from analyses.finite_horizon_routing.protocol import (
     BLOCK_INDICES,
     HORIZONS,
@@ -98,6 +101,46 @@ def _case(
 
 
 class AggregateTest(unittest.TestCase):
+    def test_h1_near_tie_inside_measured_error_is_not_a_rank_failure(self):
+        cell = {
+            "candidates": [
+                {
+                    "immediate_gain_relative": 1e-8,
+                    "h1_gain_relative": 0.0,
+                    "h1_native_mse": 1.0,
+                },
+                {
+                    "immediate_gain_relative": 0.0,
+                    "h1_gain_relative": 5e-8,
+                    "h1_native_mse": 1.0,
+                },
+            ],
+            "numerical_controls": {
+                "max_abs_h1_state_velocity_identity_error": 1e-7,
+            },
+        }
+        self.assertFalse(_has_decisive_h1_rank_inversion(cell))
+
+    def test_h1_inversion_beyond_measured_error_is_a_rank_failure(self):
+        cell = {
+            "candidates": [
+                {
+                    "immediate_gain_relative": 1e-3,
+                    "h1_gain_relative": -1e-3,
+                    "h1_native_mse": 1.0,
+                },
+                {
+                    "immediate_gain_relative": -1e-3,
+                    "h1_gain_relative": 1e-3,
+                    "h1_native_mse": 1.0,
+                },
+            ],
+            "numerical_controls": {
+                "max_abs_h1_state_velocity_identity_error": 1e-7,
+            },
+        }
+        self.assertTrue(_has_decisive_h1_rank_inversion(cell))
+
     def test_plumbing_withholds_efficacy(self):
         cases = [_case(f"plumbing-{index}") for index in range(4)]
         summary = aggregate_case_results(cases, "plumbing")

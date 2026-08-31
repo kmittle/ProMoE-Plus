@@ -573,10 +573,15 @@ def _probe_cell(
 ):
     sigma = float(sigmas[start_index])
     initial_state = analytic_flow_state(clean_latent, noise, sigma)
+    reference_batch_size = 2 * candidate_chunk_size
+    reference_state = initial_state.expand(
+        reference_batch_size, -1, -1, -1, -1
+    ).clone()
+    reference_labels = label.expand(reference_batch_size).clone()
     moe_layer = model.blocks[block_index].mlp
     native_capture = RouteInputCapture(moe_layer)
     timestep = torch.full(
-        (1,),
+        (reference_batch_size,),
         sigma * num_train_timesteps,
         device=clean_latent.device,
         dtype=clean_latent.dtype,
@@ -586,14 +591,26 @@ def _probe_cell(
             model,
             moe_layer,
             native_capture,
-            initial_state,
+            reference_state,
             timestep,
-            label,
+            reference_labels,
         )
     finally:
         native_capture.close()
-    native_ids = native_indices[0, :, 0]
-    native_route_weights = native_weights[0, :, 0]
+    native_ids_by_row = native_indices[:, :, 0]
+    native_weights_by_row = native_weights[:, :, 0]
+    if not torch.equal(
+        native_ids_by_row,
+        native_ids_by_row[0:1].expand_as(native_ids_by_row),
+    ):
+        raise RuntimeError("Duplicate reference rows produced different expert IDs")
+    if not torch.equal(
+        native_weights_by_row,
+        native_weights_by_row[0:1].expand_as(native_weights_by_row),
+    ):
+        raise RuntimeError("Duplicate reference rows produced different route weights")
+    native_ids = native_ids_by_row[0]
+    native_route_weights = native_weights_by_row[0]
     router_scores = _all_router_weights(moe_layer, hidden_states, timestep)[0]
     if not torch.equal(router_scores.argmax(dim=-1), native_ids):
         raise RuntimeError("Native routes disagree with reconstructed router scores")
@@ -621,15 +638,8 @@ def _probe_cell(
         index: RouteInputCapture(model.blocks[index].mlp)
         for index in BLOCK_INDICES
     }
-    reference_batch_size = 2 * candidate_chunk_size
-    reference_state = initial_state.expand(
-        reference_batch_size, -1, -1, -1, -1
-    ).clone()
-    reference_labels = label.expand(reference_batch_size).clone()
-    reference_ids = native_ids.unsqueeze(0).expand(reference_batch_size, -1).clone()
-    reference_weights = native_route_weights.unsqueeze(0).expand(
-        reference_batch_size, -1
-    ).clone()
+    reference_ids = native_ids_by_row.clone()
+    reference_weights = native_weights_by_row.clone()
     try:
         unforced = _rollout(
             model=model,
