@@ -14,7 +14,7 @@ from pathlib import Path
 import torch
 
 from analyses.finite_horizon_routing.runner import (
-    CONFIG_STEM,
+    LOCKED_BRANCH,
     LOCKED_DEVICES,
     MODEL_NAME,
     SOURCE_CASE_MANIFEST,
@@ -77,6 +77,14 @@ from .support import SUPPORT_UNCONDITIONAL_COUNT, select_support_cases
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+CONFIG_STEM = "004_ProMoE_B_fresh_routing_audit_s0"
+FRESH_CONFIG_SHA256 = (
+    "97fe9376303cc390eada34e2bc82fa903b998b78c82d181486630a25187c0ab6"
+)
+FRESH_TRAINING_CONFIG_SHA256 = (
+    "c11983626dd8e65cf6074be4792c3f37a662acb01561537baca968a7db2ccca9"
+)
+FRESH_TRAINING_COMMIT = "257d51af287ea93103d7b4cad5ecab9dc1e3b541"
 GATE_MANIFEST = (
     PROJECT_ROOT
     / "analyses"
@@ -288,7 +296,7 @@ def _build_protocol_payload(
     manifest = _canonical_gate_manifest()
     if sha256_file(SOURCE_CASE_MANIFEST) != SOURCE_CASE_MANIFEST_SHA256:
         raise ValueError("Fresh case manifest SHA256 changed")
-    git = _git_contract()
+    git = _git_contract(locked_branch=LOCKED_BRANCH)
     (
         checkpoint_path,
         config_path,
@@ -296,7 +304,14 @@ def _build_protocol_payload(
         model_metadata,
         checkpoint_record,
         fresh_run,
-    ) = _fresh_checkpoint_contract(checkpoint_path, latent_root)
+    ) = _fresh_checkpoint_contract(
+        checkpoint_path,
+        latent_root,
+        config_stem=CONFIG_STEM,
+        config_sha256=FRESH_CONFIG_SHA256,
+        training_config_sha256=FRESH_TRAINING_CONFIG_SHA256,
+        training_commit=FRESH_TRAINING_COMMIT,
+    )
     checkpoint_record = dict(checkpoint_record)
     checkpoint_record["state"] = ONLINE_CHECKPOINT_STATE
     source_manifest = load_source_manifest(SOURCE_CASE_MANIFEST, latent_root)
@@ -436,11 +451,13 @@ def _rebuild_protocol_payload(output_dir):
     run_dir = _validate_run_dir(
         output_root / MODEL_NAME / CONFIG_STEM,
         output_root=output_root,
+        expected_config_stem=CONFIG_STEM,
     )
     checkpoint_path = _checkpoint_path(
         run_dir,
         CHECKPOINT_STEP,
         output_root=output_root,
+        expected_config_stem=CONFIG_STEM,
     )
     config_path = PROJECT_ROOT / "configs" / f"{CONFIG_STEM}.yaml"
     runtime_cfg = load_runtime_cfg(config_path)

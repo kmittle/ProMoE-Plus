@@ -26,7 +26,9 @@ from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
 from credit_redistribution.git_provenance import (
     authoritative_remote_tip,
     git_output,
+    reject_history_overrides,
     repository_state,
+    run_git,
 )
 from analyses.denoising_regret.io import write_json_atomic
 from analyses.denoising_regret.probe import _build_model
@@ -36,14 +38,13 @@ from analyses.fresh_base_routing.audit import (
     _fresh_training_log_snapshot,
     _runtime_environment,
     _trainer_state_contract,
-    _validate_config,
+    _validate_config_payload,
     _validate_run_dir,
     _validate_training_provenance_contract,
     _verify_training_log,
     load_manifest as load_source_manifest,
 )
 from analyses.t_SNE.checkpoint_utils import (
-    load_runtime_cfg,
     parse_checkpoint_step,
     resolve_config_from_checkpoint,
 )
@@ -60,7 +61,7 @@ from .batch import (
     aggregate_case_results,
     requirements_for_split,
 )
-from .probe import run_finite_horizon_routing_probe
+from .probe import _load_verified_runtime_cfg, run_finite_horizon_routing_probe
 from .protocol import (
     BLOCK_INDICES,
     CANDIDATE_CHUNK_SIZE,
@@ -93,13 +94,22 @@ SOURCE_CASE_MANIFEST = (
 SOURCE_CASE_MANIFEST_SHA256 = (
     "41affd3a92f7c407fba33f894a10ee2392fc0cd25d105750c6dc095ea22a4824"
 )
-LOCKED_BRANCH = "analysis/long-horizon-routing"
+LOCKED_BRANCH = "analysis/long-horizon-routing-v2"
 LOCKED_DEVICES = ("cuda:0", "cuda:1", "cuda:2", "cuda:3")
 CHECKPOINT_STEP = 300_000
 FRESH_CHECKPOINT_STEPS = (50_000, 100_000, 150_000, 200_000, 250_000, 300_000)
 CHECKPOINT_STATE = "ema_model_state_dict"
 MODEL_NAME = "ProMoE_TC_B"
-CONFIG_STEM = "004_ProMoE_B_fresh_routing_audit_s0"
+CONFIG_STEM = "004_ProMoE_B_fresh_routing_audit_s0_v2"
+FRESH_CONFIG_SHA256 = (
+    "97fe9376303cc390eada34e2bc82fa903b998b78c82d181486630a25187c0ab6"
+)
+FRESH_TRAINING_CONFIG_SHA256 = (
+    "c11983626dd8e65cf6074be4792c3f37a662acb01561537baca968a7db2ccca9"
+)
+FRESH_TRAINING_COMMIT = "3465ec3cd166c74a066970422b9e2a7134e1f9cb"
+BASE_MODEL_CLASS = "models.models_ProMoE_TC.DiT"
+BASE_PARAMETER_COUNT = 300_607_520
 PROTOCOL_FILENAME = "protocol.json"
 PROTOCOL_SEAL_FILENAME = "protocol.sha256"
 RESULT_SHA256_FIELD = "result_sha256"
@@ -333,16 +343,16 @@ def _canonical_gate_manifest():
     return payload
 
 
-def _git_contract():
-    remote_ref = f"refs/heads/{LOCKED_BRANCH}"
+def _git_contract(locked_branch=LOCKED_BRANCH):
+    remote_ref = f"refs/heads/{locked_branch}"
     state = repository_state(
         PROJECT_ROOT,
         authoritative_remote_ref=remote_ref,
     )
     branch = state["branch"]
     commit = state["commit"]
-    if branch != LOCKED_BRANCH:
-        raise RuntimeError(f"Gate must run from branch {LOCKED_BRANCH}, got {branch}")
+    if branch != locked_branch:
+        raise RuntimeError(f"Gate must run from branch {locked_branch}, got {branch}")
     if state["status"]:
         raise RuntimeError("Gate requires a clean committed worktree")
     if state["authoritative_remote_tip"] != commit:
@@ -361,6 +371,43 @@ def _git_contract():
 
 def _authoritative_repa_commit():
     return authoritative_remote_tip()
+
+
+def _validate_training_commit(
+    training_commit,
+    logged_commit,
+    expected_training_commit,
+):
+    if training_commit != expected_training_commit or logged_commit != training_commit:
+        raise ValueError("Fresh training commit differs from the locked run identity")
+
+    reject_history_overrides(PROJECT_ROOT)
+    authoritative_tip = _authoritative_repa_commit()
+    local_tip = git_output(
+        PROJECT_ROOT,
+        "rev-parse",
+        "--verify",
+        "refs/remotes/origin/repa^{commit}",
+    )
+    if local_tip != authoritative_tip:
+        raise RuntimeError(
+            "Local origin/repa is stale relative to the authoritative remote"
+        )
+    ancestry = run_git(
+        PROJECT_ROOT,
+        "merge-base",
+        "--is-ancestor",
+        expected_training_commit,
+        authoritative_tip,
+        text=True,
+    )
+    if ancestry.returncode == 1:
+        raise ValueError(
+            "Locked Fresh training commit is no longer in authoritative repa history"
+        )
+    if ancestry.returncode != 0:
+        raise RuntimeError("Could not verify Fresh training commit ancestry")
+    return authoritative_tip
 
 
 def _analysis_runtime_environment(devices):
@@ -509,7 +556,7 @@ def _write_sealed_json(path, payload, hash_field):
     return sealed
 
 
-def _source_hashes(config_path):
+def _source_hashes(config_path, expected_config_sha256=None):
     paths = list(STATIC_SOURCE_PATHS) + [
         str(Path(config_path).resolve().relative_to(PROJECT_ROOT.resolve()))
     ]
@@ -519,10 +566,24 @@ def _source_hashes(config_path):
         if not path.is_file():
             raise FileNotFoundError(f"Locked source is missing: {path}")
         hashes[relative] = sha256_file(path)
+    config_relative = str(Path(config_path).resolve().relative_to(PROJECT_ROOT.resolve()))
+    if (
+        expected_config_sha256 is not None
+        and hashes[config_relative] != expected_config_sha256
+    ):
+        raise ValueError("Fresh Base config changed while the protocol was built")
     return hashes
 
 
-def _read_checkpoint_record(checkpoint_path, runtime_cfg, fresh_training_log):
+def _read_checkpoint_record(
+    checkpoint_path,
+    runtime_cfg,
+    fresh_training_log,
+    *,
+    expected_config_stem=CONFIG_STEM,
+    expected_training_config_sha256=FRESH_TRAINING_CONFIG_SHA256,
+    expected_training_commit=FRESH_TRAINING_COMMIT,
+):
     """Load and identify one checkpoint through the same open file handle."""
 
     checkpoint_path = Path(checkpoint_path)
@@ -551,6 +612,15 @@ def _read_checkpoint_record(checkpoint_path, runtime_cfg, fresh_training_log):
                 expected_training_provenance_sha256=fresh_training_log[
                     "training_provenance_sha256"
                 ],
+                expected_training_config_stem=expected_config_stem,
+                expected_training_config_sha256=(
+                    expected_training_config_sha256
+                ),
+                training_git_contract={
+                    "commit": expected_training_commit,
+                    "origin_repa_divergence": "0\t0",
+                },
+                training_source_project_root=PROJECT_ROOT,
             )
         finally:
             del checkpoint
@@ -571,13 +641,22 @@ def _read_checkpoint_record(checkpoint_path, runtime_cfg, fresh_training_log):
     }
 
 
-def _checkpoint_contract(checkpoint_path, latent_root):
+def _checkpoint_contract(
+    checkpoint_path,
+    latent_root,
+    *,
+    config_stem=CONFIG_STEM,
+    config_sha256=FRESH_CONFIG_SHA256,
+    training_config_sha256=FRESH_TRAINING_CONFIG_SHA256,
+    training_commit=FRESH_TRAINING_COMMIT,
+):
     training_project_root = _main_worktree_root()
     training_output_root = training_project_root / "outputs"
-    expected_run_dir = training_output_root / MODEL_NAME / CONFIG_STEM
+    expected_run_dir = training_output_root / MODEL_NAME / config_stem
     run_dir = _validate_run_dir(
         expected_run_dir,
         output_root=training_output_root,
+        expected_config_stem=config_stem,
     )
     if run_dir != expected_run_dir:
         raise ValueError("Fresh Base run is not under the main worktree output root")
@@ -585,6 +664,7 @@ def _checkpoint_contract(checkpoint_path, latent_root):
         run_dir,
         CHECKPOINT_STEP,
         output_root=training_output_root,
+        expected_config_stem=config_stem,
     )
     supplied_checkpoint_path = Path(checkpoint_path).resolve(strict=True)
     if supplied_checkpoint_path != canonical_checkpoint_path.resolve(strict=True):
@@ -593,10 +673,13 @@ def _checkpoint_contract(checkpoint_path, latent_root):
     if parse_checkpoint_step(checkpoint_path) != CHECKPOINT_STEP:
         raise ValueError(f"Gate requires checkpoint step {CHECKPOINT_STEP}")
     config_path = resolve_config_from_checkpoint(checkpoint_path)
-    if config_path.stem != CONFIG_STEM:
-        raise ValueError(f"Gate requires config {CONFIG_STEM}")
-    _validate_config(config_path, latent_root=latent_root)
-    runtime_cfg = load_runtime_cfg(config_path)
+    if config_path.stem != config_stem:
+        raise ValueError(f"Gate requires config {config_stem}")
+    runtime_cfg, config_payload, config_identity = _load_verified_runtime_cfg(
+        config_path,
+        expected_sha256=config_sha256,
+    )
+    _validate_config_payload(config_payload, latent_root=latent_root)
     if runtime_cfg.model_name != MODEL_NAME:
         raise ValueError(f"Gate requires model_name {MODEL_NAME}")
     for name, expected in (
@@ -612,6 +695,8 @@ def _checkpoint_contract(checkpoint_path, latent_root):
         run_dir,
         checkpoint_steps=FRESH_CHECKPOINT_STEPS,
         project_root=training_project_root,
+        expected_config_stem=config_stem,
+        expected_training_config_sha256=training_config_sha256,
     )
     training_environment = _runtime_environment(LOCKED_DEVICES)
     analysis_environment = _analysis_runtime_environment(LOCKED_DEVICES)
@@ -622,10 +707,18 @@ def _checkpoint_contract(checkpoint_path, latent_root):
     }
     del model
     gc.collect()
+    if model_metadata != {
+        "class": BASE_MODEL_CLASS,
+        "parameter_count": BASE_PARAMETER_COUNT,
+    }:
+        raise ValueError("Checkpoint config does not build the locked Base ProMoE")
     checkpoint_record = _read_checkpoint_record(
         checkpoint_path,
         runtime_cfg,
         fresh_training_log,
+        expected_config_stem=config_stem,
+        expected_training_config_sha256=training_config_sha256,
+        expected_training_commit=training_commit,
     )
     trainer_contract = checkpoint_record["trainer_contract"]
 
@@ -644,21 +737,29 @@ def _checkpoint_contract(checkpoint_path, latent_root):
         run_dir=run_dir,
         output_root=training_output_root,
         project_root=training_project_root,
+        expected_config_stem=config_stem,
+        expected_training_config_sha256=training_config_sha256,
     )
 
     training_provenance = trainer_contract["training_provenance"]
     _validate_training_provenance_contract(
         training_provenance,
         expected_sha256=fresh_training_log["training_provenance_sha256"],
+        git_contract={
+            "commit": training_commit,
+            "origin_repa_divergence": "0\t0",
+        },
         environment=training_environment,
+        expected_config_stem=config_stem,
+        expected_config_payload_sha256=training_config_sha256,
+        source_project_root=PROJECT_ROOT,
     )
-    training_commit = training_provenance["git"]["commit"]
-    origin_repa_commit = _authoritative_repa_commit()
-    if (
-        training_commit != origin_repa_commit
-        or fresh_training_log["training_git_commit"] != training_commit
-    ):
-        raise ValueError("Fresh training commit is not the current pushed origin/repa tip")
+    observed_training_commit = training_provenance["git"]["commit"]
+    origin_repa_commit = _validate_training_commit(
+        observed_training_commit,
+        fresh_training_log["training_git_commit"],
+        training_commit,
+    )
 
     dataset_identity = trainer_contract["trajectory"]["sampler_contract"]["dataset"]
     observed_dataset_identity = _dataset_identity_from_latent_root(
@@ -679,8 +780,9 @@ def _checkpoint_contract(checkpoint_path, latent_root):
             "main_output_root": str(training_output_root),
             "run_dir": str(run_dir),
             "resolved_run_dir": str(run_dir.resolve(strict=True)),
+            "config_identity": config_identity,
             "training_log": fresh_training_log,
-            "training_commit": training_commit,
+            "training_commit": observed_training_commit,
             "origin_repa_commit": origin_repa_commit,
             "dataset_identity": dataset_identity,
             "observed_dataset_identity": observed_dataset_identity,
@@ -726,7 +828,6 @@ def _build_protocol_payload(
         checkpoint_record,
         fresh_run,
     ) = _checkpoint_contract(checkpoint_path, latent_root)
-    _validate_config(config_path, latent_root=latent_root)
     if Path(runtime_cfg.latent_data_path).resolve() != Path(latent_root).resolve():
         raise ValueError("Runtime latent root differs from the gate input")
     output_dir = Path(output_dir or _default_output_dir(checkpoint_path)).resolve()
@@ -781,7 +882,8 @@ def _build_protocol_payload(
         "checkpoint": checkpoint_record,
         "config": {
             "path": str(config_path),
-            "sha256": sha256_file(config_path),
+            "size": fresh_run["config_identity"]["size"],
+            "sha256": fresh_run["config_identity"]["sha256"],
             "stem": config_path.stem,
         },
         "model": model_metadata,
@@ -808,7 +910,10 @@ def _build_protocol_payload(
         "assignments": assignments,
         "cases": cases,
         "fresh_run": fresh_run,
-        "source_hashes": _source_hashes(config_path),
+        "source_hashes": _source_hashes(
+            config_path,
+            expected_config_sha256=FRESH_CONFIG_SHA256,
+        ),
         "output_dir": str(output_dir),
         "novelty_boundary": (
             "This protocol tests a diffusion-MoE-specific diagnosis under strict "
@@ -842,16 +947,21 @@ def _rebuild_protocol_payload(output_dir):
     run_dir = _validate_run_dir(
         training_output_root / MODEL_NAME / CONFIG_STEM,
         output_root=training_output_root,
+        expected_config_stem=CONFIG_STEM,
     )
     checkpoint_path = _checkpoint_path(
         run_dir,
         CHECKPOINT_STEP,
         output_root=training_output_root,
+        expected_config_stem=CONFIG_STEM,
     )
     config_path = PROJECT_ROOT / "configs" / f"{CONFIG_STEM}.yaml"
     if config_path.is_symlink() or not config_path.is_file():
         raise FileNotFoundError(f"Canonical Fresh Base config is missing: {config_path}")
-    runtime_cfg = load_runtime_cfg(config_path)
+    runtime_cfg, _, _ = _load_verified_runtime_cfg(
+        config_path,
+        expected_sha256=FRESH_CONFIG_SHA256,
+    )
     latent_root = Path(runtime_cfg.latent_data_path).resolve(strict=True)
     return _build_protocol_payload(
         checkpoint_path=checkpoint_path,
@@ -928,6 +1038,12 @@ def _validate_case_result(result, protocol, case, device, path):
     }
     if result.get("latent_identity") != expected_latent_identity:
         raise ValueError(f"Result latent identity changed: {path}")
+    expected_config_identity = {
+        "size": protocol["config"]["size"],
+        "sha256": protocol["config"]["sha256"],
+    }
+    if result.get("config_identity") != expected_config_identity:
+        raise ValueError(f"Result config identity changed: {path}")
     exact_values = {
         "finite_horizon_routing_probe_version": PROBE_VERSION,
         "checkpoint_step": CHECKPOINT_STEP,
@@ -984,6 +1100,7 @@ def _run_device_cases(device, cases, protocol, output_dir):
             num_threads=8,
             expected_checkpoint_size=protocol["checkpoint"]["size"],
             expected_checkpoint_sha256=protocol["checkpoint"]["sha256"],
+            expected_config_sha256=protocol["config"]["sha256"],
             expected_latent_size=case["latent_size"],
             expected_latent_sha256=case["latent_sha256"],
         )

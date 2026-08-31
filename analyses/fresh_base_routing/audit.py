@@ -779,8 +779,13 @@ def _validate_training_provenance_contract(
     expected_sha256=None,
     git_contract=None,
     environment=None,
+    expected_config_stem=CONFIG_STEM,
+    expected_config_payload_sha256=CANONICAL_TRAINING_CONFIG_SHA256,
+    source_project_root=PROJECT_ROOT,
 ):
     """Independently verify the launch evidence embedded by train.py."""
+
+    source_project_root = _absolute_path(source_project_root)
 
     if not isinstance(contract, dict) or set(contract) != {
         "version",
@@ -829,9 +834,9 @@ def _validate_training_provenance_contract(
         raise ValueError("Checkpoint launch config contract is malformed")
     if (
         config_contract["version"] != 1
-        or config_contract["basename"] != f"{CONFIG_STEM}.yaml"
+        or config_contract["basename"] != f"{expected_config_stem}.yaml"
         or config_contract["payload_sha256"]
-        != CANONICAL_TRAINING_CONFIG_SHA256
+        != expected_config_payload_sha256
     ):
         raise ValueError("Checkpoint launch config is not the canonical Base config")
 
@@ -845,13 +850,13 @@ def _validate_training_provenance_contract(
         if not isinstance(digest, str) or not _SHA256_PATTERN.fullmatch(digest):
             raise ValueError("Checkpoint launch source hash is malformed")
         _verify_file(
-            PROJECT_ROOT / relative,
+            source_project_root / relative,
             digest,
             f"Training launch source {relative}",
         )
     if git_contract is not None:
         verify_worktree_source_manifest(
-            PROJECT_ROOT,
+            source_project_root,
             commit,
             source_sha256,
         )
@@ -888,6 +893,8 @@ def _fresh_training_log_snapshot(
     run_dir,
     checkpoint_steps=CHECKPOINT_STEPS,
     project_root=PROJECT_ROOT,
+    expected_config_stem=CONFIG_STEM,
+    expected_training_config_sha256=CANONICAL_TRAINING_CONFIG_SHA256,
 ):
     checkpoint_steps = _normalize_checkpoint_steps(checkpoint_steps)
     project_root = _absolute_path(project_root)
@@ -946,10 +953,10 @@ def _fresh_training_log_snapshot(
         provenance_match["run_id"] != run_id
         or provenance_match["launch_sha256"] != launch_sha256
         or provenance_match["config_sha256"]
-        != CANONICAL_TRAINING_CONFIG_SHA256
+        != expected_training_config_sha256
     ):
         raise ValueError("Training provenance marker differs from the fresh run")
-    if marker_match["config"] != CONFIG_STEM:
+    if marker_match["config"] != expected_config_stem:
         raise ValueError("Fresh run marker config does not match the audit")
     if marker_match["global_seed"] != "0" or marker_match["world_size"] != "4":
         raise ValueError("Fresh run marker seed/world size does not match the audit")
@@ -1147,6 +1154,8 @@ def _verify_training_log(
     run_dir=None,
     output_root=OUTPUT_ROOT,
     project_root=None,
+    expected_config_stem=CONFIG_STEM,
+    expected_training_config_sha256=CANONICAL_TRAINING_CONFIG_SHA256,
 ):
     project_root = _absolute_path(
         project_root or snapshot.get("project_root", PROJECT_ROOT)
@@ -1157,7 +1166,11 @@ def _verify_training_log(
     if path.is_symlink() or not path.is_file():
         raise FileNotFoundError(f"Training log is missing: {path}")
     if run_dir is not None:
-        expected_run_dir = _validate_run_dir(run_dir, output_root=output_root)
+        expected_run_dir = _validate_run_dir(
+            run_dir,
+            output_root=output_root,
+            expected_config_stem=expected_config_stem,
+        )
         if snapshot.get("run_dir") != str(expected_run_dir):
             raise RuntimeError("Training log snapshot is bound to another run path")
         if snapshot.get("resolved_run_dir") != str(expected_run_dir.resolve(strict=True)):
@@ -1199,7 +1212,7 @@ def _verify_training_log(
     ):
         raise RuntimeError("Training log launch provenance changed")
     if (
-        marker_match["config"] != CONFIG_STEM
+        marker_match["config"] != expected_config_stem
         or marker_match["global_seed"] != "0"
         or marker_match["world_size"] != "4"
     ):
@@ -1231,6 +1244,8 @@ def _verify_training_log(
         or provenance_match["git_commit"] != snapshot["training_git_commit"]
         or provenance_match["config_sha256"]
         != snapshot["training_config_sha256"]
+        or provenance_match["config_sha256"]
+        != expected_training_config_sha256
     ):
         raise RuntimeError("Training log provenance marker is invalid")
     for key in ("resume_line_index", "empty_directory_line_index"):
@@ -1379,6 +1394,10 @@ def _trainer_state_contract(
     expected_total_batch_size,
     expected_run_id=None,
     expected_training_provenance_sha256=None,
+    expected_training_config_stem=CONFIG_STEM,
+    expected_training_config_sha256=CANONICAL_TRAINING_CONFIG_SHA256,
+    training_git_contract=None,
+    training_source_project_root=PROJECT_ROOT,
 ):
     if not isinstance(trainer_state, dict):
         raise ValueError("Checkpoint trainer_state must be a mapping")
@@ -1404,6 +1423,10 @@ def _trainer_state_contract(
         _validate_training_provenance_contract(
             trainer_state.get("training_provenance"),
             expected_sha256=expected_training_provenance_sha256,
+            git_contract=training_git_contract,
+            expected_config_stem=expected_training_config_stem,
+            expected_config_payload_sha256=expected_training_config_sha256,
+            source_project_root=training_source_project_root,
         )
     )
 
@@ -1696,8 +1719,7 @@ def _checkpoint_contract(
         gc.collect()
 
 
-def _validate_config(config_path, latent_root=None):
-    payload = _load_yaml(config_path)
+def _validate_config_payload(payload, latent_root=None):
     if _normalized_config_sha256(payload) != CANONICAL_CONFIG_SHA256:
         raise ValueError("Fresh Base config differs from the locked canonical config")
     if (
@@ -1743,6 +1765,10 @@ def _validate_config(config_path, latent_root=None):
     if payload.get("num_steps", 0) < PRIMARY_CHECKPOINT_STEP + 1:
         raise ValueError("Fresh Base config ends before the primary checkpoint")
     return payload
+
+
+def _validate_config(config_path, latent_root=None):
+    return _validate_config_payload(_load_yaml(config_path), latent_root=latent_root)
 
 
 def _source_contract(runtime_cfg):
@@ -1838,7 +1864,11 @@ def _output_dir(path):
     return path
 
 
-def _validate_run_dir(run_dir, output_root=OUTPUT_ROOT):
+def _validate_run_dir(
+    run_dir,
+    output_root=OUTPUT_ROOT,
+    expected_config_stem=CONFIG_STEM,
+):
     run_dir = _absolute_path(run_dir)
     output_root = _absolute_path(output_root)
     # Keep the lexical repository path in the protocol.  The path may be a
@@ -1850,14 +1880,15 @@ def _validate_run_dir(run_dir, output_root=OUTPUT_ROOT):
         raise ValueError(
             f"Fresh Base run path must stay lexically under {output_root}"
         ) from error
-    if run_dir.name != CONFIG_STEM or run_dir.parent.name != MODEL_NAME:
+    if run_dir.name != expected_config_stem or run_dir.parent.name != MODEL_NAME:
         raise ValueError(
-            f"Expected run directory outputs/{MODEL_NAME}/{CONFIG_STEM}, got {run_dir}"
+            "Expected run directory "
+            f"outputs/{MODEL_NAME}/{expected_config_stem}, got {run_dir}"
         )
     if not run_dir.is_dir():
         raise NotADirectoryError(f"Fresh Base run directory is missing: {run_dir}")
     resolved = run_dir.resolve(strict=True)
-    if resolved.name != CONFIG_STEM or resolved.parent.name != MODEL_NAME:
+    if resolved.name != expected_config_stem or resolved.parent.name != MODEL_NAME:
         raise ValueError(
             "Fresh Base run symlink target does not preserve the canonical run name"
         )
@@ -1889,10 +1920,19 @@ def _validate_run_dir(run_dir, output_root=OUTPUT_ROOT):
     return run_dir
 
 
-def _checkpoint_path(run_dir, step, output_root=OUTPUT_ROOT):
+def _checkpoint_path(
+    run_dir,
+    step,
+    output_root=OUTPUT_ROOT,
+    expected_config_stem=CONFIG_STEM,
+):
     """Return a real checkpoint directly inside this run's checkpoint dir."""
 
-    run_dir = _validate_run_dir(run_dir, output_root=output_root)
+    run_dir = _validate_run_dir(
+        run_dir,
+        output_root=output_root,
+        expected_config_stem=expected_config_stem,
+    )
     checkpoint_dir = run_dir / "checkpoints"
     if checkpoint_dir.is_symlink() or not checkpoint_dir.is_dir():
         raise NotADirectoryError(

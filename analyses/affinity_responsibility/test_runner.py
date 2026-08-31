@@ -68,6 +68,38 @@ class CanonicalManifestTest(unittest.TestCase):
             len(set(runner.STATIC_SOURCE_PATHS)),
         )
 
+    def test_gate_keeps_the_original_fresh_run_identity(self):
+        class StopAfterCheckpointContract(Exception):
+            pass
+
+        checkpoint_path = Path("/old/ckpt_step_300000.pth")
+        with (
+            mock.patch.object(runner, "_canonical_gate_manifest", return_value={}),
+            mock.patch.object(
+                runner,
+                "sha256_file",
+                return_value=runner.SOURCE_CASE_MANIFEST_SHA256,
+            ),
+            mock.patch.object(runner, "_git_contract", return_value={}) as git_contract,
+            mock.patch.object(
+                runner,
+                "_fresh_checkpoint_contract",
+                side_effect=StopAfterCheckpointContract,
+            ) as checkpoint_contract,
+        ):
+            with self.assertRaises(StopAfterCheckpointContract):
+                runner._build_protocol_payload(checkpoint_path, "/latents")
+
+        git_contract.assert_called_once_with(locked_branch=runner.LOCKED_BRANCH)
+        checkpoint_contract.assert_called_once_with(
+            checkpoint_path,
+            "/latents",
+            config_stem="004_ProMoE_B_fresh_routing_audit_s0",
+            config_sha256=runner.FRESH_CONFIG_SHA256,
+            training_config_sha256=runner.FRESH_TRAINING_CONFIG_SHA256,
+            training_commit="257d51af287ea93103d7b4cad5ecab9dc1e3b541",
+        )
+
 
 class CliExitCodeTest(unittest.TestCase):
     def test_negative_gate_result_is_failure(self):

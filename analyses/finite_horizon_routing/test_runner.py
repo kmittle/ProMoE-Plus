@@ -16,22 +16,34 @@ from easydict import EasyDict
 from torch.torch_version import TorchVersion
 
 from analyses.finite_horizon_routing.runner import (
+    CHECKPOINT_STEP,
+    CONFIG_STEM,
+    FRESH_CHECKPOINT_STEPS,
+    FRESH_CONFIG_SHA256,
+    FRESH_TRAINING_COMMIT,
+    FRESH_TRAINING_CONFIG_SHA256,
     LOCKED_BRANCH,
+    MODEL_NAME,
+    PROJECT_ROOT,
     PROTOCOL_FILENAME,
     PROTOCOL_SEAL_FILENAME,
     SPLIT_PREREQUISITES,
     SUMMARY_SHA256_FIELD,
     _analysis_runtime_environment,
     _arm_parent_death_signal,
+    _checkpoint_contract,
     _exclusive_lock,
     _git_contract,
     _main_worktree_root,
     _publish_protocol,
     _read_checkpoint_record,
     _read_sealed_json,
+    _run_device_cases,
     _sealed_payload,
+    _validate_training_commit,
     _verify_completed_split,
     _write_sealed_json,
+    sha256_file,
     verify_protocol,
 )
 from analyses.run_finite_horizon_routing_probe import _publish_result
@@ -330,9 +342,151 @@ class RuntimeContractTest(unittest.TestCase):
                         training_log,
                     )
             self.assertEqual(trainer_contract.call_args.args[0]["source"], "A")
+            self.assertEqual(
+                trainer_contract.call_args.kwargs["expected_training_config_stem"],
+                CONFIG_STEM,
+            )
+            self.assertEqual(
+                trainer_contract.call_args.kwargs[
+                    "expected_training_config_sha256"
+                ],
+                FRESH_TRAINING_CONFIG_SHA256,
+            )
+            self.assertEqual(
+                trainer_contract.call_args.kwargs["training_git_contract"][
+                    "commit"
+                ],
+                FRESH_TRAINING_COMMIT,
+            )
+
+    def test_worker_rechecks_the_sealed_config_hash(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            output_dir = Path(temporary_dir)
+            case = {
+                "split": "plumbing",
+                "id": "case-0",
+                "latent": "/latents/case.npz",
+                "latent_key": "latent",
+                "latent_size": 10,
+                "latent_sha256": "c" * 64,
+                "label": 7,
+                "seed": 11,
+                "synset": "n00000007",
+                "latent_relative": "0007/case.npz",
+            }
+            protocol = {
+                "checkpoint": {
+                    "path": "/checkpoints/ckpt_step_300000.pth",
+                    "size": 20,
+                    "sha256": "d" * 64,
+                },
+                "config": {"sha256": FRESH_CONFIG_SHA256},
+                "protocol_sha256": "e" * 64,
+            }
+            with patch(
+                "analyses.finite_horizon_routing.runner.run_finite_horizon_routing_probe",
+                return_value={"ok": True},
+            ) as probe:
+                _run_device_cases("cuda:0", [case], protocol, output_dir)
+            self.assertEqual(
+                probe.call_args.kwargs["expected_config_sha256"],
+                FRESH_CONFIG_SHA256,
+            )
 
 
 class WorktreeResolutionTest(unittest.TestCase):
+    def test_gate_is_locked_to_current_fresh_v2_config(self):
+        self.assertEqual(
+            CONFIG_STEM,
+            "004_ProMoE_B_fresh_routing_audit_s0_v2",
+        )
+        config_path = PROJECT_ROOT / "configs" / f"{CONFIG_STEM}.yaml"
+        self.assertTrue(config_path.is_file())
+        self.assertEqual(sha256_file(config_path), FRESH_CONFIG_SHA256)
+
+    def test_v2_log_helpers_accept_v2_and_reject_the_old_stem(self):
+        from analyses.fresh_base_routing.audit import (
+            _fresh_training_log_snapshot,
+            _verify_training_log,
+        )
+
+        run_id = "a" * 32
+        launch_sha256 = "b" * 64
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            project_root = Path(temporary_dir)
+            output_root = project_root / "outputs"
+            run_dir = output_root / MODEL_NAME / CONFIG_STEM
+            checkpoint_dir = run_dir / "checkpoints"
+            checkpoint_dir.mkdir(parents=True)
+            lines = [
+                "[time-INFO]: Training RNG seed: 0 "
+                "(global_seed=0, rank=0, world_size=4)",
+                (
+                    f"[time-INFO]: Training provenance: run_id={run_id} "
+                    f"launch_sha256={launch_sha256} "
+                    f"git_commit={FRESH_TRAINING_COMMIT} "
+                    f"config_sha256={FRESH_TRAINING_CONFIG_SHA256}"
+                ),
+                (
+                    f"[time-INFO]: Fresh run marker: run_id={run_id} fresh=True "
+                    f"config={CONFIG_STEM} output_dir={run_dir} global_seed=0 "
+                    f"world_size=4 launch_sha256={launch_sha256}"
+                ),
+                f"[time-ERROR]: No checkpoints found in directory: {checkpoint_dir}",
+                "[time-INFO]: Resume progress: next_step=0, data_batches_seen=0, "
+                "sampler_epoch=0, sampler_batch_offset=0",
+                "[time-INFO]: epoch 0-step 0 mse_loss: 1.0 total_loss: 1.0",
+            ]
+            checkpoints = {}
+            for step in FRESH_CHECKPOINT_STEPS:
+                path = checkpoint_dir / f"ckpt_step_{step}.pth"
+                path.write_bytes(f"checkpoint-{step}".encode("ascii"))
+                digest = sha256_file(path)
+                lines.append(
+                    f"[time-INFO]: Checkpoint saved at {path} run_id={run_id} "
+                    f"step={step} size={path.stat().st_size} sha256={digest} "
+                    f"launch_sha256={launch_sha256}"
+                )
+                checkpoints[str(step)] = {
+                    "size": path.stat().st_size,
+                    "sha256": digest,
+                    "run_id": run_id,
+                    "trainer_contract": {
+                        "training_provenance_sha256": launch_sha256,
+                    },
+                }
+            (run_dir / "training.log").write_text(
+                "\n".join(lines) + "\n",
+                encoding="utf-8",
+            )
+
+            snapshot = _fresh_training_log_snapshot(
+                run_dir,
+                checkpoint_steps=FRESH_CHECKPOINT_STEPS,
+                project_root=project_root,
+                expected_config_stem=CONFIG_STEM,
+                expected_training_config_sha256=FRESH_TRAINING_CONFIG_SHA256,
+            )
+            _verify_training_log(
+                snapshot,
+                checkpoints,
+                run_dir=run_dir,
+                output_root=output_root,
+                project_root=project_root,
+                expected_config_stem=CONFIG_STEM,
+                expected_training_config_sha256=FRESH_TRAINING_CONFIG_SHA256,
+            )
+            with self.assertRaisesRegex(ValueError, "Expected run directory"):
+                _verify_training_log(
+                    snapshot,
+                    checkpoints,
+                    run_dir=run_dir,
+                    output_root=output_root,
+                    project_root=project_root,
+                    expected_config_stem=CONFIG_STEM.removesuffix("_v2"),
+                    expected_training_config_sha256=FRESH_TRAINING_CONFIG_SHA256,
+                )
+
     def test_git_contract_requires_fresh_hashes_and_live_remote_tip(self):
         commit = "a" * 40
         state = {
@@ -370,6 +524,220 @@ class WorktreeResolutionTest(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "authoritative analysis"):
                 _git_contract()
+
+    def test_locked_training_commit_may_precede_current_authoritative_tip(self):
+        current_tip = "b" * 40
+        completed = SimpleNamespace(returncode=0)
+        with (
+            patch(
+                "analyses.finite_horizon_routing.runner.reject_history_overrides"
+            ) as reject_overrides,
+            patch(
+                "analyses.finite_horizon_routing.runner._authoritative_repa_commit",
+                return_value=current_tip,
+            ),
+            patch(
+                "analyses.finite_horizon_routing.runner.git_output",
+                return_value=current_tip,
+            ),
+            patch(
+                "analyses.finite_horizon_routing.runner.run_git",
+                return_value=completed,
+            ) as run_git,
+        ):
+            observed = _validate_training_commit(
+                FRESH_TRAINING_COMMIT,
+                FRESH_TRAINING_COMMIT,
+                FRESH_TRAINING_COMMIT,
+            )
+        self.assertEqual(observed, current_tip)
+        reject_overrides.assert_called_once_with(PROJECT_ROOT)
+        self.assertEqual(
+            run_git.call_args.args[1:],
+            (
+                "merge-base",
+                "--is-ancestor",
+                FRESH_TRAINING_COMMIT,
+                current_tip,
+            ),
+        )
+
+    def test_locked_training_commit_rejects_wrong_or_nonancestor_commit(self):
+        with self.assertRaisesRegex(ValueError, "locked run identity"):
+            _validate_training_commit(
+                "a" * 40,
+                FRESH_TRAINING_COMMIT,
+                FRESH_TRAINING_COMMIT,
+            )
+
+        current_tip = "b" * 40
+        with (
+            patch(
+                "analyses.finite_horizon_routing.runner.reject_history_overrides"
+            ),
+            patch(
+                "analyses.finite_horizon_routing.runner._authoritative_repa_commit",
+                return_value=current_tip,
+            ),
+            patch(
+                "analyses.finite_horizon_routing.runner.git_output",
+                return_value=current_tip,
+            ),
+            patch(
+                "analyses.finite_horizon_routing.runner.run_git",
+                return_value=SimpleNamespace(returncode=1),
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "authoritative repa history"):
+                _validate_training_commit(
+                    FRESH_TRAINING_COMMIT,
+                    FRESH_TRAINING_COMMIT,
+                    FRESH_TRAINING_COMMIT,
+                )
+
+    def test_checkpoint_contract_accepts_only_the_fresh_v2_run(self):
+        class FakeBase(torch.nn.Module):
+            pass
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            training_root = Path(temporary_dir)
+            run_dir = training_root / "outputs" / MODEL_NAME / CONFIG_STEM
+            checkpoint_dir = run_dir / "checkpoints"
+            checkpoint_dir.mkdir(parents=True)
+            checkpoint_path = checkpoint_dir / f"ckpt_step_{CHECKPOINT_STEP}.pth"
+            checkpoint_path.write_bytes(b"locked-checkpoint")
+            checkpoint_sha256 = sha256_file(checkpoint_path)
+            checkpoint_size = checkpoint_path.stat().st_size
+            config_path = PROJECT_ROOT / "configs" / f"{CONFIG_STEM}.yaml"
+            config_size = config_path.stat().st_size
+            run_id = "a" * 32
+            launch_sha256 = "b" * 64
+            training_provenance = {"git": {"commit": FRESH_TRAINING_COMMIT}}
+            dataset_identity = {
+                "type": "train.LatentFolder",
+                "num_samples": 1,
+            }
+            fresh_log = {
+                "run_id": run_id,
+                "training_provenance_sha256": launch_sha256,
+                "training_git_commit": FRESH_TRAINING_COMMIT,
+                "checkpoint_markers": {
+                    str(CHECKPOINT_STEP): {
+                        "size": checkpoint_size,
+                        "sha256": checkpoint_sha256,
+                    }
+                },
+            }
+            trainer_contract = {
+                "training_provenance": training_provenance,
+                "trajectory": {
+                    "sampler_contract": {"dataset": dataset_identity},
+                },
+            }
+            checkpoint_record = {
+                "path": str(checkpoint_path),
+                "resolved_path": str(checkpoint_path.resolve()),
+                "step": CHECKPOINT_STEP,
+                "size": checkpoint_size,
+                "sha256": checkpoint_sha256,
+                "state": "ema_model_state_dict",
+                "run_id": run_id,
+                "trainer_contract": trainer_contract,
+            }
+
+            with (
+                patch(
+                    "analyses.finite_horizon_routing.runner._main_worktree_root",
+                    return_value=training_root,
+                ),
+                patch(
+                    "analyses.finite_horizon_routing.runner._fresh_training_log_snapshot",
+                    return_value=fresh_log,
+                ) as snapshot,
+                patch(
+                    "analyses.finite_horizon_routing.runner._runtime_environment",
+                    return_value={"runtime": "training"},
+                ),
+                patch(
+                    "analyses.finite_horizon_routing.runner._analysis_runtime_environment",
+                    return_value={"runtime": "analysis"},
+                ),
+                patch(
+                    "analyses.finite_horizon_routing.runner._build_model",
+                    return_value=FakeBase(),
+                ),
+                patch(
+                    "analyses.finite_horizon_routing.runner.BASE_MODEL_CLASS",
+                    f"{FakeBase.__module__}.{FakeBase.__qualname__}",
+                ),
+                patch(
+                    "analyses.finite_horizon_routing.runner.BASE_PARAMETER_COUNT",
+                    0,
+                ),
+                patch(
+                    "analyses.finite_horizon_routing.runner._read_checkpoint_record",
+                    return_value=checkpoint_record,
+                ) as read_checkpoint,
+                patch(
+                    "analyses.finite_horizon_routing.runner._verify_training_log"
+                ) as verify_log,
+                patch(
+                    "analyses.finite_horizon_routing.runner._validate_training_provenance_contract"
+                ) as verify_provenance,
+                patch(
+                    "analyses.finite_horizon_routing.runner._validate_training_commit",
+                    return_value="c" * 40,
+                ),
+                patch(
+                    "analyses.finite_horizon_routing.runner._dataset_identity_from_latent_root",
+                    return_value=dataset_identity,
+                ),
+            ):
+                contract = _checkpoint_contract(
+                    checkpoint_path,
+                    "/home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz",
+                )
+
+            self.assertEqual(contract[0], checkpoint_path)
+            self.assertEqual(contract[1], config_path)
+            self.assertEqual(
+                contract[-1]["config_identity"],
+                {"size": config_size, "sha256": FRESH_CONFIG_SHA256},
+            )
+            snapshot.assert_called_once_with(
+                run_dir,
+                checkpoint_steps=(50_000, 100_000, 150_000, 200_000, 250_000, 300_000),
+                project_root=training_root,
+                expected_config_stem=CONFIG_STEM,
+                expected_training_config_sha256=FRESH_TRAINING_CONFIG_SHA256,
+            )
+            self.assertEqual(
+                read_checkpoint.call_args.kwargs["expected_training_commit"],
+                FRESH_TRAINING_COMMIT,
+            )
+            self.assertEqual(
+                verify_log.call_args.kwargs["expected_config_stem"],
+                CONFIG_STEM,
+            )
+            self.assertEqual(
+                verify_provenance.call_args.kwargs["source_project_root"],
+                PROJECT_ROOT,
+            )
+
+            old_run = training_root / "outputs" / MODEL_NAME / CONFIG_STEM.removesuffix("_v2")
+            old_checkpoint_dir = old_run / "checkpoints"
+            old_checkpoint_dir.mkdir(parents=True)
+            old_checkpoint = old_checkpoint_dir / f"ckpt_step_{CHECKPOINT_STEP}.pth"
+            old_checkpoint.write_bytes(b"old-checkpoint")
+            with patch(
+                "analyses.finite_horizon_routing.runner._main_worktree_root",
+                return_value=training_root,
+            ):
+                with self.assertRaisesRegex(ValueError, "canonical Fresh Base"):
+                    _checkpoint_contract(
+                        old_checkpoint,
+                        "/home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz",
+                    )
 
     def test_main_worktree_comes_from_git_common_directory(self):
         with tempfile.TemporaryDirectory() as temporary_dir:

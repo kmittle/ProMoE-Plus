@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import gc
 import hashlib
 import os
@@ -12,6 +13,10 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import yaml
+
+from config import cfg as base_cfg
+from utils import deep_update
 
 from analyses.denoising_regret.probe import (
     _all_router_weights,
@@ -27,7 +32,6 @@ from analyses.routing_translation.probe import (
     _capture_native_forward,
 )
 from analyses.t_SNE.checkpoint_utils import (
-    load_runtime_cfg,
     parse_checkpoint_step,
     resolve_config_from_checkpoint,
 )
@@ -116,6 +120,37 @@ def _open_stable_regular_file(path, description):
     finally:
         if descriptor is not None:
             os.close(descriptor)
+
+
+def _load_verified_runtime_cfg(config_path, expected_sha256=None):
+    """Hash and parse one config through the same stable file handle."""
+
+    config_path = Path(config_path)
+    with _open_stable_regular_file(config_path, "Checkpoint config") as (
+        handle,
+        opened_stat,
+    ):
+        digest = _sha256_handle(handle)
+        if expected_sha256 is not None and digest != str(expected_sha256):
+            raise ValueError("Checkpoint config SHA256 differs from the sealed protocol")
+        config_bytes = handle.read()
+        if _sha256_handle(handle) != digest:
+            raise RuntimeError("Checkpoint config changed while it was parsed")
+        try:
+            payload = yaml.safe_load(config_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, yaml.YAMLError) as error:
+            raise ValueError("Checkpoint config is not valid UTF-8 YAML") from error
+    if not isinstance(payload, dict):
+        raise ValueError("Checkpoint config must contain a YAML mapping")
+
+    runtime_cfg = copy.deepcopy(base_cfg)
+    runtime_payload = copy.deepcopy(payload)
+    runtime_payload["custom_cfg_name"] = config_path.stem
+    deep_update(runtime_cfg, runtime_payload)
+    return runtime_cfg, payload, {
+        "size": opened_stat.st_size,
+        "sha256": digest,
+    }
 
 
 @contextmanager
@@ -830,6 +865,7 @@ def run_finite_horizon_routing_probe(
     weights_checkpoint_path=None,
     expected_checkpoint_size=None,
     expected_checkpoint_sha256=None,
+    expected_config_sha256=None,
     expected_latent_size=None,
     expected_latent_sha256=None,
 ):
@@ -878,7 +914,10 @@ def run_finite_horizon_routing_probe(
     device = torch.device(device)
     config_path = resolve_config_from_checkpoint(checkpoint_path)
     checkpoint_step = parse_checkpoint_step(checkpoint_path)
-    runtime_cfg = load_runtime_cfg(config_path)
+    runtime_cfg, _, config_identity = _load_verified_runtime_cfg(
+        config_path,
+        expected_sha256=expected_config_sha256,
+    )
     if not 0 <= int(label) < runtime_cfg.num_classes:
         raise ValueError("label lies outside the ImageNet class range")
     if int(runtime_cfg.sample_steps) != SAMPLE_STEPS:
@@ -963,6 +1002,7 @@ def run_finite_horizon_routing_probe(
         "checkpoint_state": state_name,
         "checkpoint_identity": checkpoint_identity,
         "config": str(config_path),
+        "config_identity": config_identity,
         "model_name": runtime_cfg.model_name,
         "latent": str(latent_path),
         "latent_key": latent_key,
