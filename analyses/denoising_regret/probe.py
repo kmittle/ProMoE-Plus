@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gc
 import importlib
+import inspect
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -70,18 +71,51 @@ def _build_model(runtime_cfg):
     return model_class(**getattr(runtime_cfg, config_key))
 
 
+@contextmanager
+def _checkpoint_safe_globals():
+    """Allow only the metadata classes stored by ProMoE checkpoints."""
+
+    safe_globals = getattr(
+        getattr(torch, "serialization", None),
+        "safe_globals",
+        None,
+    )
+    if safe_globals is None:
+        yield
+        return
+
+    try:
+        from easydict import EasyDict
+        from torch.torch_version import TorchVersion
+    except ImportError as error:
+        raise RuntimeError(
+            "The restricted checkpoint loader cannot import its metadata types"
+        ) from error
+
+    with safe_globals([EasyDict, TorchVersion]):
+        yield
+
+
+def _load_checkpoint_payload(checkpoint_path):
+    load_kwargs = {"map_location": "cpu"}
+    try:
+        supports_weights_only = (
+            "weights_only" in inspect.signature(torch.load).parameters
+        )
+    except (TypeError, ValueError):
+        supports_weights_only = True
+
+    if supports_weights_only:
+        load_kwargs["weights_only"] = True
+        with _checkpoint_safe_globals():
+            return torch.load(checkpoint_path, **load_kwargs)
+    return torch.load(checkpoint_path, **load_kwargs)
+
+
 def _load_checkpoint_model(runtime_cfg, checkpoint_path, device):
     model = _build_model(runtime_cfg)
     load_start = time.perf_counter()
-    load_kwargs = {
-        "map_location": "cpu",
-        "weights_only": True,
-    }
-    try:
-        checkpoint = torch.load(checkpoint_path, **load_kwargs)
-    except TypeError:
-        load_kwargs.pop("weights_only")
-        checkpoint = torch.load(checkpoint_path, **load_kwargs)
+    checkpoint = _load_checkpoint_payload(checkpoint_path)
 
     if "ema_model_state_dict" in checkpoint:
         state_dict = checkpoint["ema_model_state_dict"]
