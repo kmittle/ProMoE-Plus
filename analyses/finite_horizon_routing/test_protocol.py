@@ -145,11 +145,21 @@ class SummaryTest(unittest.TestCase):
             summary["per_horizon"]["8"]["immediate_future_spearman"],
             -1.0,
         )
+        self.assertAlmostEqual(
+            summary["per_horizon"]["8"][
+                "swap_preference_future_spearman"
+            ],
+            -1.0,
+        )
         self.assertEqual(
             summary["per_horizon"]["8"]["sign_disagreement"]["rate"],
             1.0,
         )
         self.assertFalse(summary["per_horizon"]["8"]["best_candidate_matches"])
+        self.assertAlmostEqual(
+            summary["per_horizon"]["8"]["best_future_gain_relative"],
+            -0.01,
+        )
 
 
 if __name__ == "__main__":

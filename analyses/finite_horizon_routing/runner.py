@@ -50,6 +50,7 @@ from analyses.t_SNE.checkpoint_utils import (
 )
 
 from .batch import (
+    ACTIONABLE_STRATUM_REQUIREMENTS,
     BATCH_VERSION,
     CONFIRMATORY_REQUIREMENTS,
     DISCOVERY_REQUIREMENTS,
@@ -330,6 +331,13 @@ def _canonical_gate_manifest():
         raise ValueError("Candidate-label permutation policy changed")
     if payload.get("safety_requirements") != SAFETY_REQUIREMENTS:
         raise ValueError("Safety requirements differ from the gate manifest")
+    if (
+        payload.get("actionable_stratum_requirements")
+        != ACTIONABLE_STRATUM_REQUIREMENTS
+    ):
+        raise ValueError(
+            "Actionable-stratum requirements differ from the manifest"
+        )
     splits = payload.get("splits", {})
     for split, count in SPLIT_COUNTS.items():
         if splits.get(split, {}).get("expected_case_count") != count:

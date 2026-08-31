@@ -43,6 +43,8 @@ SAFETY_REQUIREMENTS = {
 DISCOVERY_REQUIREMENTS = {
     "maximum_mean_immediate_h8_spearman": 0.65,
     "maximum_immediate_h8_spearman_ucb95": 0.85,
+    "maximum_mean_swap_preference_h8_spearman": 0.50,
+    "maximum_swap_preference_h8_spearman_ucb95": 0.75,
     "minimum_mean_sign_disagreement": 0.10,
     "minimum_sign_disagreement_lcb95": 0.00,
     "minimum_mean_decisive_candidate_rate": 0.25,
@@ -53,12 +55,18 @@ DISCOVERY_REQUIREMENTS = {
     "minimum_regret_fraction_lcb95": 0.00,
     "minimum_mean_h8_gain_range": 1e-6,
     "minimum_h8_gain_range_lcb95": 0.0,
+    "minimum_mean_best_h8_gain_relative": 5e-5,
+    "minimum_best_h8_gain_relative_lcb95": 0.0,
+    "minimum_mean_h8_beneficial_candidate_rate": 0.10,
+    "minimum_h8_beneficial_candidate_rate_lcb95": 0.0,
     "minimum_misaligned_block_strata": 3,
     "minimum_misaligned_sigma_strata": 2,
 }
 CONFIRMATORY_REQUIREMENTS = {
     "maximum_mean_immediate_h8_spearman": 0.50,
     "maximum_immediate_h8_spearman_ucb95": 0.65,
+    "maximum_mean_swap_preference_h8_spearman": 0.25,
+    "maximum_swap_preference_h8_spearman_ucb95": 0.50,
     "minimum_mean_sign_disagreement": 0.20,
     "minimum_sign_disagreement_lcb95": 0.10,
     "minimum_mean_decisive_candidate_rate": 0.50,
@@ -69,8 +77,21 @@ CONFIRMATORY_REQUIREMENTS = {
     "minimum_regret_fraction_lcb95": 0.10,
     "minimum_mean_h8_gain_range": 5e-6,
     "minimum_h8_gain_range_lcb95": 1e-6,
+    "minimum_mean_best_h8_gain_relative": 1e-4,
+    "minimum_best_h8_gain_relative_lcb95": 5e-5,
+    "minimum_mean_h8_beneficial_candidate_rate": 0.20,
+    "minimum_h8_beneficial_candidate_rate_lcb95": 0.10,
     "minimum_misaligned_block_strata": 4,
     "minimum_misaligned_sigma_strata": 2,
+}
+
+ACTIONABLE_STRATUM_REQUIREMENTS = {
+    "maximum_immediate_h8_spearman": 0.65,
+    "maximum_swap_preference_h8_spearman": 0.50,
+    "minimum_sign_disagreement": 0.10,
+    "minimum_decisive_candidate_rate": 0.25,
+    "minimum_best_h8_gain_relative": 5e-5,
+    "minimum_h8_beneficial_candidate_rate": 0.10,
 }
 
 
@@ -153,6 +174,10 @@ def _cell_h8_metrics(cell):
             horizon["immediate_future_spearman"],
             1.0,
         ),
+        "swap_preference_rho": _conservative_metric(
+            horizon["swap_preference_future_spearman"],
+            1.0,
+        ),
         "sign_disagreement": _conservative_metric(
             horizon["sign_disagreement"]["rate"],
             0.0,
@@ -170,6 +195,14 @@ def _cell_h8_metrics(cell):
             0.0,
         ),
         "gain_range": _conservative_metric(horizon["future_gain_range"], 0.0),
+        "best_gain": _conservative_metric(
+            horizon["best_future_gain_relative"],
+            -1.0,
+        ),
+        "beneficial_rate": _conservative_metric(
+            horizon["future_beneficial_rate"],
+            0.0,
+        ),
     }
 
 
@@ -284,6 +317,9 @@ def _case_metrics(result):
     return {
         "case_id": result["batch_case"]["id"],
         "rho": float(np.mean([metric["rho"] for metric in metrics])),
+        "swap_preference_rho": float(np.mean([
+            metric["swap_preference_rho"] for metric in metrics
+        ])),
         "sign_disagreement": float(np.mean([
             metric["sign_disagreement"] for metric in metrics
         ])),
@@ -298,6 +334,12 @@ def _case_metrics(result):
         ])),
         "gain_range": float(np.mean([
             metric["gain_range"] for metric in metrics
+        ])),
+        "best_gain": float(np.mean([
+            metric["best_gain"] for metric in metrics
+        ])),
+        "beneficial_rate": float(np.mean([
+            metric["beneficial_rate"] for metric in metrics
         ])),
         "by_block": by_block,
         "by_sigma": by_sigma,
@@ -466,17 +508,54 @@ def _strata_counts(metrics):
             rho = float(np.mean([
                 metric[source][key]["rho"] for metric in metrics
             ]))
+            swap_preference_rho = float(np.mean([
+                metric[source][key]["swap_preference_rho"] for metric in metrics
+            ]))
             sign = float(np.mean([
                 metric[source][key]["sign_disagreement"] for metric in metrics
             ]))
             decisive = float(np.mean([
                 metric[source][key]["decisive_rate"] for metric in metrics
             ]))
-            passed = rho <= 0.65 and sign >= 0.10 and decisive >= 0.25
+            best_gain = float(np.mean([
+                metric[source][key]["best_gain"] for metric in metrics
+            ]))
+            beneficial_rate = float(np.mean([
+                metric[source][key]["beneficial_rate"] for metric in metrics
+            ]))
+            passed = (
+                rho
+                <= ACTIONABLE_STRATUM_REQUIREMENTS[
+                    "maximum_immediate_h8_spearman"
+                ]
+                and swap_preference_rho
+                <= ACTIONABLE_STRATUM_REQUIREMENTS[
+                    "maximum_swap_preference_h8_spearman"
+                ]
+                and sign
+                >= ACTIONABLE_STRATUM_REQUIREMENTS[
+                    "minimum_sign_disagreement"
+                ]
+                and decisive
+                >= ACTIONABLE_STRATUM_REQUIREMENTS[
+                    "minimum_decisive_candidate_rate"
+                ]
+                and best_gain
+                >= ACTIONABLE_STRATUM_REQUIREMENTS[
+                    "minimum_best_h8_gain_relative"
+                ]
+                and beneficial_rate
+                >= ACTIONABLE_STRATUM_REQUIREMENTS[
+                    "minimum_h8_beneficial_candidate_rate"
+                ]
+            )
             kind_details[key] = {
                 "mean_rho": rho,
+                "mean_swap_preference_rho": swap_preference_rho,
                 "mean_sign_disagreement": sign,
                 "mean_decisive_candidate_rate": decisive,
+                "mean_best_h8_gain_relative": best_gain,
+                "mean_h8_beneficial_candidate_rate": beneficial_rate,
                 "misaligned": bool(passed),
             }
         details[kind] = kind_details
@@ -490,11 +569,14 @@ def _efficacy_gate(metrics, requirements):
     summaries = {}
     for offset, name in enumerate((
         "rho",
+        "swap_preference_rho",
         "sign_disagreement",
         "decisive_rate",
         "top_overlap",
         "regret_fraction",
         "gain_range",
+        "best_gain",
+        "beneficial_rate",
     )):
         summaries[name] = _bootstrap_summary(
             [metric[name] for metric in metrics],
@@ -514,6 +596,18 @@ def _efficacy_gate(metrics, requirements):
             f"<={requirements['maximum_immediate_h8_spearman_ucb95']}",
             summaries["rho"]["one_sided_ucb95"]
             <= requirements["maximum_immediate_h8_spearman_ucb95"],
+        ),
+        "swap_preference_rho_mean": _check(
+            summaries["swap_preference_rho"]["mean"],
+            f"<={requirements['maximum_mean_swap_preference_h8_spearman']}",
+            summaries["swap_preference_rho"]["mean"]
+            <= requirements["maximum_mean_swap_preference_h8_spearman"],
+        ),
+        "swap_preference_rho_ucb95": _check(
+            summaries["swap_preference_rho"]["one_sided_ucb95"],
+            f"<={requirements['maximum_swap_preference_h8_spearman_ucb95']}",
+            summaries["swap_preference_rho"]["one_sided_ucb95"]
+            <= requirements["maximum_swap_preference_h8_spearman_ucb95"],
         ),
         "sign_disagreement_mean": _check(
             summaries["sign_disagreement"]["mean"],
@@ -575,6 +669,30 @@ def _efficacy_gate(metrics, requirements):
             summaries["gain_range"]["one_sided_lcb95"]
             >= requirements["minimum_h8_gain_range_lcb95"],
         ),
+        "best_gain_mean": _check(
+            summaries["best_gain"]["mean"],
+            f">={requirements['minimum_mean_best_h8_gain_relative']}",
+            summaries["best_gain"]["mean"]
+            >= requirements["minimum_mean_best_h8_gain_relative"],
+        ),
+        "best_gain_lcb95": _check(
+            summaries["best_gain"]["one_sided_lcb95"],
+            f">={requirements['minimum_best_h8_gain_relative_lcb95']}",
+            summaries["best_gain"]["one_sided_lcb95"]
+            >= requirements["minimum_best_h8_gain_relative_lcb95"],
+        ),
+        "beneficial_rate_mean": _check(
+            summaries["beneficial_rate"]["mean"],
+            f">={requirements['minimum_mean_h8_beneficial_candidate_rate']}",
+            summaries["beneficial_rate"]["mean"]
+            >= requirements["minimum_mean_h8_beneficial_candidate_rate"],
+        ),
+        "beneficial_rate_lcb95": _check(
+            summaries["beneficial_rate"]["one_sided_lcb95"],
+            f">={requirements['minimum_h8_beneficial_candidate_rate_lcb95']}",
+            summaries["beneficial_rate"]["one_sided_lcb95"]
+            >= requirements["minimum_h8_beneficial_candidate_rate_lcb95"],
+        ),
         "block_strata": _check(
             strata_counts["block"],
             f">={requirements['minimum_misaligned_block_strata']}",
@@ -593,6 +711,7 @@ def _efficacy_gate(metrics, requirements):
         "checks": checks,
         "summaries": summaries,
         "strata_counts": strata_counts,
+        "actionable_stratum_requirements": ACTIONABLE_STRATUM_REQUIREMENTS,
         "strata": strata,
     }
 
@@ -649,9 +768,11 @@ def aggregate_case_results(
         "image_metrics": metrics,
         "passed": passed,
         "decision": (
-            "A passing confirmation supports only the diagnosis that immediate "
-            "and finite-horizon quota-preserving assignment utility are "
-            "systematically misaligned. It does not authorize a long training "
+            "A passing confirmation supports only the diagnosis that the native "
+            "router leaves actionable horizon-eight headroom and that immediate, "
+            "router swap-preference, and finite-horizon quota-preserving assignment "
+            "utility "
+            "are systematically misaligned. It does not authorize a long training "
             "run until novelty review and a separate training-method protocol pass."
         ),
     }

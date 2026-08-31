@@ -235,7 +235,7 @@ def summarize_cell_records(records, numerical_epsilon):
     if len(candidate_ids) != len(set(candidate_ids)):
         raise ValueError("Candidate record IDs must be unique")
     immediate = _finite_vector(records, "immediate_gain_relative")
-    router_preference = -_finite_vector(records, "mean_router_margin")
+    swap_preference = -_finite_vector(records, "mean_router_margin")
     per_horizon = {}
     for horizon in HORIZONS:
         key = f"h{horizon}_gain_relative"
@@ -246,7 +246,10 @@ def summarize_cell_records(records, numerical_epsilon):
         regret = float(future[best_future] - future[best_immediate])
         per_horizon[str(horizon)] = {
             "immediate_future_spearman": _spearman(immediate, future),
-            "router_future_spearman": _spearman(router_preference, future),
+            "swap_preference_future_spearman": _spearman(
+                swap_preference,
+                future,
+            ),
             "top_quartile_overlap": _top_overlap(immediate, future),
             "sign_disagreement": _sign_disagreement(
                 immediate,
@@ -255,6 +258,7 @@ def summarize_cell_records(records, numerical_epsilon):
             ),
             "immediate_best_candidate_id": candidate_ids[best_immediate],
             "future_best_candidate_id": candidate_ids[best_future],
+            "best_future_gain_relative": float(future[best_future]),
             "best_candidate_matches": bool(best_immediate == best_future),
             "immediate_best_future_regret": regret,
             "immediate_best_future_regret_fraction_of_range": (
@@ -268,7 +272,10 @@ def summarize_cell_records(records, numerical_epsilon):
         }
     return {
         "num_candidates": len(records),
-        "router_immediate_spearman": _spearman(router_preference, immediate),
+        "swap_preference_immediate_spearman": _spearman(
+            swap_preference,
+            immediate,
+        ),
         "immediate_gain_range": float(immediate.max() - immediate.min()),
         "immediate_beneficial_rate": float(
             np.mean(immediate > numerical_epsilon)

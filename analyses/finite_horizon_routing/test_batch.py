@@ -13,7 +13,11 @@ from analyses.finite_horizon_routing.protocol import (
 )
 
 
-def _candidate_records(aligned):
+def _candidate_records(
+    aligned,
+    all_future_harmful=False,
+    swap_preference_tracks_future=False,
+):
     values = np.asarray([
         -0.008,
         -0.007,
@@ -33,11 +37,14 @@ def _candidate_records(aligned):
         0.008,
     ])
     future = values if aligned else -values
+    if all_future_harmful:
+        future = future - 0.02
+    swap_preference = future if swap_preference_tracks_future else values
     records = []
     for index, immediate in enumerate(values):
         record = {
             "id": f"candidate-{index:02d}",
-            "mean_router_margin": float(-immediate),
+            "mean_router_margin": float(-swap_preference[index]),
             "immediate_gain_relative": float(immediate),
             "immediate_native_mse": 1.0,
         }
@@ -60,11 +67,20 @@ def _zero_control():
     }
 
 
-def _case(case_id, aligned=False):
+def _case(
+    case_id,
+    aligned=False,
+    all_future_harmful=False,
+    swap_preference_tracks_future=False,
+):
     cells = []
     for block in BLOCK_INDICES:
         for start in START_INDICES:
-            candidates = _candidate_records(aligned)
+            candidates = _candidate_records(
+                aligned,
+                all_future_harmful,
+                swap_preference_tracks_future,
+            )
             cells.append({
                 "block_index": block,
                 "start_index": start,
@@ -121,6 +137,46 @@ class AggregateTest(unittest.TestCase):
         self.assertFalse(summary["efficacy"]["checks"]["rho_mean"]["passed"])
         self.assertFalse(
             summary["efficacy"]["checks"]["sign_disagreement_mean"]["passed"]
+        )
+
+    def test_reversed_ranking_without_native_headroom_is_rejected(self):
+        cases = [
+            _case(f"confirm-{index}", all_future_harmful=True)
+            for index in range(24)
+        ]
+        summary = aggregate_case_results(
+            cases,
+            "confirmatory",
+            prerequisite_discovery_passed=True,
+        )
+        self.assertFalse(summary["passed"])
+        self.assertTrue(summary["efficacy"]["checks"]["rho_mean"]["passed"])
+        self.assertFalse(
+            summary["efficacy"]["checks"]["best_gain_mean"]["passed"]
+        )
+        self.assertFalse(
+            summary["efficacy"]["checks"]["beneficial_rate_mean"]["passed"]
+        )
+
+    def test_predictive_swap_preference_is_not_called_a_router_failure(self):
+        cases = [
+            _case(
+                f"confirm-{index}",
+                swap_preference_tracks_future=True,
+            )
+            for index in range(24)
+        ]
+        summary = aggregate_case_results(
+            cases,
+            "confirmatory",
+            prerequisite_discovery_passed=True,
+        )
+        self.assertFalse(summary["passed"])
+        self.assertTrue(summary["efficacy"]["checks"]["rho_mean"]["passed"])
+        self.assertFalse(
+            summary["efficacy"]["checks"][
+                "swap_preference_rho_mean"
+            ]["passed"]
         )
 
     def test_confirmation_cannot_bypass_discovery(self):
