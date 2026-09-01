@@ -4,6 +4,7 @@ import os
 import os.path as osp
 import re
 import sys
+import inspect
 import yaml
 
 # Add project root to path
@@ -88,7 +89,40 @@ def load_ema_weights(model, ckpt_path):
     """Load EMA weights from checkpoint into model."""
     import torch
 
-    checkpoint = torch.load(ckpt_path, map_location="cpu")
+    # Keep the restricted unpickler enabled while allowing only metadata types
+    # used by this project's checkpoints.  Analysis paths are caller-supplied,
+    # so falling back to unrestricted pickle loading would be unsafe.
+    try:
+        supports_weights_only = "weights_only" in inspect.signature(
+            torch.load
+        ).parameters
+    except (TypeError, ValueError):
+        supports_weights_only = False
+    if not supports_weights_only:
+        raise RuntimeError(
+            "Secure checkpoint analysis requires a PyTorch version with "
+            "weights_only loading"
+        )
+    serialization = getattr(torch, "serialization", None)
+    safe_globals = getattr(serialization, "safe_globals", None)
+    if safe_globals is not None:
+        try:
+            from easydict import EasyDict
+            from torch.torch_version import TorchVersion
+        except (ImportError, AttributeError):
+            pass
+        else:
+            with safe_globals([EasyDict, TorchVersion]):
+                checkpoint = torch.load(
+                    ckpt_path, map_location="cpu", weights_only=True
+                )
+    else:
+        # Keep the restricted loader even on versions that expose only the
+        # boolean flag; an EasyDict metadata error is safer than pickle code
+        # execution and gives the caller an actionable upgrade signal.
+        checkpoint = torch.load(
+            ckpt_path, map_location="cpu", weights_only=True
+        )
     if "ema_model_state_dict" in checkpoint:
         state_dict = checkpoint["ema_model_state_dict"]
     elif "model_state_dict" in checkpoint:
