@@ -1,0 +1,8 @@
+实验 / Experiment: 1.1-B_fresh_control_s0_v3
+model_name: ProMoE_TC_B  |  config: configs/004_ProMoE_B_fresh_control_s0_v3.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分流、静态 cluster_centers 余弦 top-1 路由、shared expert、routing contrastive guidance）；直接父变体 / Parent: 基础 ProMoE-TC 本身，本实验是新的 seed-0 scratch 对照
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 干净的 seed-0 对照 / clean seed-0 control：model_name 仍为 ProMoE_TC_B，保持 12 个 routed experts、top_k: 1、router_weight_mode: identity、shared expert 和 routing_contrastive_lam: 1，不加入新的路由机制。
+2. 从随机初始化开始 / train from scratch：resume_checkpoint: False，使用新的配置名和新的输出目录 outputs/ProMoE_TC_B/004_ProMoE_B_fresh_control_s0_v3/，不读取旧实验权重。
+3. 与 DINO 路由实验完全相同的公平设置：global_seed: 0、global batch 256、lr: 1e-4、img_num_workers: 16、num_steps: 501000；在 300K/500K、CFG 1.0/1.5 下各生成 50K 图片并用 OpenAI evaluator 评估。
