@@ -13,7 +13,9 @@ prefetch_factor: 2
 use_pre_latents: True
 use_encoded_latents: True
 latent_data_path: "/home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz"
-resume_checkpoint: False
+# An empty strict output bucket still starts at step 0; keeping this true
+# makes the source contract identical for the 300K and 500K phases.
+resume_checkpoint: True
 log_interval: 10
 num_steps: 501000
 save_ckpt_interval: 50000

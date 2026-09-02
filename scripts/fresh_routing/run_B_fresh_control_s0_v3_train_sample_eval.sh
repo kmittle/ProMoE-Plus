@@ -81,7 +81,9 @@ for i in "${!ALL_STEPS[@]}"; do
     phase=$((i + 1))
     if [ "${phase}" -lt "${NUM_ALL_STEPS}" ]; then
         TARGET_NUM_STEPS=$((step + 1))
-        TARGET_RESUME=False
+        # With an empty strict bucket train.py starts from step 0; keeping
+        # resume enabled preserves one provenance contract across phases.
+        TARGET_RESUME=True
     else
         TARGET_NUM_STEPS="${ORIG_NUM_STEPS}"
         TARGET_RESUME=True
