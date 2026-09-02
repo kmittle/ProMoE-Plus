@@ -5,6 +5,8 @@ model_name: ProMoE_TC_B_dino_route  |  config: configs/004_ProMoE_B_dino_route_s
 核心改动 / Core changes（相对基线，重点优先）:
 1. DINOv2 只用于路由：离线表为每个 ImageNet 类别计算一个不确定度，不把 DINO 特征和 DiT 表征做 cosine/MSE 对齐。
 2. 负载感知的 assignment：不确定度乘以近期较低负载专家的 detached preference，只改变 top-k expert assignment；专家输出仍使用原始 cosine 权重。参数为 `strength: 0.08`、`ema_decay: 0.99`、`warmup_updates: 2000`、`bias_cap: 0.20`。
-3. 打乱对应关系的公平控制：`mapping: shuffled`、`permutation_seed: 20260831`，保持不确定度分布和计算量不变，但打破类别与 DINO 信号的语义对应，用来检验收益是否确实来自正确的 DINO-MoE 关系。
+3. 打乱对应关系的控制：`mapping: shuffled`、`permutation_seed: 20260831`，保持不确定度分布和计算量不变，但打破类别与旧表数值的对应关系。
 
-运行前置条件 / Prerequisite: 先执行 `CUDA_VISIBLE_DEVICES=4 /home/dev/miniforge3/envs/promoe/bin/python preprocess/build_dino_route_table.py --latent-root /home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz --output /home/dev/imagenet-1k/dino_route_table_s8.npz --dino-path /mnt/cubefs/caoboyuan/ProMoE-Plus/pretrained_ckpt/encoder/dinov2_vitb14/state_dict.pth --vae-path /mnt/cubefs/caoboyuan/ProMoE-Plus/pretrained_ckpt/vae/stabilityai--sd-vae-ft-mse --samples-per-class 8 --batch-size 32 --device cuda:0` 生成 route table 及其 `.json` 元数据；wrapper 会在训练前检查这两个文件。
+数据限制 / Data limitation: 这个历史配置锁定旧 v1 表。旧构表器送给 VAE 解码器的 latent 缩放错了，DINO 看到的是对比度过低的图。因此这个实验只能说明“打乱旧错误表”会发生什么，不能说明正常 DINO 语义是否有效。
+
+运行前置条件 / Prerequisite: 必须保留原始 v1 NPZ 和 `.json`；wrapper 会核对准确版本与方法。当前 `preprocess/build_dino_route_table.py` 只生成修正后的 v2，不能拿它重建本实验。v2 实验必须使用新表路径、新配置和新输出目录。

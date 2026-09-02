@@ -43,9 +43,50 @@ SAMPLE_BASE="$REPO_ROOT/outputs/$MODEL_NAME/$CUSTOM_CFG_NAME/sample"
 PYTHON=/mnt/workspace/yujie/.conda/envs/promoe/bin/python
 PYTHON_EVAL=/mnt/workspace/yujie/.conda/envs/fid_eval/bin/python
 
-test -n "$STEP_LIST_STR"
-test -f "$DINO_TABLE_PATH"
-test -f "$DINO_TABLE_PATH.json"
+if [ -z "$STEP_LIST_STR" ]; then
+    echo "ERROR: step_list_for_sample is empty or missing in ${CONFIG}" >&2
+    exit 1
+fi
+if [ -z "$DINO_TABLE_PATH" ] || [ ! -f "$DINO_TABLE_PATH" ] \
+    || [ ! -f "${DINO_TABLE_PATH}.json" ]; then
+    echo "ERROR: DINO route table and metadata are required: ${DINO_TABLE_PATH}" >&2
+    echo "This historical config requires its original locked v1 table." >&2
+    echo "The current builder emits corrected v2; use a new table path, config, and output bucket for v2." >&2
+    exit 1
+fi
+if ! python - "$DINO_TABLE_PATH" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+from preprocess.dino_route_table_contract import (
+    LEGACY_TABLE_METHOD,
+    LEGACY_TABLE_VERSION,
+)
+
+table_path = Path(sys.argv[1])
+metadata_path = Path(f"{table_path}.json")
+try:
+    with metadata_path.open("r", encoding="utf-8") as handle:
+        metadata = json.load(handle)
+except (OSError, json.JSONDecodeError) as error:
+    raise SystemExit(f"ERROR: cannot read DINO route metadata: {error}")
+if (
+    type(metadata.get("version")) is not int
+    or metadata["version"] != LEGACY_TABLE_VERSION
+    or metadata.get("method") != LEGACY_TABLE_METHOD
+):
+    raise SystemExit(
+        "ERROR: historical DINO config requires the exact legacy v1 "
+        f"contract, found version={metadata.get('version')!r}, "
+        f"method={metadata.get('method')!r}"
+    )
+PY
+then
+    echo "Do not rebuild this historical table with the current v2 builder." >&2
+    echo "Create a new v2 config and output bucket instead." >&2
+    exit 1
+fi
 IFS=',' read -ra ALL_STEPS <<< "$STEP_LIST_STR"
 NUM_ALL_STEPS=${#ALL_STEPS[@]}
 TEMP_DIR=$(mktemp -d)

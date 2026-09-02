@@ -69,7 +69,41 @@ if [ "$MODEL_NAME" = "ProMoE_TC_B_dino_route" ]; then
     if [ -z "$DINO_TABLE_PATH" ] || [ ! -f "$DINO_TABLE_PATH" ] \
         || [ ! -f "${DINO_TABLE_PATH}.json" ]; then
         echo "ERROR: DINO route table and metadata are required: ${DINO_TABLE_PATH}" >&2
-        echo "Build with preprocess/build_dino_route_table.py before launching." >&2
+        echo "This historical config requires its original locked v1 table." >&2
+        echo "The current builder emits corrected v2; use a new table path, config, and output bucket for v2." >&2
+        exit 1
+    fi
+    if ! python - "$DINO_TABLE_PATH" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+from preprocess.dino_route_table_contract import (
+    LEGACY_TABLE_METHOD,
+    LEGACY_TABLE_VERSION,
+)
+
+table_path = Path(sys.argv[1])
+metadata_path = Path(f"{table_path}.json")
+try:
+    with metadata_path.open("r", encoding="utf-8") as handle:
+        metadata = json.load(handle)
+except (OSError, json.JSONDecodeError) as error:
+    raise SystemExit(f"ERROR: cannot read DINO route metadata: {error}")
+if (
+    type(metadata.get("version")) is not int
+    or metadata["version"] != LEGACY_TABLE_VERSION
+    or metadata.get("method") != LEGACY_TABLE_METHOD
+):
+    raise SystemExit(
+        "ERROR: historical DINO config requires the exact legacy v1 "
+        f"contract, found version={metadata.get('version')!r}, "
+        f"method={metadata.get('method')!r}"
+    )
+PY
+    then
+        echo "Do not rebuild this historical table with the current v2 builder." >&2
+        echo "Create a new v2 config and output bucket instead." >&2
         exit 1
     fi
 fi

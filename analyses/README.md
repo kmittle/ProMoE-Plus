@@ -34,6 +34,7 @@ Each Python entrypoint in this directory has a matching Markdown guide with the 
 - [`run_fresh_base_routing_audit.py`](run_fresh_base_routing_audit.py): sealed 50K/100K/150K/200K audit of routing accuracy, exact expert-count-preserving reassignment, and phase-dependent expert utility on one fresh-from-zero Base trajectory. See [`run_fresh_base_routing_audit.md`](run_fresh_base_routing_audit.md).
 - [`run_expert_update_budget_audit.py`](run_expert_update_budget_audit.py): checkpoint-only audit of routed-expert parameter displacement, AdamW update fields, and expert-rank persistence from 50K through 300K. See [`run_expert_update_budget_audit.md`](run_expert_update_budget_audit.md).
 - [`run_expert_output_diversity_gate.py`](run_expert_output_diversity_gate.py): paired Base-versus-output-repulsion checkpoint gate for scale-independent expert-function diversity, output-norm inflation, routing balance, and denoising safety. See [`run_expert_output_diversity_gate.md`](run_expert_output_diversity_gate.md).
+- [`run_dino_utility_neighborhood.py`](run_dino_utility_neighborhood.py): leave-one-image-out test of whether DINO patch neighborhoods predict exact counterfactual expert-utility rankings. See [`run_dino_utility_neighborhood.md`](run_dino_utility_neighborhood.md).
 
 ## Shared Modules
 
@@ -49,3 +50,4 @@ Phase-Metric checkpoint-gate helpers live in [`analyses/routing_metric/`](routin
 Fresh Base longitudinal-audit helpers live in [`analyses/fresh_base_routing/`](fresh_base_routing/), including deterministic held-out selection, provenance sealing, multi-GPU execution, and cross-checkpoint decisions.
 Expert update-budget helpers live in [`analyses/expert_update_budget/`](expert_update_budget/), including optimizer-to-parameter contract checks, block-local expert aggregation, locked gates, and unit tests.
 Expert-output diversity helpers live in [`analyses/expert_output_diversity/`](expert_output_diversity/), including same-input cross-model expert evaluation, routed-pool statistics, paired image-level bootstrap summaries, and the 50K stop gate.
+DINO utility-neighborhood helpers live in [`analyses/dino_utility_neighborhood/`](dino_utility_neighborhood/), including source-provenance checks, exact latent replay, semantic controls, leave-one-image-out prediction, and image-level bootstrap gates.

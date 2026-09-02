@@ -3,6 +3,11 @@
 The table is deliberately smaller than a feature cache: training only needs one
 detached uncertainty value per ImageNet class.  DINO features never enter the
 DiT representation or a representation-alignment loss.
+
+This builder emits the corrected version-2 contract and refuses to reuse an
+existing NPZ or sidecar path.  A consumer config must declare both
+``table_version: 2`` and the emitted ``method``; undeclared historical configs
+remain restricted to the legacy version-1 contract.
 """
 
 from __future__ import annotations
@@ -26,6 +31,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from repa.encoder import extract_teacher_features, load_teacher_encoder
+from preprocess.dino_route_table_contract import (
+    CORRECTED_TABLE_METHOD,
+    CORRECTED_TABLE_VERSION,
+)
 from utils import load_vae
 
 
@@ -34,6 +43,8 @@ LATENT_SHAPE = (8, 32, 32)
 LATENT_KEY = "latent"
 IMAGE_SIZE = 256
 LATENT_SCALE = 0.18215
+TABLE_VERSION = CORRECTED_TABLE_VERSION
+TABLE_METHOD = CORRECTED_TABLE_METHOD
 
 
 def _sha256_file(path: Path) -> str:
@@ -42,6 +53,62 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _path_exists(path: Path) -> bool:
+    return path.exists() or path.is_symlink()
+
+
+def _require_new_output_pair(output_path: Path) -> Path:
+    if output_path.suffix != ".npz":
+        raise ValueError("output path must end with .npz")
+    metadata_path = output_path.with_suffix(output_path.suffix + ".json")
+    existing = [
+        path for path in (output_path, metadata_path) if _path_exists(path)
+    ]
+    if existing:
+        raise FileExistsError(
+            "Refusing to overwrite an existing DINO route-table artifact: "
+            + ", ".join(str(path) for path in existing)
+        )
+    return metadata_path
+
+
+def _prepare_new_output_pair(output_path: str | Path) -> tuple[Path, Path]:
+    output_path = Path(output_path).expanduser()
+    if not output_path.is_absolute():
+        output_path = Path.cwd() / output_path
+    # abspath normalizes the spelling without dereferencing the final path.
+    # Path.resolve() would hide a dangling symlink and redirect publication.
+    output_path = Path(os.path.abspath(output_path))
+    return output_path, _require_new_output_pair(output_path)
+
+
+def _publish_output_pair_no_replace(
+    npz_tmp: Path,
+    json_tmp: Path,
+    output_path: Path,
+    metadata_path: Path,
+) -> None:
+    """Publish two same-filesystem temporary files without replacing targets."""
+    published: list[tuple[Path, Path]] = []
+    try:
+        for temporary, destination in (
+            (npz_tmp, output_path),
+            (json_tmp, metadata_path),
+        ):
+            os.link(temporary, destination)
+            published.append((temporary, destination))
+    except OSError:
+        for temporary, destination in reversed(published):
+            try:
+                if destination.exists() and os.path.samefile(
+                    temporary, destination
+                ):
+                    destination.unlink()
+            except OSError:
+                pass
+        raise
 
 
 def _class_files(
@@ -122,6 +189,15 @@ def _minmax(values: torch.Tensor) -> torch.Tensor:
     return (values - lo) / span
 
 
+def _decode_model_latents(vae, model_latents: torch.Tensor) -> torch.Tensor:
+    """Decode latents expressed in the diffusion model's scaled space."""
+    if model_latents.ndim != 4:
+        raise ValueError(
+            "model_latents must have shape [batch, channels, height, width]"
+        )
+    return vae.decode(model_latents / LATENT_SCALE).sample
+
+
 def build_table(
     latent_root: str | Path,
     output_path: str | Path,
@@ -138,9 +214,13 @@ def build_table(
     if latent_root.is_symlink():
         raise ValueError(f"latent root must not be a symlink: {latent_root}")
     latent_root = latent_root.resolve(strict=True)
-    output_path = Path(output_path).resolve()
+    output_path, metadata_path = _prepare_new_output_pair(output_path)
     dino_path = Path(dino_path).resolve(strict=True)
     vae_path = Path(vae_path).resolve(strict=True)
+    vae_config_path = (vae_path / "config.json").resolve(strict=True)
+    vae_weights_path = (
+        vae_path / "diffusion_pytorch_model.safetensors"
+    ).resolve(strict=True)
     class_names, class_id_list, paths = _class_files(
         latent_root, samples_per_class
     )
@@ -171,10 +251,12 @@ def build_table(
             parameters = _load_latent_batch(batch_paths, torch_device)
             # Match the training/sampling VAE convention before decoding.  The
             # latent files store unscaled distribution parameters.
-            clean_latents = (
+            model_latents = (
                 DiagonalGaussianDistribution(parameters).mode() * LATENT_SCALE
             )
-            decoded = vae.decode(clean_latents).sample
+            # The diffusion model consumes scaled latents.  AutoencoderKL.decode
+            # consumes the original VAE latent space, as in sample.py.
+            decoded = _decode_model_latents(vae, model_latents)
             images = (decoded.float().clamp(-1, 1) + 1.0) / 2.0
             patch_features = extract_teacher_features(
                 encoder, images, "dinov2-vit-b"
@@ -209,8 +291,8 @@ def build_table(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     metadata = {
-        "version": 1,
-        "method": "class_mean_dinov2_patch_features_with_neighbor_margin_and_intra_class_variance",
+        "version": TABLE_VERSION,
+        "method": TABLE_METHOD,
         "num_classes": NUM_CLASSES,
         "class_names": class_names,
         # Keep metadata JSON-serializable; the tensor above is only for
@@ -220,21 +302,26 @@ def build_table(
         "latent_root": str(latent_root),
         "latent_key": LATENT_KEY,
         "latent_shape": list(LATENT_SHAPE),
-        "latent_scale_for_decode": LATENT_SCALE,
+        "latent_scale_for_model": LATENT_SCALE,
+        "vae_decode_rule": "vae.decode(model_latents / latent_scale_for_model)",
         "dino_weights": str(dino_path),
         "dino_weights_sha256": _sha256_file(dino_path),
         "vae_path": str(vae_path),
+        "vae_config": str(vae_config_path),
+        "vae_config_sha256": _sha256_file(vae_config_path),
+        "vae_weights": str(vae_weights_path),
+        "vae_weights_sha256": _sha256_file(vae_weights_path),
         "embed_dim": int(embed_dim),
         "device": str(torch_device),
     }
-    if output_path.suffix != ".npz":
-        raise ValueError("output path must end with .npz")
     # np.savez_compressed appends .npz to path strings.  Keep that suffix in
-    # the temporary name so os.replace() sees the file that was written.
+    # the temporary name so the no-replace publisher sees the written file.
     npz_tmp = output_path.with_name(
         f".{output_path.name}.{os.getpid()}.tmp.npz"
     )
-    json_tmp = output_path.with_suffix(output_path.suffix + ".json.tmp")
+    json_tmp = output_path.with_name(
+        f".{output_path.name}.{os.getpid()}.tmp.json"
+    )
     try:
         np.savez_compressed(
             npz_tmp,
@@ -243,11 +330,16 @@ def build_table(
             nearest_margin=nearest_margin.numpy().astype(np.float32),
             intra_variance=intra_variance.numpy().astype(np.float32),
         )
+        metadata["table_sha256"] = _sha256_file(npz_tmp)
         with json_tmp.open("w", encoding="utf-8") as handle:
             json.dump(metadata, handle, indent=2, sort_keys=True)
             handle.write("\n")
-        os.replace(npz_tmp, output_path)
-        os.replace(json_tmp, output_path.with_suffix(output_path.suffix + ".json"))
+        _publish_output_pair_no_replace(
+            npz_tmp,
+            json_tmp,
+            output_path,
+            metadata_path,
+        )
     finally:
         npz_tmp.unlink(missing_ok=True)
         json_tmp.unlink(missing_ok=True)

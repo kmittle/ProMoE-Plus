@@ -11,6 +11,7 @@ scale.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -20,10 +21,109 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
+from preprocess.dino_route_table_contract import (
+    CORRECTED_TABLE_VERSION,
+    LEGACY_TABLE_METHOD,
+    LEGACY_TABLE_VERSION,
+    SUPPORTED_TABLE_CONTRACTS,
+)
+
 from .models_ProMoE_TC import (
     DiT as BaseDiT,
     SparseMoeBlock as BaseSparseMoeBlock,
 )
+
+
+def _sha256_file(path, chunk_size=8 * 1024 * 1024):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _expected_table_contract(config):
+    has_version = "table_version" in config
+    has_method = "table_method" in config
+    if has_version != has_method:
+        raise ValueError(
+            "dino route table_version and table_method must be declared together"
+        )
+    if not has_version:
+        # Historical configs predate the metadata contract.  Keeping this
+        # exact legacy pair preserves their reproducibility without allowing
+        # them to consume a corrected table silently.
+        return LEGACY_TABLE_VERSION, LEGACY_TABLE_METHOD
+
+    version = config["table_version"]
+    method = config["table_method"]
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise ValueError("dino route table_version must be an integer")
+    if not isinstance(method, str) or not method:
+        raise ValueError("dino route table_method must be a nonempty string")
+    if SUPPORTED_TABLE_CONTRACTS.get(version) != method:
+        raise ValueError(
+            f"Unsupported DINO route table contract: version={version}, "
+            f"method={method!r}"
+        )
+    return version, method
+
+
+def _validate_table_metadata(
+    metadata,
+    *,
+    expected_num_classes,
+    expected_version,
+    expected_method,
+    actual_table_sha256,
+):
+    if not isinstance(metadata, dict):
+        raise ValueError("DINO route metadata must be a JSON object")
+    version = metadata.get("version")
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise ValueError("DINO route metadata version must be an integer")
+    if version != expected_version:
+        raise ValueError(
+            f"DINO route table version mismatch: expected {expected_version}, "
+            f"found {version}"
+        )
+    method = metadata.get("method")
+    if method != expected_method:
+        raise ValueError(
+            f"DINO route table method mismatch: expected {expected_method!r}, "
+            f"found {method!r}"
+        )
+    num_classes = metadata.get("num_classes")
+    if (
+        isinstance(num_classes, bool)
+        or not isinstance(num_classes, int)
+        or num_classes != expected_num_classes
+    ):
+        raise ValueError(
+            "DINO route metadata num_classes does not match the model"
+        )
+    metadata_table_sha256 = metadata.get("table_sha256")
+    if (
+        expected_version == CORRECTED_TABLE_VERSION
+        and metadata_table_sha256 is None
+    ):
+        raise ValueError("Corrected DINO route metadata lacks table_sha256")
+    if metadata_table_sha256 is not None:
+        if (
+            not isinstance(metadata_table_sha256, str)
+            or len(metadata_table_sha256) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in metadata_table_sha256
+            )
+        ):
+            raise ValueError(
+                "DINO route metadata table_sha256 must be 64 lowercase hex digits"
+            )
+        if metadata_table_sha256 != actual_table_sha256:
+            raise ValueError(
+                "DINO route table SHA-256 does not match its metadata"
+            )
 
 
 class DinoRouteSparseMoeBlock(BaseSparseMoeBlock):
@@ -45,6 +145,10 @@ class DinoRouteSparseMoeBlock(BaseSparseMoeBlock):
         )
         self.dino_route_bias_cap = float(config.get("bias_cap", 0.20))
         self.dino_route_num_classes = int(config.get("num_classes", 1000))
+        (
+            self.dino_route_table_version,
+            self.dino_route_table_method,
+        ) = _expected_table_contract(config)
         self.dino_route_confidence_gate = str(
             config.get("confidence_gate", "none")
         )
@@ -128,6 +232,7 @@ class DinoRouteSparseMoeBlock(BaseSparseMoeBlock):
             f"strength={self.dino_route_strength}, "
             f"ema_decay={self.dino_route_ema_decay}, "
             f"warmup_updates={self.dino_route_warmup_updates}, "
+            f"table_version={self.dino_route_table_version}, "
             f"table={table_path}"
         )
 
@@ -145,25 +250,31 @@ class DinoRouteSparseMoeBlock(BaseSparseMoeBlock):
             raise FileNotFoundError(
                 f"DINO route table must be an existing .npz file: {table_path}"
             )
+        metadata_path = table_path.with_suffix(table_path.suffix + ".json")
+        if not metadata_path.is_file():
+            raise FileNotFoundError(
+                f"DINO route metadata is required: {metadata_path}"
+            )
+        try:
+            with metadata_path.open("r", encoding="utf-8") as handle:
+                metadata = json.load(handle)
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError(
+                f"Cannot read DINO route metadata: {metadata_path}"
+            ) from error
+        _validate_table_metadata(
+            metadata,
+            expected_num_classes=self.dino_route_num_classes,
+            expected_version=self.dino_route_table_version,
+            expected_method=self.dino_route_table_method,
+            actual_table_sha256=_sha256_file(table_path),
+        )
         with np.load(table_path, allow_pickle=False) as archive:
             if "uncertainty" not in archive.files:
                 raise ValueError(
                     f"DINO route table lacks uncertainty: {table_path}"
                 )
             values = np.asarray(archive["uncertainty"], dtype=np.float32)
-        metadata_path = table_path.with_suffix(table_path.suffix + ".json")
-        if metadata_path.is_file():
-            try:
-                with metadata_path.open("r", encoding="utf-8") as handle:
-                    metadata = json.load(handle)
-            except (OSError, json.JSONDecodeError) as error:
-                raise ValueError(
-                    f"Cannot read DINO route metadata: {metadata_path}"
-                ) from error
-            if int(metadata.get("num_classes", -1)) != self.dino_route_num_classes:
-                raise ValueError(
-                    "DINO route metadata num_classes does not match the model"
-                )
         if values.shape != (self.dino_route_num_classes,):
             raise ValueError(
                 "DINO uncertainty table shape must be "
