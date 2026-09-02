@@ -45,6 +45,15 @@ class DinoRouteSparseMoeBlock(BaseSparseMoeBlock):
         )
         self.dino_route_bias_cap = float(config.get("bias_cap", 0.20))
         self.dino_route_num_classes = int(config.get("num_classes", 1000))
+        self.dino_route_confidence_gate = str(
+            config.get("confidence_gate", "none")
+        )
+        self.dino_route_margin_temperature = float(
+            config.get("margin_temperature", 0.05)
+        )
+        self.dino_route_margin_power = float(
+            config.get("margin_power", 1.0)
+        )
 
         if self.phase_metric is not None:
             raise ValueError(
@@ -65,6 +74,14 @@ class DinoRouteSparseMoeBlock(BaseSparseMoeBlock):
             raise ValueError("dino route bias_cap must be non-negative")
         if self.dino_route_num_classes <= 0:
             raise ValueError("dino route num_classes must be positive")
+        if self.dino_route_confidence_gate not in {"none", "low_margin"}:
+            raise ValueError(
+                "dino route confidence_gate must be 'none' or 'low_margin'"
+            )
+        if self.dino_route_margin_temperature <= 0.0:
+            raise ValueError("dino route margin_temperature must be positive")
+        if self.dino_route_margin_power <= 0.0:
+            raise ValueError("dino route margin_power must be positive")
 
         uncertainty = self._load_uncertainty_table(config)
         permutation = torch.arange(self.dino_route_num_classes, dtype=torch.long)
@@ -226,6 +243,10 @@ class DinoRouteSparseMoeBlock(BaseSparseMoeBlock):
         )
         cond_weights = None
         topk_idx = None
+        raw_topk_idx = None
+        route_margin = torch.zeros(0, device=device, dtype=torch.float32)
+        route_gate = torch.zeros(0, device=device, dtype=torch.float32)
+        route_changed = torch.zeros(0, device=device, dtype=torch.float32)
         bias = torch.zeros(
             0, self.num_routed_experts, device=device, dtype=hidden_states.dtype
         )
@@ -258,6 +279,23 @@ class DinoRouteSparseMoeBlock(BaseSparseMoeBlock):
             )
             preference = self._load_preference(device, torch.float32)
             bias = uncertainty.unsqueeze(1) * preference.unsqueeze(0)
+            if self.dino_route_confidence_gate == "low_margin":
+                if self.num_routed_experts < 2:
+                    raise ValueError(
+                        "low_margin confidence gate needs at least two experts"
+                    )
+                # Measure confidence before adding the DINO signal.  This
+                # prevents the intervention from making its own evidence look
+                # stronger and protects already decisive local assignments.
+                raw_scores = cos_sim.float()
+                top_two = torch.topk(raw_scores, k=2, dim=1).values
+                route_margin = (top_two[:, 0] - top_two[:, 1]).clamp_min(0.0)
+                route_gate = torch.exp(
+                    -route_margin / self.dino_route_margin_temperature
+                )
+                route_gate = route_gate.pow(self.dino_route_margin_power)
+                route_gate = route_gate.clamp(0.0, 1.0).detach()
+                bias = bias * route_gate.unsqueeze(1)
             selection_cos = cos_sim.float() + bias
 
             if self.router_weight_mode == "softmax":
@@ -276,6 +314,12 @@ class DinoRouteSparseMoeBlock(BaseSparseMoeBlock):
                 )
 
             _, topk_idx = torch.topk(selection_weights, k=self.top_k, dim=1)
+            raw_topk_idx = torch.topk(
+                cos_sim.float(), k=self.top_k, dim=1
+            ).indices
+            route_changed = (
+                topk_idx != raw_topk_idx
+            ).any(dim=1).to(dtype=torch.float32)
             topk_scores = torch.gather(cond_weights, 1, topk_idx)
             router_weights[cond_positions] = topk_scores.to(router_weights.dtype)
             expert_indices[cond_positions] = topk_idx
@@ -300,6 +344,21 @@ class DinoRouteSparseMoeBlock(BaseSparseMoeBlock):
                 self.num_routed_experts, device=device, dtype=torch.float32
             )
 
+        total_routed = global_counts.sum()
+        load_probs = global_counts / (total_routed + 1e-6)
+        route_load_entropy = -(
+            load_probs * load_probs.clamp_min(1e-8).log()
+        ).sum()
+        if self.num_routed_experts > 1:
+            route_load_entropy = route_load_entropy / torch.log(
+                global_counts.new_tensor(float(self.num_routed_experts))
+            )
+        route_load_entropy = torch.where(
+            total_routed > 0,
+            route_load_entropy,
+            global_counts.new_zeros(()),
+        )
+
         self.last_dino_route_stats = {
             "uncertainty_mean": uncertainty_mean.detach(),
             "bias_abs_mean": bias_abs_mean.detach(),
@@ -307,6 +366,22 @@ class DinoRouteSparseMoeBlock(BaseSparseMoeBlock):
                 global_counts.std(unbiased=False)
                 / (global_counts.mean() + 1e-6)
             ).detach(),
+            "route_margin_mean": (
+                route_margin.mean()
+                if route_margin.numel() > 0
+                else torch.zeros((), device=device)
+            ).detach(),
+            "route_gate_mean": (
+                route_gate.mean()
+                if route_gate.numel() > 0
+                else torch.ones((), device=device)
+            ).detach(),
+            "route_changed_fraction": (
+                route_changed.mean()
+                if route_changed.numel() > 0
+                else torch.zeros((), device=device)
+            ).detach(),
+            "route_load_entropy": route_load_entropy.detach(),
         }
 
         # Keep the original auxiliary-loss contract.  The experiment uses

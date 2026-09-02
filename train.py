@@ -796,6 +796,44 @@ def average_loss_dict(loss_dict, divisor):
     return averaged
 
 
+def _collect_dino_route_stats(model):
+    """Average scalar DINO route diagnostics over the model's MoE blocks."""
+    module = model.module if hasattr(model, "module") else model
+    sums = {}
+    counts = {}
+    for submodule in module.modules():
+        stats = getattr(submodule, "last_dino_route_stats", None)
+        if not isinstance(stats, dict):
+            continue
+        for name, value in stats.items():
+            if not torch.is_tensor(value) or value.numel() != 1:
+                continue
+            value = value.detach().float().reshape(())
+            sums[name] = sums.get(name, torch.zeros_like(value)) + value
+            counts[name] = counts.get(name, 0) + 1
+    return {
+        f"dino_route_{name}": value / counts[name]
+        for name, value in sums.items()
+    }
+
+
+def _reduce_dino_route_stats(loss_dict):
+    """Reduce DINO route diagnostics across ranks at logging boundaries."""
+    names = sorted(
+        name for name in loss_dict
+        if name.startswith("dino_route_")
+        and torch.is_tensor(loss_dict[name])
+        and loss_dict[name].numel() == 1
+    )
+    if not names or not dist.is_available() or not dist.is_initialized():
+        return
+    values = torch.stack([loss_dict[name].detach().float() for name in names])
+    dist.all_reduce(values, op=dist.ReduceOp.SUM)
+    values.div_(dist.get_world_size())
+    for name, value in zip(names, values):
+        loss_dict[name] = value
+
+
 def _seed_training_rng(seed):
     random.seed(seed)
     np.random.seed(seed % (2 ** 32))
@@ -2901,6 +2939,8 @@ def worker(gpu, cfg):
         
         loss_dict = {}
         loss_dict["loss"] = 0
+        for stat_name, stat_value in _collect_dino_route_stats(model).items():
+            loss_dict[stat_name] = stat_value
         if cfg.model_name in DENOISING_REGRET_MODELS:
             if not isinstance(model_output, tuple) or len(model_output) != 2:
                 raise ValueError(
@@ -2980,8 +3020,10 @@ def worker(gpu, cfg):
             )
 
         logged_loss_dict = average_loss_dict(accum_loss_dict, accum_steps)
-        if not throughput_enabled and step % cfg.log_interval == 0:
-            logging.info(format_loss_log(epoch, step, logged_loss_dict))
+        if not throughput_enabled:
+            _reduce_dino_route_stats(logged_loss_dict)
+            if step % cfg.log_interval == 0:
+                logging.info(format_loss_log(epoch, step, logged_loss_dict))
         if cfg.rank == 0 and not throughput_enabled:
             write_loss_dict_to_tensorboard(writer, logged_loss_dict, step)
             if step % cfg.log_interval == 0:
