@@ -76,17 +76,19 @@ for ((i=0; i<NUM_ALL_STEPS; i++)); do
     phase=$((i + 1))
     if [ "$phase" -lt "$NUM_ALL_STEPS" ]; then
         TARGET_NUM_STEPS=$((step + 1))
+        TARGET_RESUME=False
     else
         TARGET_NUM_STEPS=$ORIG_NUM_STEPS
+        TARGET_RESUME=True
     fi
-    python - "$CONFIG" "$TARGET_NUM_STEPS" "$TEMP_CONFIG" <<'PY'
+    python - "$CONFIG" "$TARGET_NUM_STEPS" "$TARGET_RESUME" "$TEMP_CONFIG" <<'PY'
 import sys
 import yaml
 with open(sys.argv[1]) as handle:
     cfg = yaml.safe_load(handle)
 cfg["num_steps"] = int(sys.argv[2])
-cfg["resume_checkpoint"] = True
-with open(sys.argv[3], "w") as handle:
+cfg["resume_checkpoint"] = sys.argv[3] == "True"
+with open(sys.argv[4], "w") as handle:
     yaml.dump(cfg, handle, default_flow_style=False, sort_keys=False)
 PY
     echo "Phase $phase/$NUM_ALL_STEPS: Train to step $step (num_steps=$TARGET_NUM_STEPS)" | tee -a "$LOG"
