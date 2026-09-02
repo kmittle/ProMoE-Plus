@@ -1,0 +1,8 @@
+实验 / Experiment: 1.2-B_dino_route_uncertainty_s0p02
+model_name: ProMoE_TC_B_dino_route  |  config: configs/004_ProMoE_B_dino_route_uncertainty_s0p02.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分流、静态 cluster_centers 余弦 top-1 路由、shared expert 和 routing contrastive guidance）；直接父变体 / Parent: DINO 类别难度辅助路由，strength=0.08 的正确对应实验
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 减弱 DINO 路由偏好 / weaker DINO route preference：仍只用离线 DINO 表格中的每类 uncertainty 和专家近期负载来改变 conditional token 的专家选择；不把 DINO 特征送入 DiT，也不做 REPA 式表征对齐。
+2. dino_route_config.strength: 0.02：将父实验的 0.08 改为 0.02，保持 mapping=correct、ema_decay=0.99、warmup_updates=2000、bias_cap=0.20 及其余路由设置不变，用于判断较弱干预是否能保留负载均衡而减少生成质量影响。
+3. 干净公平训练 / clean fair training：global_seed=0、global batch 256、lr=1e-4、img_num_workers=16、resume_checkpoint=False，从 scratch 训练至 300K/500K，并在 CFG 1.0/1.5 各生成 50K 图片，用项目 OpenAI evaluator 评估。
