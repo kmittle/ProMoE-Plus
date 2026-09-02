@@ -24,7 +24,10 @@ import scipy
 import torch
 
 from analyses.denoising_regret.io import write_json_atomic
-from analyses.denoising_regret.probe import _build_model
+from analyses.denoising_regret.probe import (
+    _build_model,
+    _load_checkpoint_payload,
+)
 from analyses.t_SNE.checkpoint_utils import (
     load_runtime_cfg,
     parse_checkpoint_step,
@@ -158,12 +161,7 @@ def _runtime_environment(devices):
 
 
 def _checkpoint_contract(weights_checkpoint_path):
-    load_kwargs = {"map_location": "cpu", "weights_only": True}
-    try:
-        checkpoint = torch.load(weights_checkpoint_path, **load_kwargs)
-    except TypeError:
-        load_kwargs.pop("weights_only")
-        checkpoint = torch.load(weights_checkpoint_path, **load_kwargs)
+    checkpoint = _load_checkpoint_payload(weights_checkpoint_path)
     step = checkpoint.get("step")
     if step != CHECKPOINT_STEP:
         raise ValueError(
