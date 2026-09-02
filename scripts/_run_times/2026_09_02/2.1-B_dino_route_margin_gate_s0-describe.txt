@@ -1,0 +1,8 @@
+实验 / Experiment: 2.1-B_dino_route_margin_gate_s0
+model_name: ProMoE_TC_B_dino_route  |  config: configs/004_ProMoE_B_dino_route_margin_gate_s0.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分开路由、cosine prototype routing、routing contrastive）；直接父变体 / Parent: DINO route 的 `confidence_gate: none` 版本。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 低置信路由门控 / low-margin gate：先计算未加 DINO 偏置时的 top-1 与 top-2 prototype cosine margin，再用 `exp(-margin / 0.05)`（`margin_power: 1.0`）缩放 DINO/load preference。原型已经很确定的 token 基本不被改写，难分 token 才得到额外的专家负载引导。
+2. DINO 只作为路由信号：沿用 `mapping: correct` 的每类离线 uncertainty、`strength: 0.08`、`warmup_updates: 2000`、`bias_cap: 0.20` 和 underloaded-expert EMA 偏好；没有把 DINO feature 与 DiT feature 做 cosine/MSE 表征对齐。
+3. 与直接父变体的可量化差异：新增 `route_margin_mean`、`route_gate_mean`、`route_changed_fraction` 和 `route_load_entropy` 诊断，并在训练日志/TensorBoard 中跨 rank 汇总，验证门控是否只迁移了低置信 token 以及是否真的改善负载。
