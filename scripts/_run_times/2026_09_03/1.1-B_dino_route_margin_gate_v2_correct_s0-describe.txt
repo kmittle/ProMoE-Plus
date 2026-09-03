@@ -1,0 +1,9 @@
+实验 / Experiment: 1.1-B_dino_route_margin_gate_v2_correct_s0
+model_name: ProMoE_TC_B_dino_route  |  config: configs/004_ProMoE_B_dino_route_margin_gate_v2_correct_s0.yaml
+基线 / Baseline: 基础 ProMoE-TC（条件/无条件分流、cluster_centers 余弦路由、shared expert 和 routing contrastive guidance）；直接父变体 / Parent: 旧版 DINO 不确定性负载路由，但本实验改用修正 VAE 解码的 v2 表，并只干预低置信路由。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. DINO 只提供每个 ImageNet 类别的一项离线不确定性数值；它不会进入 DiT backbone，也不做 teacher/student feature alignment。训练时，该数值只给当前负载较低的 routed experts 一个小的选择偏置。
+2. confidence_gate: low_margin 只在基础 cluster_centers 路由分数接近时明显介入；margin_temperature: 0.05、strength: 0.08、bias_cap: 0.20，已经有明确偏好的 token 基本保持原选择。
+3. 使用 table_version: 2 的修正表 /home/dev/imagenet-1k/dino_route_table_s8_v2.npz，并保持 global_seed: 0、global batch size 256、300K/500K 各 50K 图片、CFG 1.0/1.5 的正式评估协议。
+

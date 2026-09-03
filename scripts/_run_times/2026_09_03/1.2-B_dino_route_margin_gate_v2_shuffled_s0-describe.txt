@@ -1,0 +1,9 @@
+实验 / Experiment: 1.2-B_dino_route_margin_gate_v2_shuffled_s0
+model_name: ProMoE_TC_B_dino_route  |  config: configs/004_ProMoE_B_dino_route_margin_gate_v2_shuffled_s0.yaml
+基线 / Baseline: 基础 ProMoE-TC（条件/无条件分流、cluster_centers 余弦路由、shared expert 和 routing contrastive guidance）；直接父变体 / Parent: 同批 v2 correct 实验的严格打乱对照。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 与 v2 correct 实验使用同一个修正 DINO 不确定性表和完全相同的路由公式，但用 permutation_seed: 20260831 固定打乱类别与不确定性数值的对应关系。
+2. confidence_gate: low_margin、margin_temperature: 0.05、strength: 0.08、bias_cap: 0.20 均与 correct 组一致，因此两组的主要区别只有 DINO 类别语义是否正确。
+3. 从 step 0、global_seed: 0 开始训练，并按相同的 300K/500K、50K 图片、CFG 1.0/1.5 协议评估；只有 correct 明显优于 shuffled，才能把收益归因于 DINO 语义帮助 MoE 路由。
+
