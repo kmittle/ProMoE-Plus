@@ -25,9 +25,10 @@ mkdir -p "$(dirname "$LOG")"
 exec > >(tee -a "$LOG") 2>&1
 
 # The combination queue must not outrun the historical-result write-up.  The
-# marker is intentionally outside the repository: it is created only after
-# the missing rows in the result table have been filled from real evaluator
-# files, and it is invalidated automatically when the table contents change.
+# marker is intentionally outside the repository: this queue creates it only
+# after the missing rows in the result table have been filled and the upstream
+# output/evaluator checks have passed.  Its hash is invalidated automatically
+# when the table contents change.
 HISTORY_TABLE="${REPO_ROOT}/_previous_results/results_all_experiments_2026_06_21_to_08_05.md"
 HISTORY_GATE="/tmp/promoe-history-results-complete.marker"
 
@@ -114,13 +115,8 @@ has_adepth_completion() {
     return 0
 }
 
-history_table_gate_valid() {
-    [[ -s "$HISTORY_TABLE" && -s "$HISTORY_GATE" ]] || return 1
-
-    local table_hash gated_hash row filled name
-    table_hash="$(sha256sum "$HISTORY_TABLE" | awk '{print $1}')"
-    gated_hash="$(sed -n 's/^table_sha256=//p' "$HISTORY_GATE" | head -1)"
-    [[ -n "$table_hash" && "$table_hash" == "$gated_hash" ]] || return 1
+history_table_rows_complete() {
+    [[ -s "$HISTORY_TABLE" ]] || return 1
 
     # The nine rows are the exact missing entries in the historical table.
     # A row is considered filled only when none of its four metric cells is
@@ -140,7 +136,7 @@ history_table_gate_valid() {
             {
                 pairs = 0
                 for (i = 1; i <= NF; ++i) {
-                    if ($i ~ /^[[:space:]]*[0-9]+([.][0-9]+)?[[:space:]]*\/[[:space:]]*[0-9]+([.][0-9]+)?[[:space:]]*$/)
+                    if ($i ~ /^[[:space:]]*[0-9]+([.][0-9]+)?[[:space:]]*[/][[:space:]]*[0-9]+([.][0-9]+)?[[:space:]]*$/)
                         ++pairs
                 }
                 if (pairs >= 4) {
@@ -151,6 +147,31 @@ history_table_gate_valid() {
         ' || true)"
         [[ -n "$filled" ]] || return 1
     done
+    return 0
+}
+
+history_table_gate_valid() {
+    history_table_rows_complete || return 1
+
+    local table_hash gated_hash marker_tmp
+    table_hash="$(sha256sum "$HISTORY_TABLE" | awk '{print $1}')"
+    gated_hash="$(sed -n 's/^table_sha256=//p' "$HISTORY_GATE" 2>/dev/null | head -1)"
+    if [[ -n "$table_hash" && "$table_hash" == "$gated_hash" ]]; then
+        return 0
+    fi
+
+    # No manual step is required: write the marker atomically only after the
+    # row check above succeeds.  A partial write can never validate the gate.
+    marker_tmp="${HISTORY_GATE}.tmp.$$"
+    if ! printf 'table_sha256=%s\n' "$table_hash" > "$marker_tmp"; then
+        rm -f "$marker_tmp"
+        return 1
+    fi
+    if ! mv -f "$marker_tmp" "$HISTORY_GATE"; then
+        rm -f "$marker_tmp"
+        return 1
+    fi
+    echo "[$(date -Is)] Wrote historical-result gate marker for current table hash"
     return 0
 }
 
