@@ -10,11 +10,28 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "$REPO_ROOT"
+source "${SCRIPT_DIR}/expert_contra_eval_helpers.sh"
+source "${REPO_ROOT}/scripts/_python_env.sh"
 
 CONFIG="configs/004_ProMoE_B_expert_contra_param_shared.yaml"
-LOG="log_ProMoE_B_expert_contra_param_shared_train_sample_eval.log"
+LOG="${REPO_ROOT}/logs/log_ProMoE_B_expert_contra_param_shared_train_sample_eval.log"
+mkdir -p "$(dirname "$LOG")"
 
-readarray -t YAML_INFO < <(python - "$CONFIG" <<'PY'
+PYTHON="${PROMOE_TRAIN_PYTHON}"
+PYTHON_EVAL="${PROMOE_EVAL_PYTHON}"
+[[ -x "$PYTHON" ]] || {
+    echo "ERROR: required training interpreter is missing: $PYTHON" >&2
+    exit 1
+}
+[[ -x "$PYTHON_EVAL" ]] || {
+    echo "ERROR: required evaluation interpreter is missing: $PYTHON_EVAL" >&2
+    exit 1
+}
+if ! "$PYTHON" -c 'import yaml' >/dev/null 2>&1; then
+    echo "ERROR: ${PYTHON} cannot import PyYAML; install it in the promoe environment" >&2
+    exit 1
+fi
+readarray -t YAML_INFO < <("$PYTHON" - "$CONFIG" <<'PY'
 import os
 import sys
 import yaml
@@ -54,9 +71,15 @@ GPU_IDS="${YAML_INFO[4]}"
 STEP_LIST_STR="${YAML_INFO[5]}"
 ORIG_NUM_STEPS="${YAML_INFO[6]}"
 SAMPLE_BASE="${REPO_ROOT}/outputs/${MODEL_NAME}/${CUSTOM_CFG_NAME}/sample"
-
-PYTHON="/mnt/workspace/yujie/.conda/envs/promoe/bin/python"
-PYTHON_EVAL="/mnt/workspace/yujie/.conda/envs/fid_eval/bin/python"
+OUTPUT_BASE="${SAMPLE_BASE%/sample}"
+if [[ -L "$OUTPUT_BASE" ]]; then
+    echo "ERROR: output bucket must be a real directory, not a symlink: $OUTPUT_BASE" >&2
+    exit 1
+fi
+if [[ -e "$OUTPUT_BASE" ]] && find "$OUTPUT_BASE" -mindepth 1 -print -quit | grep -q .; then
+    echo "ERROR: training-from-scratch output bucket is not empty: $OUTPUT_BASE" >&2
+    exit 1
+fi
 
 # ── Parse step_list ──────────────────────────────────────────────────────────
 if [ -z "$STEP_LIST_STR" ]; then
@@ -75,20 +98,11 @@ trap 'rm -rf "$TEMP_DIR"' EXIT
 sample_and_eval_step() {
     local step=$1
     echo "[$(date '+%H:%M:%S')] Sample+eval step ${step} started" | tee -a "$LOG"
-
-    CUDA_VISIBLE_DEVICES="${GPU_IDS}" $PYTHON sample.py \
-        --config "${CONFIG}" --step_list_for_sample "${step}" \
-        >> "$LOG" 2>&1
-
-    if [ -d "$SAMPLE_BASE" ]; then
-        while IFS= read -r IMG_DIR; do
-            echo "[$(date '+%H:%M:%S')] Evaluating: ${IMG_DIR}" | tee -a "$LOG"
-            (cd evaluation && CUDA_VISIBLE_DEVICES="${EVAL_GPU}" \
-                $PYTHON_EVAL run_eval.py "$IMG_DIR" --count "${NUM_FID_SAMPLES}") \
-                >> "$LOG" 2>&1
-        done < <(find "$SAMPLE_BASE" -mindepth 3 -maxdepth 3 -path "*/step${step}/*" -type d -name images | sort -V)
-    fi
-
+   CUDA_VISIBLE_DEVICES="${GPU_IDS}" $PYTHON sample.py \
+       --config "${CONFIG}" --step_list_for_sample "${step}" \
+       >> "$LOG" 2>&1
+    expert_contra_eval_step "$SAMPLE_BASE" "$step" "$LOG" "$EVAL_GPU" \
+        "$PYTHON_EVAL" "$NUM_FID_SAMPLES"
     echo "[$(date '+%H:%M:%S')] Sample+eval step ${step} done" | tee -a "$LOG"
 }
 
@@ -113,13 +127,13 @@ for i in "${!ALL_STEPS[@]}"; do
         TARGET_NUM_STEPS="$ORIG_NUM_STEPS"
     fi
 
-    # Generate temp config with adjusted num_steps and resume enabled
-    python - "$CONFIG" "$TARGET_NUM_STEPS" "$TEMP_CONFIG" <<'PY'
+    # The first phase must be a fresh run; only the later phase resumes it.
+    "$PYTHON" - "$CONFIG" "$TARGET_NUM_STEPS" "$TEMP_CONFIG" "$phase" <<'PY'
 import sys, yaml
 with open(sys.argv[1]) as f:
     cfg = yaml.safe_load(f)
 cfg['num_steps'] = int(sys.argv[2])
-cfg['resume_checkpoint'] = True
+cfg['resume_checkpoint'] = int(sys.argv[4]) > 1
 with open(sys.argv[3], 'w') as f:
     yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
 PY

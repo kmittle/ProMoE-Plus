@@ -1,9 +1,8 @@
-实验 / Experiment: 11.1-B_expert_contra_param_shared_uncond
+实验 / Experiment: 6.1-B_expert_contra_param_shared_uncond
 model_name: ProMoE_TC_B_expert_contra  |  config: configs/004_ProMoE_B_expert_contra_param_shared_uncond.yaml
-一句话 / TL;DR: 专家参数解耦正则的“参与者扩容”系列极限版：共享专家和无条件专家都拉进两两排斥集合（12 路由 + 共享 + 无条件），回答“该分散所有专家，还是只分散特化专家”。
+基线 / Baseline: 基础 ProMoE-TC（conditional prototype routing + shared expert + routing contrastive loss）；直接父变体 / Parent: `_param`（只排斥 routed experts）。
 
-这个实验在做什么（大白话）:
-1. 背景：param 模式把每个专家 MLP 参数摊平、两两 L2 排斥，逼专家权重分开。原实现只推 12 个路由专家。前一支(_shared)加入了共享专家；本版在此基础上再加无条件专家。
-2. 这一版怎么改（相对 _param 基线的唯一改动）：**把共享专家和无条件专家都加进两两排斥集合**，变成 12 路由 + 1 共享 + 1 无条件一起两两推开。用 expert_contrastive_include_shared=True + expert_contrastive_include_uncond=True 实现（三者 intermediate_size 都是 1536，摊平后等长可 stack；无条件专家是 experts 列表的最后一个）。相对基线仍是 L2、全 6 块、拼 bias、λ=0.5、τ=0.7 不变，只多了“共享+无条件都参与”这一处。OFAT 四连消融的第四支，也是参与者最全的版本。
-3. 相对上一支(_shared)：唯一差别是额外拉入无条件专家——所以 _shared 与本版之差，干净地隔离出“加无条件专家”的边际效果。
-4. 诚实预判（不改设计，解读时记住）：无条件专家是四个实验里最可能**伤性能**的。原因不是它没道理，而是：(a) 它已被结构性隔离到极致（只吃 label==1000 的 token、确定性选中、不参与 cos-sim 路由竞争），param 排斥对它多半冗余；(b) 它在 CFG 关键路径上（采样 guidance = cond − uncond），往它权重加排斥力最可能恰好损到 cfg 1.5 的 FID——而这正是主指标。若本版为负，大概率是“动了 uncond”而非排斥机制本身的锅。同时本版仍在粗糙 L2 上测，共享专家那份 caveat 一并适用。从第 0 步与原始 ProMoE 一致、可非严格加载。最终以对齐步数的 FID 为准。
+核心改动 / Core changes（相对基线，重点优先）:
+1. 同时把 shared expert 和 unconditional expert 加入参数排斥集合（`expert_contrastive_include_shared: true`、`expert_contrastive_include_uncond: true`），参与者为 12 routed + 1 shared + 1 unconditional expert。
+2. 其余参数与 `_param` 保持一致：原始 L2 排斥 `exp(-L2/tau)`、`tau=0.7`、`lambda=0.5`，只在 6 个 MoE block（`[1,3,5,7,9,11]`）计算。这样可以单独观察把 unconditional expert 也拉开是否有帮助或伤害 CFG 路径。
+3. 本次补测是 `global_seed=0`、GPU 0--3、全局 batch 256 的 scratch 训练，配置明确禁止加载旧 checkpoint；正式观察点为 300K/500K，两个 CFG 各 50K 张图。

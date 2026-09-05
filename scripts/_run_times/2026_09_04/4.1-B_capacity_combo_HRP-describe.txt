@@ -1,0 +1,8 @@
+实验 / Experiment: 4.1-B_capacity_combo_HRP
+model_name: ProMoE_TC_B_capacity_combo  |  config: configs/004_ProMoE_B_capacity_combo_HRP.yaml
+基线 / Baseline: 基础 ProMoE-TC；直接父变体 / Parent: H+R（异构专家 + token-count LS-Reg）
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 在 H+R 上加入宽度无关的直接参数几何正则，只作用于第 4 个 MoE block，使用固定长度参数摘要上的历史指数 L2 排斥；显式 parameter coefficient 为 `0.5`、temperature 为 `0.7`。
+2. 参数摘要包含权重的有符号均值、离散程度和 RMS，并对可变长度的中间轴做固定 bins 池化；随后复用历史 `exp(-L2/temperature)` 目标，因此不同容量专家可以比较，且不会把宽度差异本身当成参数距离。
+3. 关闭输出视角，保持 LS-Reg 强度 0.05、parameter temperature 0.7、seed 0、batch 256 和 300K/500K fresh 评估。

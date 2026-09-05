@@ -1,9 +1,8 @@
-实验 / Experiment: 10.2-B_expert_contra_param_shared
+实验 / Experiment: 5.4-B_expert_contra_param_shared
 model_name: ProMoE_TC_B_expert_contra  |  config: configs/004_ProMoE_B_expert_contra_param_shared.yaml
-一句话 / TL;DR: 专家参数解耦正则的“参与者扩容”系列之一：把共享专家也拉进两两排斥集合（12 路由 + 1 共享），防止某个路由专家退化成重学公共函数。
+基线 / Baseline: 基础 ProMoE-TC（conditional prototype routing + shared expert + routing contrastive loss）；直接父变体 / Parent: `_param`（只排斥 12 个 routed experts）。
 
-这个实验在做什么（大白话）:
-1. 背景：param 模式把每个专家 MLP 参数摊平成长向量、两两 L2 排斥，逼专家权重坐标分开。原实现只推 12 个路由专家；共享专家（处理所有 token、承载公共知识）没被拉进来。
-2. 这一版怎么改（相对 _param 基线的唯一改动）：**把共享专家也加进两两排斥集合**，变成 12 路由 + 1 共享一起两两推开。动机：让每个路由专家远离共享专家，防止“某个路由专家退化成重学公共/平均分量”的冗余。用开关 expert_contrastive_include_shared=True 实现（共享专家与路由专家的 intermediate_size 都是 1536，摊平后等长，可直接 stack）。
-3. 相对基线：度量仍是 L2 排斥、仍全 6 个 MoE 块、仍拼 bias、λ=0.5、τ=0.7，全部不变；就差“共享专家参不参与”这一处。OFAT 四连消融的第三支。
-4. 诚实提醒（解读时记住）：本版是把共享专家加在**粗糙 L2** 上测的（OFAT 只改一处）。此前判断共享专家大概率只在温和余弦下才有正收益、在 L2 下可能有害——所以本版若为负，可能是 L2 的锅而非“加共享”本身的锅，别据此判死刑。从第 0 步与原始 ProMoE 一致、可非严格加载。最终以对齐步数的 FID 为准。
+核心改动 / Core changes（相对基线，重点优先）:
+1. 把 shared expert 加入专家参数两两排斥集合（`expert_contrastive_include_shared: true`），集合由 12 个 routed experts 变为 12 个 routed + 1 个 shared expert。目的是真正拉开 routed expert 与公共功能之间的参数几何距离。
+2. 距离函数仍是父变体的 `exp(-L2/tau)`，`tau=0.7`、`expert_contrastive_lam=0.5`，仍只在 6 个 MoE block（`[1,3,5,7,9,11]`）计算；因此与 `_param` 的差别只在参与者是否包含 shared expert。
+3. 本次补测固定 `global_seed=0`、GPU 0--3、全局 batch 256、从空目录 scratch 训练到 500K，在 300K/500K 和 CFG 1.0/1.5 分别生成并评估 50K 张图。

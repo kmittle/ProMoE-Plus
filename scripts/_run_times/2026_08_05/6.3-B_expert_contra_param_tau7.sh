@@ -5,4 +5,10 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/../../.." && pwd)"
+CONFIG_PATH="${REPO_ROOT}/configs/004_ProMoE_B_expert_contra_param_tau7.yaml"
+if ! grep -Fqx 'gpu_ids: [4, 5]' "${CONFIG_PATH}"; then
+  echo "ERROR: historical launcher slot [4, 5] does not match ${CONFIG_PATH}; refusing to start and risk a GPU collision." >&2
+  echo "The config is currently reserved by the fresh 4-GPU补测队列." >&2
+  exit 2
+fi
 exec bash "${REPO_ROOT}/scripts/expert_contra/run_B_expert_contra_param_tau7_train_sample_eval.sh"

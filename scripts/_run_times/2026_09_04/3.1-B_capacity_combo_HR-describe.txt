@@ -1,0 +1,8 @@
+实验 / Experiment: 3.1-B_capacity_combo_HR
+model_name: ProMoE_TC_B_capacity_combo  |  config: configs/004_ProMoE_B_capacity_combo_HR.yaml
+基线 / Baseline: 基础 ProMoE-TC；直接父变体 / Parent: H（等总 routed 宽度的异构专家）
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 在异构专家路由上加入历史 token-count diagonal LS-Reg（ls_balance_mode=token、ls_diag_strength=0.05），根据每个 batch 的专家 token 数调节路由对比损失的对角项。
+2. 只改变路由 InfoNCE 的训练信号，不改变专家前向；该臂用于判断已验证的路由均衡点能否迁移到异构容量。
+3. global_seed=0、全局 batch 256、空目录 fresh，并在 300K/500K 和两种 CFG 下评估；同时记录全局 token-load CV，避免用局部卡统计冒充均衡。

@@ -72,6 +72,7 @@ from models.models_ProMoE_TC_noise_expert import DiT as ProMoE_TC_noise_expert
 from models.models_ProMoE_TC_noise_expert_proj import DiT as ProMoE_TC_noise_expert_proj
 from models.models_ProMoE_TC_noise_expert_ema import DiT as ProMoE_TC_noise_expert_ema
 from models.models_ProMoE_TC_expert_contra import DiT as ProMoE_TC_expert_contra
+from models.models_ProMoE_TC_capacity_combo import DiT as ProMoE_TC_capacity_combo
 from models.models_ProMoE_TC_dagfuse import DiT as ProMoE_TC_dagfuse
 from models.models_ProMoE_TC_lbcontra import DiT as ProMoE_TC_lbcontra
 from models.models_ProMoE_TC_adepth import DiT as ProMoE_TC_adepth
@@ -118,6 +119,7 @@ model_dict = {
     "ProMoE_TC_L_noise_expert_ema": (ProMoE_TC_noise_expert_ema, "DiT_L_config"),
     "ProMoE_TC_B_expert_contra": (ProMoE_TC_expert_contra, "DiT_B_config"),
     "ProMoE_TC_L_expert_contra": (ProMoE_TC_expert_contra, "DiT_L_config"),
+    "ProMoE_TC_B_capacity_combo": (ProMoE_TC_capacity_combo, "DiT_B_config"),
     "ProMoE_TC_B_dagfuse": (ProMoE_TC_dagfuse, "DiT_B_config"),
     "ProMoE_TC_B_lbcontra": (ProMoE_TC_lbcontra, "DiT_B_config"),
     "ProMoE_TC_B_adepth": (ProMoE_TC_adepth, "DiT_B_config"),
@@ -132,6 +134,15 @@ model_dict = {
 }
 
 DENOISING_REGRET_MODELS = {"ProMoE_TC_B_FDRR"}
+CAPACITY_COMBO_MODELS = {"ProMoE_TC_B_capacity_combo"}
+CAPACITY_COMBO_STAT_NAMES = (
+    "moe_route_token_load_cv",
+    "moe_route_active_experts",
+    "moe_route_capacity_load_cv",
+    "moe_route_mean_diag_offset",
+    "moe_expert_output_contrastive",
+    "moe_expert_param_contrastive",
+)
 TRAINER_STATE_VERSION = 2
 LEGACY_TRAINER_STATE_VERSION = 1
 AUGMENTATION_SEED_VERSION = 1
@@ -158,6 +169,16 @@ STRICT_PROVENANCE_SOURCE_PATHS = {
         "config.py",
         "utils.py",
         "train.py",
+        "models/models_ProMoE_TC_expert_contra.py",
+        "models/modules.py",
+        "credit_redistribution/git_provenance.py",
+    ),
+    "ProMoE_TC_B_capacity_combo": (
+        "requirements.txt",
+        "config.py",
+        "utils.py",
+        "train.py",
+        "models/models_ProMoE_TC_capacity_combo.py",
         "models/models_ProMoE_TC_expert_contra.py",
         "models/modules.py",
         "credit_redistribution/git_provenance.py",
@@ -827,6 +848,87 @@ def _reduce_dino_route_stats(loss_dict):
     )
     if not names or not dist.is_available() or not dist.is_initialized():
         return
+    values = torch.stack([loss_dict[name].detach().float() for name in names])
+    dist.all_reduce(values, op=dist.ReduceOp.SUM)
+    values.div_(dist.get_world_size())
+    for name, value in zip(names, values):
+        loss_dict[name] = value
+
+
+def _collect_capacity_combo_stats(model):
+    """Collect fixed-shape diagnostics for the capacity-combo model only.
+
+    Hard routing can leave a rank with an empty expert or too few output
+    pools.  Returning a fixed set of scalar keys keeps the later DDP reduction
+    identical on every rank.
+    """
+    module = model.module if hasattr(model, "module") else model
+    if not getattr(module, "is_capacity_combo_model", False):
+        return {}
+
+    parameter = next(module.parameters(), None)
+    if parameter is None:
+        return {}
+    zero = parameter.detach().float().new_zeros(())
+    values = {name: [] for name in CAPACITY_COMBO_STAT_NAMES}
+
+    for submodule in module.modules():
+        if not getattr(submodule, "is_capacity_combo_block", False):
+            continue
+        token_load = getattr(submodule, "last_load_hist", None)
+        if torch.is_tensor(token_load) and token_load.numel() > 1:
+            token_load = token_load.detach().float().reshape(-1)
+            # ``last_load_hist`` is collected from each rank's local batch.
+            # Aggregate the vector before computing CV/active-expert counts;
+            # averaging per-rank CVs can hide a globally overloaded expert.
+            if dist.is_available() and dist.is_initialized():
+                token_load = token_load.clone()
+                dist.all_reduce(token_load, op=dist.ReduceOp.SUM)
+                token_load.div_(dist.get_world_size())
+            token_mean = token_load.mean()
+            values["moe_route_token_load_cv"].append(
+                token_load.std(unbiased=False) / token_mean.clamp_min(1e-6)
+            )
+            values["moe_route_active_experts"].append(
+                (token_load > 0).float().sum()
+            )
+
+        responsibility = getattr(submodule, "last_capacity_load", None)
+        if torch.is_tensor(responsibility) and responsibility.numel() > 1:
+            responsibility = responsibility.detach().float().reshape(-1)
+            responsibility_mean = responsibility.mean()
+            values["moe_route_capacity_load_cv"].append(
+                responsibility.std(unbiased=False)
+                / responsibility_mean.clamp_min(1e-6)
+            )
+
+        for name, attribute in (
+            ("moe_route_mean_diag_offset", "last_mean_eps"),
+            ("moe_expert_output_contrastive", "last_expert_output_loss"),
+            ("moe_expert_param_contrastive", "last_expert_param_loss"),
+        ):
+            value = getattr(submodule, attribute, None)
+            if torch.is_tensor(value) and value.numel() == 1:
+                values[name].append(value.detach().float().reshape(()))
+
+    return {
+        name: torch.stack(entries).mean() if entries else zero.clone()
+        for name, entries in values.items()
+    }
+
+
+def _reduce_capacity_combo_stats(loss_dict):
+    """Average the fixed capacity-combo diagnostics over DDP ranks."""
+    if not dist.is_available() or not dist.is_initialized():
+        return
+    if not all(
+        name in loss_dict
+        and torch.is_tensor(loss_dict[name])
+        and loss_dict[name].numel() == 1
+        for name in CAPACITY_COMBO_STAT_NAMES
+    ):
+        return
+    names = CAPACITY_COMBO_STAT_NAMES
     values = torch.stack([loss_dict[name].detach().float() for name in names])
     dist.all_reduce(values, op=dist.ReduceOp.SUM)
     values.div_(dist.get_world_size())
@@ -2941,6 +3043,9 @@ def worker(gpu, cfg):
         loss_dict["loss"] = 0
         for stat_name, stat_value in _collect_dino_route_stats(model).items():
             loss_dict[stat_name] = stat_value
+        if cfg.model_name in CAPACITY_COMBO_MODELS:
+            for stat_name, stat_value in _collect_capacity_combo_stats(model).items():
+                loss_dict[stat_name] = stat_value
         if cfg.model_name in DENOISING_REGRET_MODELS:
             if not isinstance(model_output, tuple) or len(model_output) != 2:
                 raise ValueError(
@@ -3022,6 +3127,8 @@ def worker(gpu, cfg):
         logged_loss_dict = average_loss_dict(accum_loss_dict, accum_steps)
         if not throughput_enabled:
             _reduce_dino_route_stats(logged_loss_dict)
+            if cfg.model_name in CAPACITY_COMBO_MODELS:
+                _reduce_capacity_combo_stats(logged_loss_dict)
             if step % cfg.log_interval == 0:
                 logging.info(format_loss_log(epoch, step, logged_loss_dict))
         if cfg.rank == 0 and not throughput_enabled:

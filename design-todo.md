@@ -1,12 +1,16 @@
-# design-todo：ProMoE_TC 改进计划（三个改进组）
+# design-todo：ProMoE_TC 改进计划（MoE 主线）
 
-> **目录 / Index**（每组一个独立 `# 改进组X` 章节）：
+> **执行顺序（2026-09-04）**：先补齐历史表中缺失的真实 300K/500K evaluator 结果，再做四点组合。补测必须 training from scratch、固定 `global_seed=0`，不得用中途 checkpoint 代替独立实验。训练过程不得以 50K 指标或主观判断提前停止；只有预定的 300K/500K 评估完成后，才根据生成质量、路由负载和专家分工决定去留。一次性的 200K 窗口交接不再复制到新实验。
+
+> **目录 / Index**（历史独立改进组；当前优先做补测和组合消融）：
 > 1. **改进组一 · DAG-fuse**（shared↔conditional 单向融合）—— ✅ 已实现 + 验证 + **已 push**（`ProMoE_TC_B_dagfuse`，3 臂）
 > 2. **改进组二 · lbcontra**（路由对比损失负载均衡）—— ✅ 已实现 + 验证 + **已 push**（`ProMoE_TC_B_lbcontra`，13 run）
 > 3. **改进组三 · adaptive-depth**（token 自适应跳过 / 加深 FFN，MoD 式）—— ✅ 已实现 + 验证 + **已 push**（`ProMoE_TC_B_adepth`，fixed_q，扫 depth_q ×4）
 > 4. **改进组四 · lossfree**（无损路由负载均衡，DeepSeek arXiv 2408.15664）—— ✅ 已实现 + 验证（`ProMoE_TC_B_lossfree`，扫 u ×3）；未提交（本次新增）
+> 5. **当前任务 · 结果补全与四点组合**——历史表缺失的参数正则 / adaptive-depth 结果先按同一 seed 和协议补齐；随后运行 `capacity_combo` 的受控组合消融（H、H+R、H+O、H+P、H+O+P、H+R+O、H+R+P、H+R+O+P）。
 >
-> **四组共用约定**：均在 base `ProMoE_TC`（`models/models_ProMoE_TC.py`：两步路由 + 静态 `cluster_centers` + top-1 token-choice + shared expert + 路由 InfoNCE 对比损失）上做**自包含变体**（`models_ProMoE_TC_<variant>.py` + config 开关）；**uncond token 一律不受影响**；尽量 **step-0 与 base 前向逐比特一致**；默认各自**独立消融**、不叠加。运行时 slot 现统一在 `scripts/_run_times/2026_07_01/`。
+> 运行时 slot 按实验批次保存在对应的 `scripts/_run_times/<date>/` 目录；当前组合批次为 `2026_09_04`。
+> **四组共用约定**：均在 base `ProMoE_TC`（`models/models_ProMoE_TC.py`：两步路由 + 静态 `cluster_centers` + top-1 token-choice + shared expert + 路由 InfoNCE 对比损失）上做**自包含变体**（`models_ProMoE_TC_<variant>.py` + config 开关）；**uncond token 一律不受影响**；尽量 **step-0 与 base 前向逐比特一致**；默认各自**独立消融**、不叠加。运行时 slot 按实验批次保存在对应的 `scripts/_run_times/<date>/` 目录。
 
 ---
 
@@ -283,3 +287,56 @@ return X[:,0], X[:,1]                                # C_new, S_new
 - 与改进组二（lbcontra）**互斥/对比**：两者都解"负载均衡"——组二用辅助 loss（有干扰梯度），组四用无损偏置（零干扰）；跑完可直接对比谁的均衡/FID 更好。
 - 是否要"偏置作用在 softmax 分"的变体（论文说更难调）、或 EMA 平滑 count —— 暂不做。
 
+---
+
+# 四个有效点的组合实验：heterogeneous experts + routing/expert separation
+
+> 这是下一轮组合实验的设计记录。核心消融严格复用已经有收益的机制：异构专家、历史 token-count diagonal LS-Reg、历史输出正则，以及参数正则在异构宽度下的明确几何扩展。`capacity` 版本的责任均衡不是历史结果，单独作为后续假设，不能混入核心结论。当前 4--7 号卡上的 Loss-Free 和缺失结果补测完成前，不启动本组训练。
+
+## 1. 可检验的假设
+
+1. **异构容量是否本身带来收益。** routed experts 的中间宽度按 1x--3x 排列，并让总 routed 中间宽度尽量贴近 Base（历史整数取整后只差 5 个 hidden units），先排除“总 FLOPs 变多”的解释。
+2. **路由均衡与专家解耦是否互补。** 历史 LS-Reg 只改变 routing InfoNCE 的 diagonal；输出和参数正则分别约束函数行为与参数几何。组合是否有额外收益必须由逐项消融回答。
+3. **不同宽度不能直接做参数向量拼接。** 异构专家的参数长度不同，参数臂使用固定长度、按宽度归一化的参数签名；这是一项明确的实现扩展，不冒充历史等宽 raw-parameter 实验。
+4. **输出与参数视角是否提供互补信息。** `H+O+P` 和 `H+R+O+P` 分别检验不带/带路由均衡时两种解耦信号是否叠加。
+
+## 2. 逐步消融（全部 training from scratch）
+
+现有历史结果提供单点参考；新一轮增加必要的 H-anchored 组合臂，所有臂使用同一 `global_seed=0`、全局 batch 256、相同学习率/数据/采样协议，并训练到 300K 和 500K。历史单点 R/O/P 结果只作先验，不能替代本批次的 H+O、H+P、H+O+P 对照。
+
+| 臂 | 异构宽度 | 责任感知 LS-Reg | 输出签名 | 参数签名 | 目的 |
+|---|---:|---:|---:|---:|---|
+| H | 是 | 否 | 否 | 否 | 异构专家本身的对照 |
+| H-R | 是 | 是（历史 token-count diagonal） | 否 | 否 | 检验路由均衡在异构专家上的增益 |
+| H-O | 是 | 否 | 是 | 否 | 检验输出正则在没有 R 时是否仍有效 |
+| H-P | 是 | 否 | 否 | 是 | 检验参数正则在没有 R 时是否仍有效 |
+| H-O-P | 是 | 否 | 是 | 是 | 检验两种专家解耦视角在没有 R 时是否互补 |
+| H-R-O | 是 | 是 | 是 | 否 | 再加入专家函数输出解耦 |
+| H-R-P | 是 | 是 | 否 | 是 | 再加入宽度无关的参数解耦 |
+| H-R-OP | 是 | 是 | 是 | 是 | 完整组合；输出/参数两视角共享同一专家身份损失 |
+
+`H` 采用与历史 `hetero_expert_NoPenalty` 相同的 1x--3x 容量排序和整数向下取整规则；B 规模下 routed experts 的中间宽度为 `[768, 907, 1047, 1186, 1326, 1466, 1605, 1745, 1885, 2024, 2164, 2304]`，总和为 18,427。它与历史实现使用同一宽度序列，因此这是**同一容量假设的等 routed-FLOPs 复现/组合基线**，不能把收益归因于额外计算量。O 使用历史有效输出正则的 L2 形式，并覆盖全部六个 MoE blocks；P 使用适用于不同宽度专家的固定长度参数几何签名，并在 block-3 复用历史 `exp(-L2/temperature)` 目标（temperature=0.7）。核心 R 臂使用历史 token-count diagonal LS-Reg。`capacity` responsibility 版本若要做，另开 `HR-capacity` 计划，不与本表的 R 混称。
+
+## 3. 需要报告的证据
+
+- 生成质量：300K/500K 的 FID 和 IS（CFG 1.0、1.5）。
+- 路由：每个 block 的 token 负载、`n_i` 的变异系数、路由熵和 top-1 margin；若做后续 capacity 臂，再增加 `n_i*m_i` 的变异系数。
+- 专家分工：输出 RMS、归一化输出两两距离、参数签名两两距离/相似度、有效秩；检查是否通过增大输出尺度投机。
+- 计算公平性：总参数量、激活参数量、实际 FLOPs，以及不同专家的宽度和使用率。
+- 稳定性：辅助 loss 的数值、非有限梯度、300K 到 500K 的趋势；任何早期 checkpoint 只作诊断，不作结论。
+
+## 4. 预先的否决条件
+
+- 若后续 `HR-capacity` 只降低 token 计数的 CV，却提高 `n_i*m_i` 的 CV，则说明容量目标定义错了，停止继续叠加 O/P。
+- 若 O/P 使输出 RMS 明显上升而归一化距离没有改善，判定为尺度投机，不把 FID 的偶然变化算作收益。
+- 只有完整组合同时改善生成指标和至少一个责任/分工指标，且逐项移除消融能解释增益来源，才把它作为期刊主线；否则保留为负结果。
+
+## 5. 组合后的统一假设（补测和八臂矩阵完成后才执行）
+
+四个点不能只被写成四个互不相关的开关。异构专家改变了每个专家一次前向的计算量，所以只看 token 数并不能说明负载是否真的均衡。下一阶段只保留一个可以被实验推翻的假设：
+
+- 记专家 `i` 的中间宽度为 `m_i`，一个训练批次实际分到它的 token 数为 `n_i`。定义计算责任 `r_i = n_i * m_i`，再除以所有专家责任的平均值。
+- `r_i > 1` 表示这个专家承担了过多计算，`r_i < 1` 表示承担不足。路由对比损失的均衡修正应使用这个量，而不是只把每个专家的 token 数拉到一样；修正量只作为训练期的 detached 信号，不改变推理时的额外路径。
+- 输出正则和参数正则也使用同一份责任记录来校准强度，避免大专家因为参数更多而在正则里占主导。这样四个点共同回答一个问题：在固定总计算量下，如何把 token 分给不同容量的专家，并让每个专家学到不同的功能。
+
+矩阵完成后，最多先开四个新臂：`H-Rcap`、`H-Rcap-O`、`H-Rcap-P`、`H-Rcap-O-P`。它们仍然 fresh、seed 0、300K/500K、同一评估协议；若 `r_i` 的变异系数没有下降，或生成质量与专家分工没有同步改善，就停止这条统一路线，不再继续堆叠正则。

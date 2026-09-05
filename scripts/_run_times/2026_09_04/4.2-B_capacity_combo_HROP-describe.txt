@@ -1,0 +1,8 @@
+实验 / Experiment: 4.2-B_capacity_combo_HROP
+model_name: ProMoE_TC_B_capacity_combo  |  config: configs/004_ProMoE_B_capacity_combo_HROP.yaml
+基线 / Baseline: 基础 ProMoE-TC；直接父变体 / Parent: H+R+O 与 H+R+P 的完整组合
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 完整组合异构专家、token-count LS-Reg、专家输出正则和参数几何正则；LS-Reg 仍只调路由对比损失，两个专家视角仍分别作用于训练梯度。
+2. `dual_additive` 先分别计算 output/parameter loss，再以显式 `0.5/0.5` 加权，temperature 分别为 `0.5/0.7`；输出覆盖六个 MoE block，参数视角保持第 4 个 block，和对应的 H+R+O、H+R+P 臂严格对齐。
+3. 这是组合验证臂，不预先称为最终方法；只有生成指标、全局负载 CV 和专家分工统计同时改善，才支持后续论文叙事。全程 seed 0、batch 256、空目录 fresh、300K/500K 评估。

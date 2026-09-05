@@ -1,16 +1,21 @@
 model_name: "ProMoE_TC_B_expert_contra"
 
-gpu_ids: [6, 7]
+gpu_ids: [0, 1, 2, 3]
 
 ###### For train
 image_size: 256
 total_train_batch_size: 256
 lr: 0.0001
 weight_decay: 0
+global_seed: 0
+img_num_workers: 16
 use_pre_latents: True
-resume_checkpoint: True
+use_encoded_latents: True
+latent_data_path: "/home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz"
+resume_checkpoint: False
 log_interval: 10
 num_steps: 501000
+save_ckpt_interval: 10000
 
 DiT_B_config:
   qk_norm: False

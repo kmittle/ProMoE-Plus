@@ -1,5 +1,5 @@
 model_name: "ProMoE_TC_B_lossfree"
-output_dir: "/home/dev/promoe-runs"
+output_dir: "outputs"
 
 gpu_ids: [4, 5, 6, 7]
 

@@ -1,0 +1,8 @@
+实验 / Experiment: 1.2-B_capacity_combo_HO
+model_name: ProMoE_TC_B_capacity_combo  |  config: configs/004_ProMoE_B_capacity_combo_HO.yaml
+基线 / Baseline: 基础 ProMoE-TC；直接父变体 / Parent: H（等总 routed 宽度的异构专家）
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 在 H 的异构专家上加入专家输出正则：对六个 MoE block 收集实际被选 routed expert 的输出均值，并使用历史 output-view 的 L2 排斥；显式 output coefficient 为 `0.5`（parent scalar 为 `1.0`）。
+2. 只开启输出视角（expert_output_blocks=[1,3,5,7,9,11]），关闭 LS-Reg 和参数视角，隔离“函数输出解耦”这一项；正则只在训练期生效，采样仍使用普通 MoE 前向。
+3. 保持 seed、batch、数据和 300K/500K 评估协议与其它组合臂一致，从空目录 fresh 训练。

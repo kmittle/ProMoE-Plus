@@ -1,0 +1,8 @@
+实验 / Experiment: 3.2-B_capacity_combo_HRO
+model_name: ProMoE_TC_B_capacity_combo  |  config: configs/004_ProMoE_B_capacity_combo_HRO.yaml
+基线 / Baseline: 基础 ProMoE-TC；直接父变体 / Parent: H+R（异构专家 + token-count LS-Reg）
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 在 H+R 上加入历史专家输出正则：六个 MoE block 的 routed expert 输出均值使用 L2 排斥；显式 output coefficient 为 `0.5`（parent scalar 为 `1.0`）。
+2. LS-Reg 与输出正则分开计算，输出视角只在训练期通过辅助损失更新专家，不改变采样时的路由和聚合公式，便于把增益归因到专家函数解耦。
+3. 保持 token-count LS-Reg 的强度 0.05、seed 0、batch 256、空目录 fresh 和 300K/500K 评估协议。
