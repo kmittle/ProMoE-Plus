@@ -24,6 +24,13 @@ LOG="${REPO_ROOT}/logs/capacity_combo_queue.log"
 mkdir -p "$(dirname "$LOG")"
 exec > >(tee -a "$LOG") 2>&1
 
+# The combination queue must not outrun the historical-result write-up.  The
+# marker is intentionally outside the repository: it is created only after
+# the missing rows in the result table have been filled from real evaluator
+# files, and it is invalidated automatically when the table contents change.
+HISTORY_TABLE="${REPO_ROOT}/_previous_results/results_all_experiments_2026_06_21_to_08_05.md"
+HISTORY_GATE="/tmp/promoe-history-results-complete.marker"
+
 # Keep one supervisor per repository.  The lock is kernel-owned, so a killed
 # supervisor cannot leave a stale PID that blocks a later run.
 LOCK_FILE="/tmp/promoe-capacity_combo_queue.lock"
@@ -105,6 +112,60 @@ has_adepth_completion() {
         has_eval_pair "${REPO_ROOT}/outputs/ProMoE_TC_B_adepth/004_ProMoE_B_adepth_${suffix}" || return 1
     done
     return 0
+}
+
+history_table_gate_valid() {
+    [[ -s "$HISTORY_TABLE" && -s "$HISTORY_GATE" ]] || return 1
+
+    local table_hash gated_hash row filled name
+    table_hash="$(sha256sum "$HISTORY_TABLE" | awk '{print $1}')"
+    gated_hash="$(sed -n 's/^table_sha256=//p' "$HISTORY_GATE" | head -1)"
+    [[ -n "$table_hash" && "$table_hash" == "$gated_hash" ]] || return 1
+
+    # The nine rows are the exact missing entries in the historical table.
+    # A row is considered filled only when none of its four metric cells is
+    # the em-dash placeholder.  The complete output/evaluator checks above
+    # remain the authoritative source for the numbers themselves.
+    for name in \
+        B_expert_contra_param_cos \
+        B_expert_contra_param_shared \
+        B_expert_contra_param_shared_uncond \
+        B_expert_contra_param_tau0p07 \
+        B_expert_contra_param_tau7 \
+        B_adepth_q0p1 B_adepth_q0p2 B_adepth_q0p3 B_adepth_q0p4; do
+        # The same experiment name also appears in the status section above
+        # the numeric result table.  Select a row with four numeric FID/IS
+        # pairs so a prose status row cannot accidentally open the gate.
+        filled="$(grep -F "| \`${name}\` |" "$HISTORY_TABLE" | awk -F'|' '
+            {
+                pairs = 0
+                for (i = 1; i <= NF; ++i) {
+                    if ($i ~ /^[[:space:]]*[0-9]+([.][0-9]+)?[[:space:]]*\/[[:space:]]*[0-9]+([.][0-9]+)?[[:space:]]*$/)
+                        ++pairs
+                }
+                if (pairs >= 4) {
+                    print
+                    exit
+                }
+            }
+        ' || true)"
+        [[ -n "$filled" ]] || return 1
+    done
+    return 0
+}
+
+wait_for_history_table() {
+    echo "[$(date -Is)] Waiting for the historical result table to be filled"
+    local last_notice=0 now
+    while ! history_table_gate_valid; do
+        now="$(date +%s)"
+        if (( now - last_notice >= 300 )); then
+            echo "[$(date -Is)] Historical table gate is not valid; no combination will launch"
+            last_notice="$now"
+        fi
+        sleep 60
+    done
+    echo "[$(date -Is)] Historical result table gate validated"
 }
 
 # Upstream queues use temporary YAML files, so the training process command
@@ -210,6 +271,7 @@ wait_for_adepth_completion() {
 
 wait_for_param_completion
 wait_for_adepth_completion
+wait_for_history_table
 
 # The helper keeps the experiment-server interpreter paths as the defaults and
 # uses an explicit deployment fallback only when that mount is unavailable.
