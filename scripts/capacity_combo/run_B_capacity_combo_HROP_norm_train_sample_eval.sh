@@ -1,8 +1,8 @@
 #!/bin/bash
 #
-# ProMoE-TC-B capacity-aware expert responsibility ablation (HO).
-# Sequentially trains from scratch to 300K and 500K, sampling/evaluating
-# between checkpoints so the same trajectory is used for both measurements.
+# ProMoE-TC capacity-combo dual-view scale diagnostic (HROP-norm).
+# This is the H+R+O+P ablation with only the pooled-output normalization changed;
+# it remains a sequential fresh train + sample + OpenAI-eval pipeline.
 #
 
 set -euo pipefail
@@ -13,8 +13,8 @@ cd "$REPO_ROOT"
 source "${SCRIPT_DIR}/capacity_combo_eval_helpers.sh"
 source "${REPO_ROOT}/scripts/_python_env.sh"
 
-CONFIG="configs/004_ProMoE_B_capacity_combo_HO.yaml"
-LOG="${REPO_ROOT}/logs/log_ProMoE_B_capacity_combo_HO_train_sample_eval.log"
+CONFIG="configs/004_ProMoE_B_capacity_combo_HROP_norm.yaml"
+LOG="${REPO_ROOT}/logs/log_ProMoE_B_capacity_combo_HROP_norm_train_sample_eval.log"
 mkdir -p "$(dirname "$LOG")"
 
 PYTHON="${PROMOE_TRAIN_PYTHON}"
@@ -78,6 +78,7 @@ if [[ "$SAMPLE_BASE" != /* ]]; then
     SAMPLE_BASE="${REPO_ROOT}/${SAMPLE_BASE}"
 fi
 OUTPUT_BASE="${SAMPLE_BASE%/sample}"
+
 if [[ -L "$OUTPUT_BASE" ]]; then
     echo "ERROR: output bucket must be a real directory, not a symlink: $OUTPUT_BASE" >&2
     exit 1
@@ -157,6 +158,9 @@ PY
     echo "Phase ${phase}/${NUM_ALL_STEPS}: Sample+eval step ${step}" | tee -a "$LOG"
     sample_and_eval_step "$step"
 
+    # The first configured point is the mandatory decision boundary.  A gate
+    # failure is a normal scientific outcome, so leave the 300K artifacts in
+    # place and exit successfully without starting the next training phase.
     if [[ "$step" == "300000" && "$phase" -lt "$NUM_ALL_STEPS" ]]; then
         if capacity_combo_check_300k_gate "$SAMPLE_BASE" "$step" "$LOG"; then
             :

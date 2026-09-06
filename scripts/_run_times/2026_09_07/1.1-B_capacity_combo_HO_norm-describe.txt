@@ -1,0 +1,8 @@
+实验 / Experiment: 1.1-B_capacity_combo_HO_norm
+model_name: ProMoE_TC_B_capacity_combo  |  config: configs/004_ProMoE_B_capacity_combo_HO_norm.yaml
+基线 / Baseline: 基础 ProMoE-TC（conditional token-choice、prototype cosine routing、shared expert 和 routing InfoNCE）；直接父变体 / Parent: H+O（等总 routed 宽度的异构专家 + 未归一化输出正则）
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 在 H 的 1x--3x 异构 routed experts 上保留六个 MoE block 的 output view，但设置 `expert_contrastive_output_normalize: True`。模型先对每个被选专家的 pooled output 做 RMS 归一化，再使用已有的 cosine-margin repulsion（`expert_contrastive_margin=0.0`），避免未归一化 `exp(-L2/temperature)` 在高维输出上数值下溢。
+2. 只开启输出视角（`expert_output_blocks=[1,3,5,7,9,11]`，`expert_contrastive_output_lam=0.5`），关闭历史 LS-Reg 和参数视角；因此它检验的是“输出正则的数值尺度修正”，不是新增 DINO/REPA 表征对齐。
+3. 使用 `global_seed=0`、全局 batch 256、相同 ImageNet latent、学习率和 300K/500K CFG 1.0/1.5 OpenAI evaluator 协议，从空输出目录 training from scratch。只有 300K 两个 CFG 的 FID 都低于 fresh ProMoE-TC 基线时，才允许续训 500K。

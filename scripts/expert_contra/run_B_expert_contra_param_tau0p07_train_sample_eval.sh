@@ -162,6 +162,16 @@ PY
     echo "Phase ${phase}/${NUM_ALL_STEPS}: Sample+eval step ${step}" | tee -a "$LOG"
     echo "============================================================" | tee -a "$LOG"
     sample_and_eval_step "$step"
+    if [[ "$step" == "300000" && "$phase" -lt "$NUM_ALL_STEPS" ]]; then
+        gate_rc=0
+        expert_contra_check_300k_gate "$SAMPLE_BASE" "$step" "$LOG" || gate_rc=$?
+        if [[ "$gate_rc" -eq 1 ]]; then
+            exit 0
+        elif [[ "$gate_rc" -ne 0 ]]; then
+            echo "ERROR: 300K gate evaluation failed (rc=${gate_rc})" | tee -a "$LOG" >&2
+            exit "$gate_rc"
+        fi
+    fi
 done
 
 echo "============================================================" | tee -a "$LOG"

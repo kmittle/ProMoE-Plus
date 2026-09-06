@@ -1,15 +1,15 @@
 # design-todo：ProMoE_TC 改进计划（MoE 主线）
 
-> **执行顺序（2026-09-04）**：先补齐历史表中缺失的真实 300K/500K evaluator 结果，再做四点组合。补测必须 training from scratch、固定 `global_seed=0`，不得用中途 checkpoint 代替独立实验。训练过程不得以 50K 指标或主观判断提前停止；只有预定的 300K/500K 评估完成后，才根据生成质量、路由负载和专家分工决定去留。一次性的 200K 窗口交接不再复制到新实验。
+> **执行顺序（2026-09-06）**：所有候选先 training from scratch 到 300K，并完成 CFG 1.0/1.5 的 OpenAI evaluator。以 fresh ProMoE-TC baseline 的 300K FID 为门禁（FID 必须在两个 CFG 都更低）；未通过的方案立即停止并放弃，不再续训 500K。通过门禁的方案才做 500K 和路由/专家分工分析。不得用中途 checkpoint 代替独立实验，也不得在 300K 前凭主观判断停止。一次性的 200K 窗口交接不再复制到新实验。
 
 > **目录 / Index**（历史独立改进组；当前优先做补测和组合消融）：
 > 1. **改进组一 · DAG-fuse**（shared↔conditional 单向融合）—— ✅ 已实现 + 验证 + **已 push**（`ProMoE_TC_B_dagfuse`，3 臂）
 > 2. **改进组二 · lbcontra**（路由对比损失负载均衡）—— ✅ 已实现 + 验证 + **已 push**（`ProMoE_TC_B_lbcontra`，13 run）
 > 3. **改进组三 · adaptive-depth**（token 自适应跳过 / 加深 FFN，MoD 式）—— ✅ 已实现 + 验证 + **已 push**（`ProMoE_TC_B_adepth`，fixed_q，扫 depth_q ×4）
 > 4. **改进组四 · lossfree**（无损路由负载均衡，DeepSeek arXiv 2408.15664）—— ✅ 已实现 + 验证（`ProMoE_TC_B_lossfree`，扫 u ×3）；未提交（本次新增）
-> 5. **当前任务 · 结果补全与四点组合**——历史表缺失的参数正则 / adaptive-depth 结果先按同一 seed 和协议补齐；随后运行 `capacity_combo` 的受控组合消融（H、H+R、H+O、H+P、H+O+P、H+R+O、H+R+P、H+R+O+P）。
+> 5. **当前任务 · 300K 门禁与四点组合**——对尚未判定的候选先执行 300K 门禁；已淘汰 `adepth_q0p2`、`expert_contra_param_cos` 和 `lossfree_u1e2_credit_control`，不再续训。组合消融从 `H+R+O+P` 的 300K 门禁阶段开始，只有通过后才扩展其余臂（H、H+R、H+O、H+P、H+O+P、H+R+O、H+R+P）。
 >
-> 运行时 slot 按实验批次保存在对应的 `scripts/_run_times/<date>/` 目录；当前组合批次为 `2026_09_04`。
+> 运行时 slot 按实验批次保存在对应的 `scripts/_run_times/<date>/` 目录；当前 `H+R+O+P` 300K 门禁使用 4--7 号卡，`q0p1` 300K 门禁使用 0--3 号卡。
 > **四组共用约定**：均在 base `ProMoE_TC`（`models/models_ProMoE_TC.py`：两步路由 + 静态 `cluster_centers` + top-1 token-choice + shared expert + 路由 InfoNCE 对比损失）上做**自包含变体**（`models_ProMoE_TC_<variant>.py` + config 开关）；**uncond token 一律不受影响**；尽量 **step-0 与 base 前向逐比特一致**；默认各自**独立消融**、不叠加。运行时 slot 按实验批次保存在对应的 `scripts/_run_times/<date>/` 目录。
 
 ---
@@ -291,7 +291,7 @@ return X[:,0], X[:,1]                                # C_new, S_new
 
 # 四个有效点的组合实验：heterogeneous experts + routing/expert separation
 
-> 这是下一轮组合实验的设计记录。核心消融严格复用已经有收益的机制：异构专家、历史 token-count diagonal LS-Reg、历史输出正则，以及参数正则在异构宽度下的明确几何扩展。`capacity` 版本的责任均衡不是历史结果，单独作为后续假设，不能混入核心结论。当前 4--7 号卡上的 Loss-Free 和缺失结果补测完成前，不启动本组训练。
+> 这是下一轮组合实验的设计记录。核心消融严格复用已经有收益的机制：异构专家、历史 token-count diagonal LS-Reg、历史输出正则，以及参数正则在异构宽度下的明确几何扩展。`capacity` 版本的责任均衡不是历史结果，单独作为后续假设，不能混入核心结论。当前 `H+R+O+P` 已在 4--7 号卡进行 300K 门禁；其余组合臂要等门禁结果后再按顺序启动。
 
 ## 1. 可检验的假设
 
@@ -340,3 +340,133 @@ return X[:,0], X[:,1]                                # C_new, S_new
 - 输出正则和参数正则也使用同一份责任记录来校准强度，避免大专家因为参数更多而在正则里占主导。这样四个点共同回答一个问题：在固定总计算量下，如何把 token 分给不同容量的专家，并让每个专家学到不同的功能。
 
 矩阵完成后，最多先开四个新臂：`H-Rcap`、`H-Rcap-O`、`H-Rcap-P`、`H-Rcap-O-P`。它们仍然 fresh、seed 0、300K/500K、同一评估协议；若 `r_i` 的变异系数没有下降，或生成质量与专家分工没有同步改善，就停止这条统一路线，不再继续堆叠正则。
+
+
+# 2026-08-31 DINO 指导路由实验：技术说明
+
+本节记录 2026-08-31 实际跑过的两组实验：`B_dino_route_uncertainty_s0` 和
+`B_dino_route_shuffled_s0`。它们的目标不是把 DINO 当作一个新的图像表征损失，
+而是检验一个更窄的问题：**DINO 估计出的“类别难度”能不能帮助 MoE 把 token
+分给更合适、并且当前比较空闲的专家。** 因此 DINO 只参与路由，不能把这两组实验
+称为 REPA。这里的配置没有开启 `confidence_gate`；9 月后来出现的
+`margin_gate`/v2 变体是另外的实验，不能把它们的机制或结果倒灌到本节。
+
+## 1. 先离线得到每个类别的一个数字
+
+代码在 `preprocess/build_dino_route_table.py`，输出表是
+`/home/dev/imagenet-1k/dino_route_table_s8.npz`。处理流程如下：
+
+1. ImageNet 的 1000 个类别各取按文件名排序后的前 8 个预先算好的 VAE latent（来自
+   `/home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz`）。
+2. 用 SD-VAE 把 latent 解码成 256×256 图像，按 DINO 的 ImageNet 均值/方差归一化
+   并缩放到 DINOv2 ViT-B/14 的输入尺寸，再提取 patch feature。把一张图的所有
+   patch 求平均并做 L2 归一化，得到这张图的一个 DINO 向量。
+3. 对同一类别的 8 个向量求中心 `e_c`，并计算两种不确定性：
+   - 类内不稳定程度：`v_c = 1 - mean(image_feature · e_c)`；
+   - 类别间难分程度：先找 `e_c` 最相近的两个其他类别，记它们的相似度差为
+     `margin_c`。
+4. 把两项分别做 0--1 归一化，得到最终类别数字：
+
+   `u_c = 0.5 * (1 - minmax(margin_c)) + 0.5 * minmax(v_c)`，再截断到 `[0, 1]`。
+
+   `u_c` 越大，表示该类别在 DINO 空间里越不稳定或越容易和别的类别混淆。
+   训练时只需要这 1000 个数字，不需要保存或传入 DINO 特征。
+
+### 当时版本的限制
+
+8 月 31 日使用的是表版本 v1。v1 的代码先把 latent 的 mode 乘以 `0.18215`，
+然后直接调用 `vae.decode()`；而正确做法应当是把已经缩放到扩散模型空间的 latent
+再除以 `0.18215` 后解码。也就是说，v1 让 DINO 看到的图像尺度不对。现在的
+`build_dino_route_table.py` 已改成正确的解码规则，并生成独立的 v2 表，不能用 v2
+表冒充当时的实验。
+
+## 2. 训练时怎样改变 MoE 路由
+
+实现位于 `models/models_ProMoE_TC_dino_route.py`，它先完整建立基础
+`ProMoE_TC`，再把每个 routed MoE block 换成带有下面逻辑的 block。B 规模的 DiT 深度
+是 12，`interleave=true` 因而其中 6 个 block 是 MoE；每个这样的 block 独立维护
+自己的 12 个 routed experts、一个 unconditional expert 和一份负载 EMA。没有新增
+可训练参数；类别数字和负载统计都是 checkpoint 里的 buffer。
+
+对一个条件 token，基础路由先计算它和 12 个 routed expert 原型的余弦分数：
+
+`q_i = cosine(token_hidden, cluster_center_i)`。
+
+随后统计本批次每个专家收到的条件 token 数。多卡训练时先 `all_reduce` 汇总，再用
+指数移动平均保存历史负载：
+
+`L_i <- 0.99 * L_i + 0.01 * count_i`。
+
+根据历史负载给专家一个偏好：
+
+`p_i = (mean(L) - L_i) / (mean(L) + 1e-6)`。
+
+所以较空闲的专家得到正值，较拥挤的专家得到负值。这个偏好先经过 2000 次更新的
+warm-up，再乘 `strength=0.08`，最后限制在 `[-0.20, 0.20]`。对类别 `c` 的 token，
+真正加到路由分数上的偏置是：
+
+`b_{c,i} = u_c * p_i`，
+
+最终用来选专家的分数为：
+
+`selection_score_{c,i} = q_i + b_{c,i}`。
+
+每次路由先读取**上一批**留下的 `L_i` 来选专家，选完以后才用当前批次的计数更新
+EMA，因此没有把当前批次的答案直接拿来影响当前批次。并且在这次参数下
+`p_i` 先被限制在 `[-1, 1]`、再乘 `0.08`，所以实际的 `|b_{c,i}|` 不会超过
+`0.08`；`0.20` 只是更宽的最后一道上限，并未成为本次实验的主约束。
+
+配置中的 `top_k=1`，所以只选一个 routed expert。**关键细节是：**选谁使用加过
+偏置的分数，但被选专家的输出权重仍从原来的 `q_i` 取得，没有用 `q_i+b_{c,i}`
+去放大专家输出。这样实验测的是“改变 assignment 是否有用”，而不是通过增大输出
+尺度取得表面收益。
+
+类别为 1000 的 unconditional token 仍然直接走专门的 unconditional expert，不使用
+DINO 数字。shared expert 仍照常处理全部 token；原有 routing contrastive loss 也
+保留（`lam=1`、temperature `0.07`），但不使用额外的 load-balance auxiliary loss。
+偏置和 EMA 更新都不参与反向传播；负载统计是训练期的无梯度状态，并在 checkpoint
+中保存，以便采样时复现训练结束时的路由状态。虽然 DINO 偏置本身没有梯度，但它
+会直接改变 top-1 assignment：不同 token 会被 dispatch 到不同 routed expert，因而
+改变哪些专家参数参与这一步的前向和反向更新；同时，改变后的 assignment 还会被
+原有 routing contrastive loss 当作分组标签。也就是说，DINO 的作用不是只改一个
+损失标签，而是同时改变专家路径和路由对比学习的分组。
+
+## 3. 两个实验怎样构成对照
+
+两组使用完全相同的基础模型和训练设置：seed 0、全局 batch 256、12 个 routed
+experts、shared expert、identity cosine routing、从 step 0 训练到 500K；在 300K
+和 500K 分别用 CFG 1.0/1.5、每项 50K 张图评估。
+
+正确对应版本占用 GPU 4--7，打乱对照占用 GPU 0--3。配置中的
+`resume_checkpoint: True` 只是让第二阶段接着同一条 300K 轨迹跑到 500K；第一阶段
+输出目录为空，日志确认两组都从 step 0 fresh 开始。
+
+- `B_dino_route_uncertainty_s0`：类别 `c` 使用它自己的 `u_c`（`mapping: correct`）。
+- `B_dino_route_shuffled_s0`：用固定 seed `20260831` 打乱 1000 个 `u_c` 与类别的
+  对应关系（`mapping: shuffled`）。它保留数字的整体分布和计算量，只破坏语义对应，
+  因而是检验“真正的 DINO 类别信息”是否有用的控制组。
+
+结果表中的四个评测点为：
+
+| 实验 | 300K CFG1.0 | 300K CFG1.5 | 500K CFG1.0 | 500K CFG1.5 |
+|---|---:|---:|---:|---:|
+| shuffled | 30.84 / 47.70 | 9.82 / 119.15 | 24.51 / 60.31 | 6.34 / 153.95 |
+| correct | 31.10 / 47.74 | 10.01 / 117.95 | 24.73 / 59.60 | 6.48 / 152.12 |
+
+每格是 `FID / IS`。四个点的 FID 中，correct 都比 shuffled 更差；IS 只有 300K
+CFG1.0 略高，其余三个点都更低。再加上两组都使用了上面所说的 v1 解码错误，所以
+这批结果只能作为历史配对对照，不能据此声称
+“DINO 已经改善了 MoE 路由”，也不能严谨地声称“正确 DINO 信息一定无效”。若要
+继续研究，必须用修正后的 v2 表让 correct 和 shuffled 都从零训练至少 300K，并
+同时报告路由改变比例、路由 margin、负载熵和专家使用率。
+
+## 4. 它和 REPA 的根本区别
+
+- REPA：训练过程中提取 teacher 的特征，把 DiT hidden 和 teacher feature 做
+  cosine/MSE 对齐；teacher 信号直接改变 backbone 表征学习。
+- 这两组 DINO 路由：DINO 只在训练前离线产生每类一个数字；训练中不提取 DINO
+  feature，不计算 DINO--DiT 对齐损失，也没有 DINO 梯度。这个数字只和 MoE 的
+  专家负载统计相乘，改变 top-1 expert assignment。
+
+因此它属于“外部语义统计辅助 MoE 路由/负载均衡”的尝试，而不是“借 DINO 做
+表征对齐”。

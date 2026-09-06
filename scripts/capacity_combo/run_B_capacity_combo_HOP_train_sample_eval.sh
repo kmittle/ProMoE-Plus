@@ -150,6 +150,20 @@ PY
     fi
     echo "Phase ${phase}/${NUM_ALL_STEPS}: Sample+eval step ${step}" | tee -a "$LOG"
     sample_and_eval_step "$step"
+
+    if [[ "$step" == "300000" && "$phase" -lt "$NUM_ALL_STEPS" ]]; then
+        if capacity_combo_check_300k_gate "$SAMPLE_BASE" "$step" "$LOG"; then
+            :
+        else
+            gate_rc=$?
+            if [[ "$gate_rc" -eq 1 ]]; then
+                # A genuine 300K FID gate failure is a valid negative result.
+                exit 0
+            fi
+            echo "ERROR: 300K gate evaluation failed (rc=${gate_rc})" | tee -a "$LOG" >&2
+            exit "$gate_rc"
+        fi
+    fi
 done
 
 echo "All done." | tee -a "$LOG"

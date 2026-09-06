@@ -4,5 +4,5 @@ model_name: ProMoE_TC_B_expert_contra（串行补测队列；入口配置为 con
 
 核心改动 / Core changes（相对历史启动方式，重点优先）:
 1. 依次运行 `param_cos`、`param_shared`、`param_shared_uncond`、`param_tau0p07` 和 `param_tau7` 五个已有参数正则实验；每个子实验仍由各自标准 train-sample-eval wrapper 完成，不共享 checkpoint 或输出目录。
-2. 五个子实验统一使用 GPU 0--3、`global_seed: 0`、预编码 latent、`resume_checkpoint: False`，从空目录训练到 300K 和 500K，并在两个检查点完成 CFG 1.0/1.5 的 OpenAI evaluator；这是补全历史表的协议，不是新的模型机制。
+2. 五个子实验统一使用 GPU 0--3、`global_seed: 0`、预编码 latent、`resume_checkpoint: False`，从空目录训练到 300K，并在两个 CFG 设置完成 OpenAI evaluator；只有 300K 的两个 FID 都低于 fresh 基线时才续训并评估 500K，失败方案保留 300K 负结果后停止。这是补全历史表的协议，不是新的模型机制。
 3. 历史 2026-08-05 的 2-GPU 启动器保留旧槽位并带有保护检查，避免误用它们抢占当前 4-GPU 队列；本入口只负责串行调度，所有正式指标仍从各自 `images_eval_openai.txt` 读取。
