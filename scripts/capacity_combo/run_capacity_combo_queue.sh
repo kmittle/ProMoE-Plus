@@ -4,9 +4,11 @@
 # The queue itself does not train in the current shell.  It waits for the
 # historical-result completion queues, then creates one tmux window per
 # experiment and advances to the next pair only after the preceding wrappers
-# finish.  HROP is a single first-stage gate; the remaining arms launch only
-# after HROP passes its 300K dual-FID test.  A failed 300K gate is a valid
-# endpoint and does not make the queue wait for a nonexistent 500K result.
+# finish.  Every arm is an independent hypothesis: each wrapper performs its
+# own 300K dual-FID gate and may stop at that point.  HROP is launched first
+# only to make the full combination available early; its result must not gate
+# the other factorial arms, because an interaction failure cannot disprove a
+# single-point or partial-combination hypothesis.
 # This keeps GPU 0-3 and GPU 4-7 occupied without shell background jobs.
 
 set -euo pipefail
@@ -704,13 +706,13 @@ run_single \
 gate_rc=0
 gate_passes "$HROP_OUTPUT" || gate_rc=$?
 if [[ "$gate_rc" -eq 1 ]]; then
-    echo "[$(date -Is)] HROP failed the 300K dual-FID gate; stopping before other combination arms"
-    exit 0
-elif [[ "$gate_rc" -ne 0 ]]; then
+    echo "[$(date -Is)] HROP failed the 300K dual-FID gate; retaining its negative result and continuing independent arms"
+elif [[ "$gate_rc" -eq 0 ]]; then
+    echo "[$(date -Is)] HROP passed the 300K dual-FID gate; continuing independent arms"
+else
     echo "ERROR: HROP 300K gate could not be validated (rc=${gate_rc})" >&2
     exit "$gate_rc"
 fi
-echo "[$(date -Is)] HROP passed the 300K dual-FID gate; launching remaining arms"
 
 run_pair \
     scripts/_run_times/2026_09_04/1.1-B_capacity_combo_H.sh \
