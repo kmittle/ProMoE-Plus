@@ -7,7 +7,7 @@
 > 2. **改进组二 · lbcontra**（路由对比损失负载均衡）—— ✅ 已实现 + 验证 + **已 push**（`ProMoE_TC_B_lbcontra`，13 run）
 > 3. **改进组三 · adaptive-depth**（token 自适应跳过 / 加深 FFN，MoD 式）—— ✅ 已实现 + 验证 + **已 push**（`ProMoE_TC_B_adepth`，fixed_q，扫 depth_q ×4）
 > 4. **改进组四 · lossfree**（无损路由负载均衡，DeepSeek arXiv 2408.15664）—— ✅ 已实现 + 验证（`ProMoE_TC_B_lossfree`，扫 u ×3）；未提交（本次新增）
-> 5. **当前任务 · 300K 门禁与四点组合**——对尚未判定的候选先执行 300K 门禁；已淘汰 `adepth_q0p2`、`expert_contra_param_cos` 和 `lossfree_u1e2_credit_control`，不再续训。组合消融从 `H+R+O+P` 的 300K 门禁阶段开始，只有通过后才扩展其余臂（H、H+R、H+O、H+P、H+O+P、H+R+O、H+R+P）。
+> 5. **当前任务 · 300K 门禁与四点组合**——对尚未判定的候选先执行 300K 门禁；已淘汰 `adepth_q0p2`、`expert_contra_param_cos` 和 `lossfree_u1e2_credit_control`，不再续训。组合消融先启动 `H+R+O+P`，随后 H、H+R、H+O、H+P、H+O+P、H+R+O、H+R+P 各自独立完成 300K 双 CFG 门禁；HROP 的成败不替代其它臂的验证。
 >
 > 运行时 slot 按实验批次保存在对应的 `scripts/_run_times/<date>/` 目录；当前 `H+R+O+P` 300K 门禁使用 4--7 号卡，`q0p1` 300K 门禁使用 0--3 号卡。
 > **四组共用约定**：均在 base `ProMoE_TC`（`models/models_ProMoE_TC.py`：两步路由 + 静态 `cluster_centers` + top-1 token-choice + shared expert + 路由 InfoNCE 对比损失）上做**自包含变体**（`models_ProMoE_TC_<variant>.py` + config 开关）；**uncond token 一律不受影响**；尽量 **step-0 与 base 前向逐比特一致**；默认各自**独立消融**、不叠加。运行时 slot 按实验批次保存在对应的 `scripts/_run_times/<date>/` 目录。
@@ -291,7 +291,7 @@ return X[:,0], X[:,1]                                # C_new, S_new
 
 # 四个有效点的组合实验：heterogeneous experts + routing/expert separation
 
-> 这是下一轮组合实验的设计记录。核心消融严格复用已经有收益的机制：异构专家、历史 token-count diagonal LS-Reg、历史输出正则，以及参数正则在异构宽度下的明确几何扩展。`capacity` 版本的责任均衡不是历史结果，单独作为后续假设，不能混入核心结论。当前 `H+R+O+P` 已在 4--7 号卡进行 300K 门禁；其余组合臂要等门禁结果后再按顺序启动。
+> 这是下一轮组合实验的设计记录。核心消融严格复用已经有收益的机制：异构专家、历史 token-count diagonal LS-Reg、历史输出正则，以及参数正则在异构宽度下的明确几何扩展。`capacity` 版本的责任均衡不是历史结果，单独作为后续假设，不能混入核心结论。当前 `H+R+O+P` 已在 4--7 号卡进行 300K 门禁；前置补测队列完成后，其余组合臂按顺序启动，并由每个臂自己的 300K 双 CFG 门禁决定是否续训。
 
 ## 1. 可检验的假设
 
