@@ -84,8 +84,10 @@ expert_contra_check_300k_gate() {
     local sample_base=$1
     local step=$2
     local log=$3
-    local baseline_cfg1="30.584602064850174"
-    local baseline_cfg15="9.588081719517504"
+    # Use the authoritative historical ProMoE-TC-B baseline for the shared
+    # 300K continuation decision, not the later fresh-control audit run.
+    local baseline_cfg1="30.86"
+    local baseline_cfg15="9.73"
     local f1="${sample_base}/step${step}/img256_cfg1.0_seed0_FID50K_bs128_ema/images_eval_openai.txt"
     local f15="${sample_base}/step${step}/img256_cfg1.5_seed0_FID50K_bs128_ema/images_eval_openai.txt"
     local fid1 fid15
