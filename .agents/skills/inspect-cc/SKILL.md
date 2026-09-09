@@ -93,7 +93,7 @@ Include these rules in Track A's brief and carry confirmed false positives into 
 - Existing legacy split REPA scripts may remain, although new experiment wrappers must follow `scripts/template.sh` as one train+sample+eval script.
 - `scripts/_run_times/2026_08_05/` is a historical manually packed 2-GPU exception; the current allocator accepts only 4 or 8 GPUs.
 - `resume_checkpoint: True` with no matching checkpoint logging an error and starting at step 0 is existing behavior.
-- Labeled design plans and `implementation-plan.md` are reference-only or future work unless the document states otherwise.
+- Labeled design plans and `doc/implementation-plan.md` are reference-only or future work unless the document states otherwise.
 - `custom_cfg_name` is intentionally injected from the YAML basename, and output paths follow `outputs/<model_name>/<custom_cfg_name>/`.
 
 ## Shared C1-C5 Criterion
@@ -126,7 +126,7 @@ Include these rules in Track A's brief and carry confirmed false positives into 
 
 ### C4: Documentation Synchronization
 
-- Compare `README.md`, `AGENTS.md`, `CLAUDE.md`, `ProMoE-REPA.md`, design notes, analysis guides, configs, commands, paths, defaults, model names, output layouts, and GPU assumptions with implementation.
+- Compare `README.md`, `AGENTS.md`, `CLAUDE.md`, `doc/ProMoE-REPA.md`, design notes, analysis guides, configs, commands, paths, defaults, model names, output layouts, and GPU assumptions with implementation.
 - Report stale, renamed, removed, contradictory, broken, or undocumented user-facing behavior.
 
 ### C5: Cross-Cutting Checks

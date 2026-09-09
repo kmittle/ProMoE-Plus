@@ -311,7 +311,7 @@ If the ablation is controlled by an existing config flag (e.g., `router_norm_typ
 - `cfg.data_path` in `config.py` is the ImageNet train directory. It defaults to the shared `/lustre01/yujie/dataset/imagenet/train` (where `prepare_imagenet.sh` materialises the data) and is overridable via the `PROMOE_DATA_PATH` env var; train.py has no `--data-path` CLI flag. This absolute default is `train`-once-safe — none of `/lustre01`, `yujie`, `dataset`, `imagenet` contains the substring 'train', only the `train/` dir does — which train.py's `str.replace('train', ...)` latent derivation requires (keep any override the same way). See "Dataset auto-preparation".
 - Multi-GPU sampling produces different random sequences than single-GPU (different class label ordering).
 - REPA training requires raw images (not just pre-computed latents) since the teacher encoder operates on pixel space. The dataset returns `(path, label, latent, raw_image)` when `load_raw_image=True`.
-- Offline/air-gapped training: all training scripts and `sample.py` accept `--vae-path`; `train_with_repa.py` and `train_with_MoS_repa.py` also accept `--repa-enc-path`. See `ProMoE-REPA.md` for details.
+- Offline/air-gapped training: all training scripts and `sample.py` accept `--vae-path`; `train_with_repa.py` and `train_with_MoS_repa.py` also accept `--repa-enc-path`. See `doc/ProMoE-REPA.md` for details.
 - `preprocess/image_paths_cache.txt` caches the dataset file list (shared by `train.py` and `preprocess_vae.py`); delete and rebuild it after switching datasets or reorganizing files. `prepare_imagenet.py` rebuilds it deterministically (sorted, atomic) so DDP ranks don't race to regenerate it.
 - When `use_pre_latents=True`, the latent directory must be a sibling of `train/` named `sd-vae-ft-mse_Latents_256img_npz` — the code derives latent paths by replacing `train` in image paths.
 - `model.py` at the repo root is an unrelated reference file (not imported anywhere in the project). Ignore it when navigating the codebase — the project's models live in `models/`.
@@ -327,11 +327,11 @@ If the ablation is controlled by an existing config flag (e.g., `router_norm_typ
 - **A push request implicitly authorizes a commit of the current WIP.** When the user asks to push (any phrasing — `push`, `推送`, `最后 push 所有改动`, etc.), treat it as one combined instruction: commit any uncommitted WIP relevant to the conversation first, then push. Do not ask for a separate commit confirmation. All other git-safety rules still apply: no `--no-verify`, no force-push to `main`/`master`, never stage secrets or `*.local.json` files, never `git add -A`/`.` (stage explicit paths only).
 
 ## Companion Documentation
-- `ProMoE-REPA.md` — Detailed guide for all REPA variant workflows, configuration reference, and FAQ.
+- `doc/ProMoE-REPA.md` — Detailed guide for all REPA variant workflows, configuration reference, and FAQ.
 - `AGENTS.md` — Full project structure reference, output layout, testing guidelines, and commit conventions.
 - `analyses/README.md` — Overview of analysis entrypoints; per-script usage in `analyses/<basename>.md` files.
 - `plans/` — Implementation plans for Cross-Attention variants (`plan_01` through `plan_08`), covering both standard REPA and MoS cross-alignment designs.
-- `implementation-plan.md` — Draft plan (Chinese) for a future "attention-weighted same-expert same-image alignment" experiment family. Not yet implemented; reference for forthcoming work, not current code.
+- `doc/implementation-plan.md` — Draft plan (Chinese) for a future "attention-weighted same-expert same-image alignment" experiment family. Not yet implemented; reference for forthcoming work, not current code.
 
 ## Project-Local Skills (`.claude/skills/`)
 Eight project-specific slash commands live under `.claude/skills/`. They encode the project-aware checks (model_dict ↔ models/ ↔ configs/ ↔ scripts/ four-way consistency, cross-alignment stability invariants, TrainingMonitor hook integrity, output-dir collision avoidance) so future Claude instances don't have to re-derive them.

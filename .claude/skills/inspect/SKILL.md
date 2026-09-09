@@ -26,7 +26,7 @@ Run in parallel where possible. Surface every issue found; do not silently skip.
 - For each entry in `model_dict` of `train.py` / `train_with_repa.py` / `train_with_MoS_repa.py` / `train_with_mae.py`: verify the imported `ModelClass` exists in the named module and the `config_key` is defined in `config.py`. Flag orphans either direction (model class with no `model_dict` entry, or `model_dict` entry whose model file is gone).
 - For each YAML in `configs/`: verify `model_name` matches a registered key across the four training scripts (the union — `sample.py` merges them).
 - For each shell script in `scripts/**/*.sh` whose name ends `_train_sample_eval.sh`: verify the `CONFIG=` path resolves to an existing YAML, and the training entrypoint (`train*.py`) matches the model family for that YAML's `model_name`.
-- Path references in `CLAUDE.md`, `AGENTS.md`, `ProMoE-REPA.md`, `analyses/README.md`, `analyses/*.md`: every file path mentioned must exist. Flag broken paths.
+- Path references in `CLAUDE.md`, `AGENTS.md`, `doc/ProMoE-REPA.md`, `analyses/README.md`, `analyses/*.md`: every file path mentioned must exist. Flag broken paths.
 
 **Cross-alignment stability constraints** (from CLAUDE.md "Cross-Alignment Stability Constraints" section)
 - For each of the 8 cross-alignment model files (`models_ProMoE_TC_repa_cross_*.py`, `models_ProMoE_TC_repa_MoS_naive_choice_cross_*.py`), confirm:
@@ -91,6 +91,6 @@ Do NOT start a real training run, sample run, or anything that occupies a GPU �
 - Do not delete files or directories without surfacing the rationale to the user first.
 - Do not invoke `--no-verify` or bypass any pre-commit hooks.
 - Do not run real training / sampling / evaluation — smoke test is compile + import only.
-- Do not edit `CLAUDE.md`, `AGENTS.md`, `README.md`, `ProMoE-REPA.md` unless the scan finds factual drift (broken path, missing model variant, wrong file reference). Even then, the doc fix is in scope only if it directly addresses a finding from the same iteration.
+- Do not edit `CLAUDE.md`, `AGENTS.md`, `README.md`, `doc/ProMoE-REPA.md` unless the scan finds factual drift (broken path, missing model variant, wrong file reference). Even then, the doc fix is in scope only if it directly addresses a finding from the same iteration.
 - Do not modify `outputs/`, `pretrained_ckpt/`, `training_logs/`, `tb_smoke_*/`, `collapse_smoking_test*/` — these are runtime artifacts, not source.
 - Do not touch `REPA/` (uppercase) — that is a vendored standalone subproject, out of scope per CLAUDE.md.

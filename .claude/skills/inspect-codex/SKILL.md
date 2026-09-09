@@ -27,7 +27,7 @@ Iteration shape (note the order — commit comes *after* a passing smoke test):
 ## The shared checklist
 Both the Codex briefing (step 1) and Claude's own scan (step 3) cover the SAME items — that overlap is exactly what makes them an independent cross-check:
 1. **Syntax + imports** — `py_compile` every `.py` under `models/`, `repa/`, `analyses/`, plus top-level `train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, `train_with_mae.py`, `sample.py`, `utils.py`, `config.py`, `preprocess/preprocess_vae.py`; and `importlib.import_module('models.<basename>')` for each `models/models_*.py` to catch import-time errors py_compile misses. (Claude runs these; Codex is read-only and reasons statically — see step 1.)
-2. **Cross-reference drift** — `model_dict` ↔ `models/` ↔ `config.py` (every referenced `ModelClass` exists in its module; every `config_key` is defined in `config.py`; flag orphans in either direction); each `configs/*.yaml` `model_name` matches a registered key (union of the four training scripts); each `scripts/**/*_train_sample_eval.sh` `CONFIG=` resolves to an existing YAML and its training entrypoint matches the model family; file paths referenced in `CLAUDE.md` / `AGENTS.md` / `ProMoE-REPA.md` / `analyses/*.md` exist.
+2. **Cross-reference drift** — `model_dict` ↔ `models/` ↔ `config.py` (every referenced `ModelClass` exists in its module; every `config_key` is defined in `config.py`; flag orphans in either direction); each `configs/*.yaml` `model_name` matches a registered key (union of the four training scripts); each `scripts/**/*_train_sample_eval.sh` `CONFIG=` resolves to an existing YAML and its training entrypoint matches the model family; file paths referenced in `CLAUDE.md` / `AGENTS.md` / `doc/ProMoE-REPA.md` / `analyses/*.md` exist.
 3. **Cross-alignment stability invariants** (CLAUDE.md "Cross-Alignment Stability Constraints") — in the 8 cross-alignment model files: every `torch.bmm(z_proj_norm, teacher_norm...)` is followed by `.clamp(-1.0, 1.0)`; the `cross_global_block` & `cross_expert_local` variants (standard + MoS, 4 files) invoke the attention module with `x.detach()` while the projection path uses unwrapped `x`. Violations are blockers.
 4. **TrainingMonitor hook integrity** — every class name referenced by `TrainingMonitor` in `utils.py` exists in at least one `models/*.py`.
 5. **Code hygiene** (lower priority) — unused imports, stray `print(` outside `if rank == 0:`, dangling `TODO/FIXME`. Never flag style/formatting (no formatter is configured).
@@ -55,7 +55,7 @@ CHECK FOR (priority order):
    - each configs/*.yaml: model_name must match a registered key (union across the four training scripts).
    - each scripts/**/*_train_sample_eval.sh: CONFIG= must resolve to an existing YAML and the training
      entrypoint (train*.py) must match that YAML's model family.
-   - file paths mentioned in CLAUDE.md / AGENTS.md / ProMoE-REPA.md / analyses/*.md must exist.
+   - file paths mentioned in CLAUDE.md / AGENTS.md / doc/ProMoE-REPA.md / analyses/*.md must exist.
 3. Cross-alignment stability invariants (see CLAUDE.md "Cross-Alignment Stability Constraints"): in the 8
    cross-alignment model files, every torch.bmm(z_proj_norm, teacher_norm...) must be followed by
    .clamp(-1.0, 1.0); the cross_global_block and cross_expert_local variants (standard + MoS) must call the

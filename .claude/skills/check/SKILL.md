@@ -40,7 +40,7 @@ Run in parallel where possible. Findings only count if they involve dirty files 
 - If a `models/models_*.py` file is dirty: verify it is still registered in at least one `model_dict` (or, if intentionally not, surface as ambiguous to the user).
 - If a YAML in `configs/` is dirty: verify `model_name` matches a registered key (union across the four training scripts), and any `MoE_config` / `repa_config` keys it sets are actually read by the matching model file.
 - If a script in `scripts/**/*.sh` is dirty: verify the `CONFIG=` path resolves to an existing YAML, the training entrypoint matches that YAML's model family, and the script follows `scripts/template.sh` pattern (see CLAUDE.md "Shell Script Convention").
-- If a doc (`CLAUDE.md`, `AGENTS.md`, `ProMoE-REPA.md`, `analyses/*.md`) is dirty: every file path mentioned in the new/changed lines must exist.
+- If a doc (`CLAUDE.md`, `AGENTS.md`, `doc/ProMoE-REPA.md`, `analyses/*.md`) is dirty: every file path mentioned in the new/changed lines must exist.
 
 **Cross-alignment stability constraints** (CLAUDE.md "Cross-Alignment Stability Constraints")
 - If any of the 8 cross-alignment model files (`models_ProMoE_TC_repa_cross_*.py`, `models_ProMoE_TC_repa_MoS_naive_choice_cross_*.py`) is in the dirty set, verify on the post-diff content:

@@ -18,7 +18,7 @@ Shared defaults and helpers:
 - `utils.py`: `deep_update`, `find_free_port`, VAE caching/loading (`load_vae`), `TrainingMonitor`, CLI list parsers, and Inception utilities.
 - `scripts/check_output_dir.py`: output-directory collision guard for new or rerun experiments.
 - `scripts/template.sh`: required base pattern for new train + sample + eval experiment wrappers.
-- `ProMoE-REPA.md`: repo-level guide for current REPA / MoS-REPA workflows and variants.
+- `doc/ProMoE-REPA.md`: repo-level guide for current REPA / MoS-REPA workflows and variants.
 
 Main code layout:
 
@@ -60,15 +60,15 @@ Top-level wrappers:
 
 Companion documentation:
 
-- `ProMoE-REPA.md`: detailed REPA / MoS-REPA workflow, configuration reference, and FAQ.
+- `doc/ProMoE-REPA.md`: detailed REPA / MoS-REPA workflow, configuration reference, and FAQ.
 - `analyses/README.md`: analysis entrypoint overview; keep per-script usage in matching `analyses/<basename>.md` files.
 - `plans/`: implementation plans for standard REPA and MoS cross-alignment variants.
-- `contrastive-label-smoothing.md`: LS-Reg design, experiment matrix, and evaluation discipline.
-- `load-balance-design.md`: explicit load-balance intervention design notes (reference only).
+- `doc/contrastive-label-smoothing.md`: LS-Reg design, experiment matrix, and evaluation discipline.
+- `doc/load-balance-design.md`: explicit load-balance intervention design notes (reference only).
 - `.claude/skills/`: project-local workflow descriptions for inspect/check/new-experiment/rerun-experiment/command-table/describe-experiment helpers; useful as procedural reference even when not running Claude slash commands.
 - `.agents/skills/`: active Codex workflow definitions. For Codex experiment work, use `command-table`, `describe-experiment`, `new-experiment`, and `rerun-experiment` from this directory rather than translating Claude slash-command mechanics literally.
 - `.codex/skills/`: project-local Codex helper skills.
-- `implementation-plan.md`: Chinese draft plan for a future attention-weighted same-expert same-image alignment family; reference only, not current code.
+- `doc/implementation-plan.md`: Chinese draft plan for a future attention-weighted same-expert same-image alignment family; reference only, not current code.
 
 Outputs follow:
 
@@ -81,6 +81,43 @@ with:
 - `tensorboard/`
 - `sample/step<step>/img<...>/images`
 - `sample/step<step>/<analysis_name>/` for analysis artifacts such as `flops_eval/` and t-SNE outputs
+
+## Current Research Scope and Storage Policy
+
+The active research line is the factorial combination of the four validated
+MoE mechanisms:
+
+- `H`: heterogeneous routed experts;
+- `R`: LS-Reg routing-load balancing;
+- `O`: expert-output representation regularization;
+- `P`: expert-parameter regularization.
+
+The active combination matrix is `H`, `HO`, `HP`, `HOP`, `HR`, `HRO`, `HRP`,
+and `HROP`. New training, sampling, or evaluation work should stay within
+this matrix unless the user explicitly reopens another direction. REPA and
+DINO are not the current main line; DINO may only return as a router/load/
+specialization signal, never as direct feature alignment.
+
+Adaptive-depth (`scripts/adepth/`) is a separate historical exploration, not
+part of the H/R/O/P factorial study. Its repeated application of the same
+MLP is not evidence of meaningful additional reasoning. Do not launch new
+adaptive-depth variants. An already-running adaptive-depth job must still
+reach its declared 300K evaluation boundary before the 300K FID gate is
+applied; do not stop it early from an intermediate loss or checkpoint.
+
+Every active combination experiment must be training-from-scratch with
+`global_seed: 0`, global batch `256`, learning rate `1e-4`, and
+`img_num_workers: 16`, using four GPUs. It must evaluate 300K at CFG 1.0 and
+1.5 with 50K samples. Only a candidate whose two 300K FIDs are both strictly
+better than the fresh Base gate may continue to 500K. Do not infer success or
+failure from 50K/200K checkpoints, training loss, or an auxiliary loss alone.
+
+The output bucket must be a real directory under `outputs/`; do not use
+soft-links for experiment results. `/home/dev` must not contain any
+`promoe*` directory. Research papers and source packages belong in the
+repository-level `literature/` directory. Keep only the checkpoints and
+analysis artifacts needed for reproducibility; regenerable PNG samples may be
+discarded after evaluator artifacts are verified.
 
 ## Build, Test, and Development Commands
 Create training env:

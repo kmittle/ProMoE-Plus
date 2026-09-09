@@ -72,7 +72,7 @@ Allow `blocker`, `error`, and `warning`. Require the final line `ALL_CLEAN` when
 
 ### C4: Documentation Synchronization
 
-- Compare `README.md`, `AGENTS.md`, `CLAUDE.md`, `ProMoE-REPA.md`, design notes, analysis guides, configs, commands, paths, defaults, model names, output layouts, and GPU assumptions with implementation.
+- Compare `README.md`, `AGENTS.md`, `CLAUDE.md`, `doc/ProMoE-REPA.md`, design notes, analysis guides, configs, commands, paths, defaults, model names, output layouts, and GPU assumptions with implementation.
 - Report stale, renamed, removed, contradictory, or undocumented user-facing behavior.
 - Validate shell examples and referenced paths. Do not flag research plans merely because they are not implemented when the document labels them as reference-only or future work.
 
