@@ -17,7 +17,6 @@ from PIL import Image
 from torchvision import transforms
 from torchvision.datasets import ImageFolder
 from einops import rearrange
-from diffusers.models import AutoencoderKL
 from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
 import colorlog
 import glob

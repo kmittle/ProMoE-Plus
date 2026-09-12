@@ -16,7 +16,6 @@ from PIL import Image
 from torchvision import transforms
 from torchvision.datasets import ImageFolder
 from einops import rearrange
-from diffusers.models import AutoencoderKL
 from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
 import colorlog
 import glob
@@ -55,7 +54,6 @@ from models.models_ProMoE_TC_repa_MoS_naive_choice_cross_expert_local import DiT
 from models.models_ProMoE_TC_repa_MoS_naive_choice_cross_proto import DiT as ProMoE_TC_REPA_MoS_CrossProto_DiT
 from models.models_ProMoE_TC_repa_MoS_naive_choice_fused import DiT as ProMoE_TC_REPA_MoS_Naive_Choice_Fused_DiT
 from repa.encoder import load_teacher_encoder, extract_all_teacher_block_features, get_num_teacher_blocks
-from repa.loss import compute_repa_loss
 
 model_dict = {
     "ProMoE_TC_REPA_MoS_B": (ProMoE_TC_REPA_MoS_DiT, "DiT_B_config"),

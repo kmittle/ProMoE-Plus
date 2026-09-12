@@ -17,7 +17,6 @@ import argparse
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from torch.utils.data.distributed import DistributedSampler
-from diffusers.models import AutoencoderKL
 from utils import load_vae
 from config import cfg
 
