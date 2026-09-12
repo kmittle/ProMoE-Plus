@@ -15,7 +15,6 @@ latent_paths_cache.txt
 ######################
 /literature/*
 /pretrained_ckpt/
-/_previous_results/
 /_experiments_expansion/*
 # !/_experiments_expansion/task-description.md
 # !/_experiments_expansion/rethinking/

@@ -40,14 +40,14 @@ from torch.nn.parallel import DistributedDataParallel
 from collections import OrderedDict
 from utils import deep_update, find_free_port, load_vae
 from torch.nn.utils import clip_grad_norm_
-from credit_redistribution import CreditRedistributionController
-from credit_redistribution.benchmark import DistributedThroughputTimer
-from credit_redistribution.git_provenance import (
+from research_on_expert_learning_signal_balance import CreditRedistributionController
+from research_on_expert_learning_signal_balance.benchmark import DistributedThroughputTimer
+from research_on_expert_learning_signal_balance.git_provenance import (
     repository_state,
     run_git,
     verify_worktree_source_manifest,
 )
-from credit_redistribution.transcript import TranscriptOnlyRecorder
+from research_on_expert_learning_signal_balance.transcript import TranscriptOnlyRecorder
 
 os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
 
@@ -153,6 +153,10 @@ _UINT64_MASK = (1 << 64) - 1
 RUN_ID_ENV = "PROMOE_RUN_ID"
 STRICT_PROVENANCE_ENV = "PROMOE_STRICT_PROVENANCE"
 TRAINING_PROVENANCE_VERSION = 1
+LEGACY_SIGNAL_BALANCE_PROVENANCE_PATH = "credit_redistribution/git_provenance.py"
+SIGNAL_BALANCE_PROVENANCE_PATH = (
+    "research_on_expert_learning_signal_balance/git_provenance.py"
+)
 STRICT_PROVENANCE_SOURCE_PATHS = {
     "ProMoE_TC_B": (
         "requirements.txt",
@@ -162,7 +166,7 @@ STRICT_PROVENANCE_SOURCE_PATHS = {
         "models/models_ProMoE_TC.py",
         "models/modules.py",
         "models/phase_metric.py",
-        "credit_redistribution/git_provenance.py",
+        SIGNAL_BALANCE_PROVENANCE_PATH,
     ),
     "ProMoE_TC_B_expert_contra": (
         "requirements.txt",
@@ -171,7 +175,7 @@ STRICT_PROVENANCE_SOURCE_PATHS = {
         "train.py",
         "models/models_ProMoE_TC_expert_contra.py",
         "models/modules.py",
-        "credit_redistribution/git_provenance.py",
+        SIGNAL_BALANCE_PROVENANCE_PATH,
     ),
     "ProMoE_TC_B_capacity_combo": (
         "requirements.txt",
@@ -181,7 +185,7 @@ STRICT_PROVENANCE_SOURCE_PATHS = {
         "models/models_ProMoE_TC_capacity_combo.py",
         "models/models_ProMoE_TC_expert_contra.py",
         "models/modules.py",
-        "credit_redistribution/git_provenance.py",
+        SIGNAL_BALANCE_PROVENANCE_PATH,
     ),
 }
 AUDITED_BASE_RESUME_ENV = "PROMOE_AUDITED_BASE_RESUME"
@@ -1293,7 +1297,11 @@ def _canonical_training_semantics(source):
             continue
         if (
             isinstance(node, ast.ImportFrom)
-            and node.module == "credit_redistribution.git_provenance"
+            and node.module
+            in {
+                "credit_redistribution.git_provenance",
+                "research_on_expert_learning_signal_balance.git_provenance",
+            }
         ):
             node = copy.deepcopy(node)
             node.names = [alias for alias in node.names if alias.name != "run_git"]
@@ -1401,8 +1409,24 @@ def _is_audited_base_provenance_transition(checkpoint, current):
     current_git = current["git"]
     if checkpoint_git["commit"] != AUDITED_BASE_RESUME_COMMIT:
         return False
-    checkpoint_sources = checkpoint["source_sha256"]
-    current_sources = current["source_sha256"]
+    checkpoint_sources = dict(checkpoint["source_sha256"])
+    current_sources = dict(current["source_sha256"])
+    # The package was renamed for clarity; historical checkpoints retain the
+    # old provenance key, so compare both spellings under the current key.
+    if (
+        LEGACY_SIGNAL_BALANCE_PROVENANCE_PATH in checkpoint_sources
+        and SIGNAL_BALANCE_PROVENANCE_PATH not in checkpoint_sources
+    ):
+        checkpoint_sources[SIGNAL_BALANCE_PROVENANCE_PATH] = checkpoint_sources.pop(
+            LEGACY_SIGNAL_BALANCE_PROVENANCE_PATH
+        )
+    if (
+        LEGACY_SIGNAL_BALANCE_PROVENANCE_PATH in current_sources
+        and SIGNAL_BALANCE_PROVENANCE_PATH not in current_sources
+    ):
+        current_sources[SIGNAL_BALANCE_PROVENANCE_PATH] = current_sources.pop(
+            LEGACY_SIGNAL_BALANCE_PROVENANCE_PATH
+        )
     expected_sources = set(STRICT_PROVENANCE_SOURCE_PATHS["ProMoE_TC_B"])
     if set(checkpoint_sources) != expected_sources or set(current_sources) != expected_sources:
         return False
