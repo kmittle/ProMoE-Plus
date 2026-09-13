@@ -1,5 +1,4 @@
 model_name: "ProMoE_TC_B_dino_route"
-output_dir: "/home/dev/promoe-runs"
 
 gpu_ids: [4, 5, 6, 7]
 
