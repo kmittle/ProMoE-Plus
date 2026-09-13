@@ -369,7 +369,8 @@ README specifies the step-0 protocol any future revival must use — read it bef
 that directory or `scripts/credit_redistribution/`.
 
 **Strict training provenance** (`PROMOE_STRICT_PROVENANCE=1`, exactly `0` or `1`) makes a run
-self-certifying, used by the audited `expert_contra` arm. It
+self-certifying. **No script enables it today** — the audited `expert_contra` arm that did was
+removed unrun; set the env var yourself when a run must be self-certifying. It
 requires CUDA, a **clean working tree**, `HEAD == origin/repa` with zero divergence, and
 sha256 verification of a per-model source manifest (`STRICT_PROVENANCE_SOURCE_PATHS` in
 `train.py`, registered today for `ProMoE_TC_B`, `ProMoE_TC_B_expert_contra`,
