@@ -31,39 +31,42 @@ receiver head: 预测增加 w E_e(h + w E_e(h)) 的价值
 
 ## 执行顺序
 
-入口要求代码已经 commit 并 push、工作树干净、`origin/repa...HEAD` 为 `0 0`。先锁定协议：
+入口要求代码已经 commit 并 push、工作树干净、`origin/repa...HEAD` 为 `0 0`。输入都没有默认路径（只有 latent 目录默认 `/home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz`），`/path/to/...` 换成实际位置：
 
 ```bash
-/home/dev/miniforge3/envs/promoe/bin/python \
-  analyses/run_compute_exchange_deployability_gate.py \
-  --prepare-only
+PY=/home/dev/miniforge3/envs/promoe/bin/python
+RUNNER=analyses/run_compute_exchange_deployability_gate.py
+COMMON=(
+  --source-root /path/to/within-expert-compute-exchange-base200k-v1
+  --output-dir analyses/archvied_analyses/YYYY-MM-DD/compute-exchange-deployability-base200k-v1
+)
+CHECKPOINTS=(
+  --ckpt outputs/ProMoE_TC_B/004_ProMoE_B_seed0_control/checkpoints/ckpt_step_200000.pth
+  --weights-ckpt /path/to/base-seed0-ckpt_step_200000.pth
+)
+```
+
+先锁定协议，只有这一步需要 checkpoint：
+
+```bash
+"$PY" "$RUNNER" "${COMMON[@]}" "${CHECKPOINTS[@]}" --prepare-only
 ```
 
 随后必须按顺序执行：
 
 ```bash
-/home/dev/miniforge3/envs/promoe/bin/python \
-  analyses/run_compute_exchange_deployability_gate.py \
-  --extract-split calibration
-
-/home/dev/miniforge3/envs/promoe/bin/python \
-  analyses/run_compute_exchange_deployability_gate.py \
-  --fit --fit-device cuda:4
-
-/home/dev/miniforge3/envs/promoe/bin/python \
-  analyses/run_compute_exchange_deployability_gate.py \
-  --extract-split retrospective
-
-/home/dev/miniforge3/envs/promoe/bin/python \
-  analyses/run_compute_exchange_deployability_gate.py \
-  --select --fit-device cuda:4
-
-/home/dev/miniforge3/envs/promoe/bin/python \
-  analyses/run_compute_exchange_deployability_gate.py \
-  --evaluate --fit-device cuda:4
+"$PY" "$RUNNER" "${COMMON[@]}" --extract-split calibration
+"$PY" "$RUNNER" "${COMMON[@]}" --fit --fit-device cuda:4
+"$PY" "$RUNNER" "${COMMON[@]}" --extract-split retrospective
+"$PY" "$RUNNER" "${COMMON[@]}" --select --fit-device cuda:4
+"$PY" "$RUNNER" "${COMMON[@]}" --evaluate --fit-device cuda:4
 ```
 
+`--source-root` 必须与协议锁定的位置一致。`--ckpt` 必须放在 `outputs/<model>/<配置名>/checkpoints/` 下，runner 靠这个目录名找到训练配置；两份 checkpoint 的大小、SHA256 和配置哈希都必须等于 source gate 的记录。`--output-dir` 必须是仓库内、被 Git 忽略的目录，否则参数解析阶段就会拒绝。
+
 长任务应在当前 tmux session 的新 window 中运行。特征提取和 exact reveal 固定使用 GPU 4-7，每张图都写独立结果和 seal，可按已封存 case 恢复。`--fit-device` 被锁定为 `cuda:4`，不能改到正在运行 Base 流水线的 GPU 0-3。
+
+截至 2026-09-13，source gate 目录还在 `analyses/archvied_analyses/2026-08-28/dirty_probes/promoe-probes/within-expert-compute-exchange-base200k-v1`，但它封存时记录的 51 个源文件里已有 12 个与当前代码不同，`verify_source_gate` 会拒绝；`outputs/ProMoE_TC_B/004_ProMoE_B_seed0_control/` 下的 checkpoint 也不在仓库中。所以这个 gate 暂时无法重跑。
 
 `--select` 的 action-generation 路径只接收已封存的 forward-only feature 和 scorer；公共协议不携带 confirmatory source-result path。它生成每个 `(image, block, sigma)` 的 exact 0/1/2 action 后，立即写入 `retrospective-actions.json` 并封存。`--evaluate` 是下一次独立调用：它先复核 action seal，再重跑并封存这些具体 action 的真实 suffix counterfactual，最后才解析旧 source result，计算 exact gain 和候选排序诊断。source 与新 reveal 的 native MSE 不一致也会触发 safety failure。旧 64-candidate bank 不再替代 learned exact action 的收益。
 

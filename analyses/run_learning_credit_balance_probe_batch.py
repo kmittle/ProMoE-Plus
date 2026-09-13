@@ -48,7 +48,6 @@ from analyses.timestep_utility.credit_balance_batch import (
     LOCKED_NUM_THREADS,
     MANIFEST_NAME,
     MODEL_NAME,
-    PREREGISTER_PATH,
     PREREGISTER_SHA256,
     SPLIT_COUNTS,
     aggregate_credit_balance,
@@ -66,17 +65,10 @@ from analyses.timestep_utility.credit_balance_probe import (
     run_credit_balance_case,
 )
 from analyses.timestep_utility.probe import _validate_moe_block_contract
+from analyses.timestep_utility.repository_output import repository_output_dir
 
 
-DEFAULT_CHECKPOINT = (
-    "outputs/ProMoE_TC_B/004_ProMoE_B_seed0_control/"
-    "checkpoints/ckpt_step_200000.pth"
-)
-DEFAULT_WEIGHTS_CHECKPOINT = (
-    "/home/dev/promoe-probes/base-seed0-ckpt_step_200000.pth"
-)
 DEFAULT_LATENT_ROOT = "/home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz"
-DEFAULT_OUTPUT_DIR = "/home/dev/promoe-probes/credit-balance-gate-base200k-v1"
 LOCKED_DEVICES = ("cuda:4", "cuda:5", "cuda:6", "cuda:7")
 STATIC_SOURCE_PATHS = (
     "requirements.txt",
@@ -250,7 +242,8 @@ def _build_protocol(
     canonical_sha256,
     weights_sha256,
 ):
-    if sha256_file(PREREGISTER_PATH) != PREREGISTER_SHA256:
+    preregister_path = Path(args.preregistration).resolve()
+    if sha256_file(preregister_path) != PREREGISTER_SHA256:
         raise RuntimeError("Credit-balance preregistration changed")
     model_metadata, source_hashes = _collect_project_source_hashes(runtime_cfg)
     assignments = {}
@@ -278,7 +271,7 @@ def _build_protocol(
             "persistence; it does not establish improved optimization or FID."
         ),
         "preregister": {
-            "path": PREREGISTER_PATH,
+            "path": str(preregister_path),
             "sha256": PREREGISTER_SHA256,
         },
         "checkpoint": {
@@ -662,10 +655,31 @@ def build_parser():
     parser = argparse.ArgumentParser(
         description="Run the locked Base-200K routed-expert learning-credit gate."
     )
-    parser.add_argument("--ckpt", default=DEFAULT_CHECKPOINT)
-    parser.add_argument("--weights-ckpt", default=DEFAULT_WEIGHTS_CHECKPOINT)
+    parser.add_argument(
+        "--ckpt",
+        required=True,
+        help=(
+            "Base seed-0 step-200000 checkpoint inside its "
+            "outputs/<model>/<config>/checkpoints/ bucket"
+        ),
+    )
+    parser.add_argument(
+        "--weights-ckpt",
+        required=True,
+        help="byte-identical copy of --ckpt used for loading",
+    )
+    parser.add_argument(
+        "--preregistration",
+        required=True,
+        help="credit-balance-gate-base200k-v1 preregistration JSON",
+    )
     parser.add_argument("--latent-root", default=DEFAULT_LATENT_ROOT)
-    parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument(
+        "--output-dir",
+        type=repository_output_dir,
+        required=True,
+        help="git-ignored directory inside this repository",
+    )
     parser.add_argument(
         "--devices",
         type=_parse_devices,

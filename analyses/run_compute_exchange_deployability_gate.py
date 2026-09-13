@@ -75,23 +75,11 @@ from analyses.timestep_utility.compute_exchange_deployability_fit import (
     split_calibration_cases,
     train_dual_scorer,
 )
+from analyses.timestep_utility.repository_output import repository_output_dir
 from utils import deep_update
 
 
-DEFAULT_CHECKPOINT = (
-    "outputs/ProMoE_TC_B/004_ProMoE_B_seed0_control/"
-    "checkpoints/ckpt_step_200000.pth"
-)
-DEFAULT_WEIGHTS_CHECKPOINT = (
-    "/home/dev/promoe-probes/base-seed0-ckpt_step_200000.pth"
-)
 DEFAULT_LATENT_ROOT = "/home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz"
-DEFAULT_SOURCE_ROOT = (
-    "/home/dev/promoe-probes/within-expert-compute-exchange-base200k-v1"
-)
-DEFAULT_OUTPUT_DIR = (
-    "/home/dev/promoe-probes/compute-exchange-deployability-base200k-v1"
-)
 LOCKED_DEVICES = ("cuda:4", "cuda:5", "cuda:6", "cuda:7")
 LOCKED_FIT_DEVICE = "cuda:4"
 LOCKED_NUM_THREADS = 4
@@ -1407,11 +1395,29 @@ def build_parser():
     action.add_argument("--fit", action="store_true")
     action.add_argument("--select", action="store_true")
     action.add_argument("--evaluate", action="store_true")
-    parser.add_argument("--ckpt", default=DEFAULT_CHECKPOINT)
-    parser.add_argument("--weights-ckpt", default=DEFAULT_WEIGHTS_CHECKPOINT)
+    parser.add_argument(
+        "--ckpt",
+        help=(
+            "Base step-200000 checkpoint inside its "
+            "outputs/<model>/<config>/checkpoints/ bucket; --prepare-only only"
+        ),
+    )
+    parser.add_argument(
+        "--weights-ckpt",
+        help="byte-identical copy of --ckpt used for loading; --prepare-only only",
+    )
     parser.add_argument("--latent-root", default=DEFAULT_LATENT_ROOT)
-    parser.add_argument("--source-root", default=DEFAULT_SOURCE_ROOT)
-    parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument(
+        "--source-root",
+        required=True,
+        help="output directory of the sealed within-expert compute-exchange gate",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=repository_output_dir,
+        required=True,
+        help="git-ignored directory inside this repository",
+    )
     parser.add_argument(
         "--devices",
         type=_parse_devices,
@@ -1426,7 +1432,10 @@ def build_parser():
 
 
 def main():
-    args = build_parser().parse_args()
+    parser = build_parser()
+    args = parser.parse_args()
+    if args.prepare_only and (args.ckpt is None or args.weights_ckpt is None):
+        parser.error("--prepare-only requires --ckpt and --weights-ckpt")
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     lock_path = output_dir / ".orchestration.lock"

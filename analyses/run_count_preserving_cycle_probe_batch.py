@@ -65,6 +65,7 @@ from analyses.timestep_utility.cycle_probe import (
     run_cycle_probe_case,
 )
 from analyses.timestep_utility.probe import _validate_moe_block_contract
+from analyses.timestep_utility.repository_output import repository_output_dir
 
 
 LOCKED_DEVICES = ("cuda:4", "cuda:5", "cuda:6", "cuda:7")
@@ -306,6 +307,7 @@ def _build_protocol(
             "name": MANIFEST_NAME,
             "path": manifest["path"],
             "sha256": manifest["sha256"],
+            "prior_probe_root": manifest["prior_probe_root"],
             "selection": manifest["selection"],
             "latent_root": str(
                 Path(manifest["cases"][0]["latent"]).parents[1]
@@ -686,8 +688,18 @@ def build_parser():
     parser.add_argument("--ckpt", required=True)
     parser.add_argument("--weights-ckpt", required=True)
     parser.add_argument("--latent-root", required=True)
-    parser.add_argument("--output-dir", required=True)
+    parser.add_argument(
+        "--output-dir",
+        type=repository_output_dir,
+        required=True,
+        help="git-ignored directory inside this repository",
+    )
     parser.add_argument("--manifest", default=str(DEFAULT_MANIFEST))
+    parser.add_argument(
+        "--prior-probe-root",
+        required=True,
+        help="directory holding the prior probe manifests the gate excludes",
+    )
     parser.add_argument(
         "--devices",
         type=_parse_devices,
@@ -720,7 +732,12 @@ def main():
     runtime_cfg = load_runtime_cfg(config_path)
     if runtime_cfg.model_name != MODEL_NAME:
         raise ValueError(f"Gate model must be {MODEL_NAME}")
-    manifest = load_manifest(args.manifest, args.latent_root, PROJECT_ROOT)
+    manifest = load_manifest(
+        args.manifest,
+        args.latent_root,
+        PROJECT_ROOT,
+        args.prior_probe_root,
+    )
     weights_sha256 = _checkpoint_contract(weights_checkpoint_path)
     if canonical_sha256 != weights_sha256:
         raise ValueError("Canonical and local Base-200K checkpoints differ")

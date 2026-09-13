@@ -24,9 +24,6 @@ SPLIT_COUNTS = {"plumbing": 8, "discovery": 32, "confirmatory": 64}
 LOCKED_NUM_THREADS = 4
 BOOTSTRAP_RESAMPLES = 200_000
 BOOTSTRAP_SEED = 2026082721
-PREREGISTER_PATH = (
-    "/home/dev/promoe-probes/credit-balance-gate-base200k-v1-preregister.json"
-)
 PREREGISTER_SHA256 = (
     "392be0136b046ebaef8f02dc3f05263925d2b5585fb4f26c2d817ee08abde5b9"
 )

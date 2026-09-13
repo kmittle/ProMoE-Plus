@@ -40,13 +40,16 @@ v5 confirmatory 因极端负载偏斜触发候选采样器的固定重试上限�
 /home/dev/miniforge3/envs/promoe/bin/python \
   analyses/run_count_preserving_cycle_probe_batch.py \
   --ckpt outputs/ProMoE_TC_B/004_ProMoE_B_seed0_control/checkpoints/ckpt_step_200000.pth \
-  --weights-ckpt /home/dev/promoe-probes/base-seed0-ckpt_step_200000.pth \
+  --weights-ckpt /path/to/base-seed0-ckpt_step_200000.pth \
+  --prior-probe-root /path/to/promoe-probes \
   --latent-root /home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz \
-  --output-dir /home/dev/promoe-probes/count-preserving-cycle-gate-base200k-v6 \
+  --output-dir analyses/archvied_analyses/YYYY-MM-DD/count-preserving-cycle-gate-base200k-v6 \
   --prepare-only
 ```
 
 `protocol.json` 锁定 checkpoint/config/manifest/source/Git/GPU 环境及全部 gate；`protocol.sha256` 绑定其内容。manifest 排除了 11 份历史 probe manifest 中出现过的 110 个类别，并锁定 24+48 张新图的 latent 和 SHA256。
+
+其中 8 份历史 manifest 原本在仓库外的旧目录，用 `--prior-probe-root` 指出它们现在所在的目录，runner 只按 SHA256 认这些文件；截至 2026-09-13 它们在 `analyses/archvied_analyses/2026-08-28/dirty_probes/promoe-probes/`。`--output-dir` 必须是仓库内、被 Git 忽略的目录，否则参数解析阶段就会拒绝。`outputs/ProMoE_TC_B/004_ProMoE_B_seed0_control/` 下的 canonical checkpoint 目前不在仓库中，所以这个 gate 暂时无法重跑。
 
 ## 运行
 
@@ -56,9 +59,10 @@ v5 confirmatory 因极端负载偏斜触发候选采样器的固定重试上限�
 /home/dev/miniforge3/envs/promoe/bin/python \
   analyses/run_count_preserving_cycle_probe_batch.py \
   --ckpt outputs/ProMoE_TC_B/004_ProMoE_B_seed0_control/checkpoints/ckpt_step_200000.pth \
-  --weights-ckpt /home/dev/promoe-probes/base-seed0-ckpt_step_200000.pth \
+  --weights-ckpt /path/to/base-seed0-ckpt_step_200000.pth \
+  --prior-probe-root /path/to/promoe-probes \
   --latent-root /home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz \
-  --output-dir /home/dev/promoe-probes/count-preserving-cycle-gate-base200k-v6 \
+  --output-dir analyses/archvied_analyses/YYYY-MM-DD/count-preserving-cycle-gate-base200k-v6 \
   --split plumbing
 ```
 

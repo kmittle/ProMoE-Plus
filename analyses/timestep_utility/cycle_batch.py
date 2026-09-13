@@ -44,6 +44,10 @@ EXCLUDED_LABELS = (
     887, 901, 902, 914, 915, 945, 954, 956, 963, 964, 971, 983, 987,
     992, 995, 998, 999,
 )
+# The sealed manifest selection records the prior probe manifests by the
+# absolute paths they had when it was locked. Those strings are identifiers
+# only: load_manifest() reads the files from the caller's prior_probe_root.
+SEALED_PRIOR_PROBE_ROOT = "/home/dev/promoe-probes"
 SOURCE_MANIFESTS = (
     (
         "analyses/denoising_regret/manifests/fdrr_gate_v1.json",
@@ -58,41 +62,41 @@ SOURCE_MANIFESTS = (
         "4afa587649c0ba97fcfc6c2584cd170708e2da7db70e53cde5b86306078c21e4",
     ),
     (
-        "/home/dev/promoe-probes/base100k-routing-translation-stratified-"
+        f"{SEALED_PRIOR_PROBE_ROOT}/base100k-routing-translation-stratified-"
         "heldout24-block3-v1/manifest.json",
         "199b28b90cf390a2b52181571edffea60976e7f368314d4d82aeaca188f86248",
     ),
     (
-        "/home/dev/promoe-probes/base50k-routing-flip-heldout24-v1/manifest.json",
+        f"{SEALED_PRIOR_PROBE_ROOT}/base50k-routing-flip-heldout24-v1/manifest.json",
         "cc6d2b3310a7f20f4998e0e4e22720cf0a70c5c5ed88efb42f96cfa909340a5c",
     ),
     (
-        "/home/dev/promoe-probes/base50k-routing-translation-heldout24/"
+        f"{SEALED_PRIOR_PROBE_ROOT}/base50k-routing-translation-heldout24/"
         "manifest.json",
         "a327fdb5d31cb7d290a54556b69dadcefc994e33dd1ecb93f237fb0e4a0cff8a",
     ),
     (
-        "/home/dev/promoe-probes/base50k-routing-translation-heldout24-"
+        f"{SEALED_PRIOR_PROBE_ROOT}/base50k-routing-translation-heldout24-"
         "margin-v2/manifest.json",
         "627942b10d86f40f979bcdda69e73bd656d40d60f7403533d4da1656779b29a8",
     ),
     (
-        "/home/dev/promoe-probes/base50k-routing-translation-heldout24-"
+        f"{SEALED_PRIOR_PROBE_ROOT}/base50k-routing-translation-heldout24-"
         "multiblock/manifest.json",
         "aff161c0580e900b43b005a26c2ce9710e4fd5e0882dc3124e4a32063379b88c",
     ),
     (
-        "/home/dev/promoe-probes/base50k-routing-translation-stratified-"
+        f"{SEALED_PRIOR_PROBE_ROOT}/base50k-routing-translation-stratified-"
         "heldout24-multiblock-v1/manifest.json",
         "8ecfbd2c9e6b15de4bde7aabe11605fc2970450ee3c66e934ba3ce045e802796",
     ),
     (
-        "/home/dev/promoe-probes/base50k-routing-translation-stratified-"
+        f"{SEALED_PRIOR_PROBE_ROOT}/base50k-routing-translation-stratified-"
         "heldout24-v1/manifest.json",
         "24686c76afd9b76071c418cf91b898c53a41a5194f29bd82962cb41bdb21fce4",
     ),
     (
-        "/home/dev/promoe-probes/fdrr50k-vs-base50k-routing-mechanism-v1/"
+        f"{SEALED_PRIOR_PROBE_ROOT}/fdrr50k-vs-base50k-routing-mechanism-v1/"
         "manifest.json",
         "52d3da52728d2ba1756c1be988015d61672b6e21dd2330999c39fe71c9a154d2",
     ),
@@ -265,17 +269,23 @@ def _selected_case(split, label, class_dir):
     }
 
 
-def _resolve_source_manifest(path, project_root):
+def _resolve_source_manifest(path, project_root, prior_probe_root):
+    prefix = f"{SEALED_PRIOR_PROBE_ROOT}/"
+    if path.startswith(prefix):
+        return (Path(prior_probe_root) / path[len(prefix):]).resolve()
     path = Path(path)
     if not path.is_absolute():
         path = Path(project_root) / path
     return path.resolve()
 
 
-def load_manifest(manifest_path, latent_root, project_root):
+def load_manifest(manifest_path, latent_root, project_root, prior_probe_root):
     manifest_path = Path(manifest_path).resolve()
     latent_root = Path(latent_root).resolve()
     project_root = Path(project_root).resolve()
+    prior_probe_root = Path(prior_probe_root).resolve()
+    if not prior_probe_root.is_dir():
+        raise NotADirectoryError(f"Prior probe root does not exist: {prior_probe_root}")
     if not manifest_path.is_file():
         raise FileNotFoundError(f"Manifest does not exist: {manifest_path}")
     if not latent_root.is_dir():
@@ -286,7 +296,7 @@ def load_manifest(manifest_path, latent_root, project_root):
     if payload.get("selection") != _canonical_selection():
         raise ValueError("Manifest selection rule is not canonical")
     for path, expected_hash in SOURCE_MANIFESTS:
-        source = _resolve_source_manifest(path, project_root)
+        source = _resolve_source_manifest(path, project_root, prior_probe_root)
         if not source.is_file() or sha256_file(source) != expected_hash:
             raise ValueError(f"Prior manifest provenance changed: {source}")
 
@@ -354,6 +364,7 @@ def load_manifest(manifest_path, latent_root, project_root):
         "name": MANIFEST_NAME,
         "path": str(manifest_path),
         "sha256": sha256_file(manifest_path),
+        "prior_probe_root": str(prior_probe_root),
         "selection": payload["selection"],
         "cases": cases,
     }
