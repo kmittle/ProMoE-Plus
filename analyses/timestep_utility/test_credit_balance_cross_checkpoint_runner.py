@@ -1,4 +1,3 @@
-import argparse
 import contextlib
 import io
 import json
@@ -25,7 +24,7 @@ class CrossCheckpointRunnerTests(unittest.TestCase):
         with self.assertRaises(Exception):
             runner._parse_devices("cuda:0,cuda:1,cuda:2,cuda:3")
 
-    def test_locked_input_paths_have_no_defaults(self):
+    def test_checkpoint_inputs_have_no_defaults(self):
         parser = runner.build_parser()
         with contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit):
@@ -33,98 +32,87 @@ class CrossCheckpointRunnerTests(unittest.TestCase):
         args = parser.parse_args(self._cli_arguments())
         self.assertEqual(
             args.lossfree_ckpt,
-            "/moved/004_demo_s0_200k/checkpoints/ckpt_step_200000.pth",
+            "/moved/lossfree/checkpoints/ckpt_step_200000.pth",
         )
         self.assertIn(runner.PROJECT_ROOT, args.output_dir.parents)
 
-    def test_output_dir_must_be_git_ignored_inside_repository(self):
-        inside = runner.PROJECT_ROOT / "outputs" / "credit-balance-unit-test"
-        self.assertEqual(runner._repository_output_dir(str(inside)), inside)
-        for rejected in (
-            "/tmp/credit-balance-unit-test",
-            str(runner.PROJECT_ROOT),
-            str(runner.PROJECT_ROOT / "analyses" / "credit-balance-unit-test"),
-        ):
-            with self.subTest(rejected=rejected):
-                with self.assertRaises(argparse.ArgumentTypeError):
-                    runner._repository_output_dir(rejected)
+    def test_trainer_provenance_allows_run_id_but_not_unknown_fields(self):
+        checkpoint, expected = self._checkpoint_provenance_fixture()
+        trainer_state = checkpoint["trainer_state"]
+        trainer_state["run_id"] = "fadab934ca024042b04ef823382a9fe3"
+        trainer_state["training_provenance"] = None
+        provenance = runner._checkpoint_training_provenance(checkpoint, expected)
+        self.assertEqual(provenance["run_id"], trainer_state["run_id"])
+        self.assertFalse(provenance["strict_training_provenance"])
+        trainer_state["run_id"] = "short"
+        with self.assertRaisesRegex(RuntimeError, "run_id"):
+            runner._checkpoint_training_provenance(checkpoint, expected)
+        trainer_state["run_id"] = "fadab934ca024042b04ef823382a9fe3"
+        trainer_state["unexpected"] = 1
+        with self.assertRaisesRegex(RuntimeError, "fields changed"):
+            runner._checkpoint_training_provenance(checkpoint, expected)
 
-    def test_relocated_lossfree_checkpoint_stays_bound_to_its_run(self):
-        planned = (
-            "/home/dev/promoe-runs/ProMoE_TC_B_lossfree/004_demo_s0_200k/"
-            "checkpoints/ckpt_step_200000.pth"
-        )
-        runner._require_same_output_bucket(
-            "/archive/2026-08-28/004_demo_s0_200k/checkpoints/"
-            "ckpt_step_200000.pth",
-            planned,
-        )
-        for wrong in (
-            "/archive/004_other_s0_200k/checkpoints/ckpt_step_200000.pth",
-            "/archive/004_demo_s0_200k/checkpoints/ckpt_step_190000.pth",
-        ):
-            with self.subTest(wrong=wrong):
-                with self.assertRaisesRegex(RuntimeError, "preregistered run"):
-                    runner._require_same_output_bucket(wrong, planned)
-
-    def test_preregistrations_are_recognised_by_content_not_location(self):
-        with tempfile.TemporaryDirectory() as directory:
-            paths = {}
-            rows = []
-            for version in (1, 2):
-                path = Path(directory) / f"moved-v{version}.json"
-                path.write_text(
-                    json.dumps({"version": version}),
-                    encoding="utf-8",
-                )
-                paths[version] = path
-                rows.append({
-                    "version": version,
-                    "sha256": runner.sha256_file(path),
-                })
-            with (
-                mock.patch.object(runner, "PREREGISTRATIONS", tuple(rows)),
-                mock.patch.object(runner, "_validate_preregistered_constants"),
-            ):
-                self.assertEqual(
-                    sorted(runner._verify_preregistrations(paths)),
-                    [1, 2],
-                )
-                paths[2].write_text(
-                    json.dumps({"version": 2, "edited": True}),
-                    encoding="utf-8",
-                )
-                with self.assertRaisesRegex(RuntimeError, "v2 changed"):
-                    runner._verify_preregistrations(paths)
-
-    def test_base_preregistration_is_checked_at_the_given_path(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            preregistration = root / "moved-preregister.json"
-            preregistration.write_text("{}", encoding="utf-8")
-            protocol = {
-                "manifest": {"cases": []},
-                "project_source_sha256": {},
-                "preregister": {
-                    "path": "/home/dev/promoe-probes/original-preregister.json",
-                    "sha256": runner.sha256_file(preregistration),
+    def test_pairing_requires_a_matched_training_setup(self):
+        def contract(step=200000, seed=0, learning_rate=1e-4, dataset="a"):
+            return {
+                "step": step,
+                "learning_rate": learning_rate,
+                "training_provenance": {
+                    "global_seed": seed,
+                    "world_size": 4,
+                    "global_batch_size": 256,
+                    "grad_mix": 1,
+                    "sampler_contract": {"global_seed": seed, "dataset": dataset},
                 },
             }
-            digest = runner._json_sha256(protocol)
-            protocol_path = root / "protocol.json"
-            protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
-            protocol_path.with_suffix(".sha256").write_text(
-                digest + "\n",
+
+        pairing = runner._validate_paired_training({
+            "base": contract(),
+            "lossfree": contract(),
+        })
+        self.assertEqual(pairing["checkpoint_step"], 200000)
+        for changed in (
+            {"step": 300000},
+            {"seed": 1},
+            {"learning_rate": 2e-4},
+            {"dataset": "b"},
+        ):
+            with self.subTest(changed=changed):
+                with self.assertRaisesRegex(RuntimeError, "not a matched pair"):
+                    runner._validate_paired_training({
+                        "base": contract(),
+                        "lossfree": contract(**changed),
+                    })
+
+    def test_checkpoint_step_comes_from_the_checkpoint_itself(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "pair.yaml"
+            config.write_text(
+                'model_name: "ProMoE_TC_B"\nlr: 0.0001\n',
                 encoding="utf-8",
             )
-            with mock.patch.object(runner, "BASE_PROTOCOL_SHA256", digest):
-                self.assertEqual(
-                    runner._load_base_protocol(protocol_path, preregistration, []),
-                    protocol,
+            checkpoint = root / "run" / "checkpoints" / "ckpt_step_1000.pth"
+            checkpoint.parent.mkdir(parents=True)
+            with (
+                mock.patch.object(runner, "_expected_training", return_value={}),
+                mock.patch.object(
+                    runner,
+                    "_checkpoint_training_provenance",
+                    return_value={"stub": True},
+                ),
+            ):
+                torch.save({"step": 1000, "ema_model_state_dict": {}}, checkpoint)
+                contract = runner._checkpoint_contract(
+                    checkpoint,
+                    config,
+                    "ProMoE_TC_B",
+                    {},
                 )
-                preregistration.write_text('{"edited": true}', encoding="utf-8")
-                with self.assertRaisesRegex(RuntimeError, "Base preregistration"):
-                    runner._load_base_protocol(protocol_path, preregistration, [])
+                self.assertEqual(contract["step"], 1000)
+                torch.save({"step": 999, "ema_model_state_dict": {}}, checkpoint)
+                with self.assertRaisesRegex(ValueError, "differs from its file name"):
+                    runner._checkpoint_contract(checkpoint, config, "ProMoE_TC_B", {})
 
     def test_protocol_is_idempotent_and_rejects_changes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -489,14 +477,8 @@ class CrossCheckpointRunnerTests(unittest.TestCase):
                 ["credit-gate", *self._cli_arguments(), "--prepare-only"],
             ),
             mock.patch.object(runner, "select_cases", return_value=[]),
-            mock.patch.object(runner, "_load_base_protocol", return_value={}),
             mock.patch.object(runner, "load_runtime_cfg", return_value=object()),
-            mock.patch.object(runner, "_verify_preregistrations", return_value={}),
-            mock.patch.object(
-                runner,
-                "_validate_preregistered_run_inputs",
-                return_value={},
-            ),
+            mock.patch.object(runner, "_latent_dataset_identity", return_value={}),
             mock.patch.object(
                 runner,
                 "validate_exact_parameter_credit_formula",
@@ -536,11 +518,6 @@ class CrossCheckpointRunnerTests(unittest.TestCase):
             ),
             mock.patch.object(
                 runner,
-                "_load_base_results",
-                return_value=[{"base": True}],
-            ),
-            mock.patch.object(
-                runner,
                 "aggregate_parameter_credit_validation",
                 return_value={"passed": True},
             ),
@@ -574,7 +551,6 @@ class CrossCheckpointRunnerTests(unittest.TestCase):
             summary_path, passed = runner._stage_parameter_validation(
                 Path("/unused"),
                 cases,
-                Path("/unused-base"),
                 runner.LOCKED_DEVICES,
                 {"formula_validation": {"passed": True}},
                 Path("/unused-protocol.json"),
@@ -583,19 +559,61 @@ class CrossCheckpointRunnerTests(unittest.TestCase):
         self.assertTrue(passed)
         self.assertEqual(summary_path, Path("discovery-credit-summary.json"))
 
+    def test_plumbing_stage_requires_both_checkpoints_to_be_safe(self):
+        cases = [{"split": "plumbing", "id": f"case-{index}"} for index in range(8)]
+        published = {}
+
+        def publish_summary(_output_dir, name, payload, _protocol_sha256):
+            published[name] = payload
+            return Path(f"{name}-summary.json")
+
+        with (
+            mock.patch.object(runner, "_run_stage_cases") as run_stage_cases,
+            mock.patch.object(
+                runner,
+                "_load_stage_results",
+                side_effect=lambda *args: [{"role": args[3]}],
+            ),
+            mock.patch.object(
+                runner,
+                "_numerical_safety",
+                side_effect=lambda results, **kwargs: {
+                    "passed": not kwargs["expected_bias"],
+                },
+            ),
+            mock.patch.object(
+                runner,
+                "aggregate_credit_balance",
+                return_value={"passed": True},
+            ),
+            mock.patch.object(
+                runner,
+                "_publish_summary",
+                side_effect=publish_summary,
+            ),
+        ):
+            _, passed = runner._stage_plumbing(
+                Path("/unused"),
+                cases,
+                runner.LOCKED_DEVICES,
+                {},
+                Path("/unused-protocol.json"),
+                "a" * 64,
+            )
+        self.assertFalse(passed)
+        self.assertEqual(run_stage_cases.call_args.args[2], runner.CHECKPOINT_ROLES)
+        self.assertEqual(
+            set(published["plumbing"]["probe_safety"]),
+            set(runner.CHECKPOINT_ROLES),
+        )
+
     @staticmethod
     def _cli_arguments():
         return [
-            "--base-protocol", "/moved/base-gate/protocol.json",
-            "--base-preregistration", "/moved/base-gate-preregister.json",
-            "--base-results-dir", "/moved/base-gate",
-            "--base-weights-ckpt", "/moved/base-seed0-ckpt_step_200000.pth",
+            "--base-ckpt", "/moved/base/checkpoints/ckpt_step_200000.pth",
             "--base-config", "configs/004_ProMoE_B_seed0_control.yaml",
-            "--lossfree-ckpt",
-            "/moved/004_demo_s0_200k/checkpoints/ckpt_step_200000.pth",
-            "--lossfree-config", "/moved/lossfree.yaml",
-            "--preregistration-v1", "/moved/v1-preregister.json",
-            "--preregistration-v2", "/moved/v2-preregister.json",
+            "--lossfree-ckpt", "/moved/lossfree/checkpoints/ckpt_step_200000.pth",
+            "--lossfree-config", "configs/004_ProMoE_B_lossfree_u1e2.yaml",
             "--output-dir",
             str(runner.PROJECT_ROOT / "outputs" / "credit-balance-unit-test"),
         ]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the sealed Base/Loss-Free count and exact-credit gate."""
+"""Run the paired Base/Loss-Free count and exact-credit analysis."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import multiprocessing
 import os
 import platform
 import random
+import re
 import subprocess
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -32,17 +33,13 @@ from analyses.denoising_regret.probe import (
     _build_model,
     _configure_torch_threads,
     _load_checkpoint_model,
+    _load_checkpoint_payload,
 )
 from analyses.t_SNE.checkpoint_utils import load_runtime_cfg, parse_checkpoint_step
 from analyses.timestep_utility.credit_balance_batch import (
     BOOTSTRAP_RESAMPLES,
     BOOTSTRAP_SEED,
     CHECKPOINT_STATE,
-    CHECKPOINT_STEP,
-    CONFIRMATORY_REQUIREMENTS,
-    DISCOVERY_REQUIREMENTS,
-    EXPECTED_WEIGHTS_SHA256,
-    EXPECTED_WEIGHTS_SIZE,
     LOCKED_NUM_THREADS,
     MODEL_NAME,
     SAFETY_REQUIREMENTS,
@@ -54,13 +51,6 @@ from analyses.timestep_utility.credit_balance_batch import (
 )
 from analyses.timestep_utility.credit_balance_cross_checkpoint import (
     CROSS_CHECKPOINT_VERSION,
-    MAX_BLOCK_COUNT_CV,
-    MAX_BLOCK_COUNT_GINI,
-    MAX_BLOCK_COUNT_RATIO,
-    MIN_BLOCK_FRACTIONAL_REDUCTION,
-    MIN_PARAMETER_ACTIVE_EXPERTS,
-    MIN_PARAMETER_BOOTSTRAP_LCB,
-    MIN_PARAMETER_MEAN_SPEARMAN,
     PARAMETER_BOOTSTRAP_RESAMPLES,
     PARAMETER_BOOTSTRAP_SEED,
     aggregate_parameter_credit_validation,
@@ -81,49 +71,28 @@ from analyses.timestep_utility.credit_balance_probe import (
     SELECTION_SALT,
     SIGMAS,
 )
+from analyses.timestep_utility.repository_output import repository_output_dir
 
 
-RUNNER_VERSION = 2
+RUNNER_VERSION = 3
 SEAL_VERSION = 1
 PARAMETER_CASE_COUNT = 16
 LOSSFREE_MODEL_NAME = "ProMoE_TC_B_lossfree"
-LOSSFREE_GLOBAL_SEED = 0
-LOSSFREE_WORLD_SIZE = 4
-LOSSFREE_TRAINER_STATE_VERSION = 2
-LOSSFREE_AUGMENTATION_SEED_VERSION = 1
-LOSSFREE_SAMPLER_CONTRACT_VERSION = 1
-LOSSFREE_DATASET_IDENTITY_VERSION = 1
-LOSSFREE_DATASET_TYPE = "__mp_main__.LatentFolder"
+CHECKPOINT_ROLES = ("base", "lossfree")
+# Both checkpoints must carry the trainer provenance written by train.py; the
+# pair is matched on it instead of on pinned file hashes.
+EXPECTED_TRAINER_STATE_VERSION = 2
+EXPECTED_AUGMENTATION_SEED_VERSION = 1
+EXPECTED_SAMPLER_CONTRACT_VERSION = 1
+EXPECTED_DATASET_IDENTITY_VERSION = 1
+EXPECTED_DATASET_TYPE = "__mp_main__.LatentFolder"
+OPTIONAL_TRAINER_KEYS = frozenset({"run_id", "training_provenance"})
 LOCKED_DEVICES = ("cuda:4", "cuda:5", "cuda:6", "cuda:7")
-# Checkpoints, configs, sealed documents and the output directory are CLI
-# arguments. Locked inputs are recognised by content hash, so they may be
-# relocated but never edited.
-PREREGISTRATIONS = (
-    {
-        "version": 1,
-        "sha256": (
-            "59ce95f39220511c510b589b78e69b0139c961aaa1d3e4e3f013c16312565a43"
-        ),
-    },
-    {
-        "version": 2,
-        "sha256": (
-            "04ced5b1cebf371153c33c4f7b9cf703b58d430ee504d8d52c083a186f254b57"
-        ),
-    },
-)
-BASE_PROTOCOL_SHA256 = (
-    "9c25bd0144228e921be1a5491dafa32299356f5af00e0a5cc15d857a1eeef096"
-)
-LOSSFREE_CONFIG_SHA256 = (
-    "ce7ce84ad50800ddc66689d8855530ffcb58365297c3ad52845a8bff4d1bcfcc"
-)
 DEFAULT_LATENT_ROOT = "/home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz"
 LATENT_PATHS_CACHE = PROJECT_ROOT / "preprocess/latent_paths_cache.txt"
 STATIC_SOURCE_PATHS = (
     "requirements.txt",
     "analyses/run_learning_credit_balance_cross_checkpoint.py",
-    "analyses/run_learning_credit_balance_probe_batch.py",
     "analyses/timestep_utility/credit_balance_cross_checkpoint.py",
     "analyses/timestep_utility/credit_balance_cross_checkpoint_probe.py",
     "analyses/timestep_utility/credit_balance_probe.py",
@@ -166,25 +135,6 @@ def _parse_devices(value):
             "The locked cross-checkpoint gate requires cuda:4,cuda:5,cuda:6,cuda:7"
         )
     return devices
-
-
-def _repository_output_dir(value):
-    path = Path(value).resolve()
-    if PROJECT_ROOT not in path.parents:
-        raise argparse.ArgumentTypeError(
-            f"output directory must be inside the repository: {path}"
-        )
-    ignored = subprocess.run(
-        ["git", "check-ignore", "-q", str(path / "protocol.json")],
-        cwd=PROJECT_ROOT,
-        check=False,
-    ).returncode == 0
-    if not ignored:
-        raise argparse.ArgumentTypeError(
-            "output directory must be git-ignored (e.g. under outputs/ or "
-            f"analyses/archvied_analyses/) or the clean-tree check fails: {path}"
-        )
-    return path
 
 
 def _json_sha256(payload):
@@ -366,7 +316,7 @@ def _latent_dataset_identity(latent_root):
     _hash_dataset_record(
         digest,
         DATASET_IDENTITY_VERSION,
-        LOSSFREE_DATASET_TYPE,
+        EXPECTED_DATASET_TYPE,
         len(latent_paths),
     )
     normalized_root = os.path.normpath(latent_root)
@@ -376,103 +326,37 @@ def _latent_dataset_identity(latent_root):
         _hash_dataset_record(digest, relative, class_to_idx[class_name])
     return {
         "version": DATASET_IDENTITY_VERSION,
-        "type": LOSSFREE_DATASET_TYPE,
+        "type": EXPECTED_DATASET_TYPE,
         "num_samples": len(latent_paths),
         "ordered_samples_sha256": digest.hexdigest(),
     }
 
 
-def _require_same_output_bucket(checkpoint_path, planned_checkpoint):
-    """Bind a relocated checkpoint to the preregistered run's own output bucket."""
-    observed = Path(os.path.abspath(checkpoint_path)).parts[-3:]
-    planned = Path(planned_checkpoint).parts[-3:]
-    if observed != planned:
-        raise RuntimeError(
-            "Loss-Free checkpoint must be the preregistered run's "
-            f"{'/'.join(planned)}: {checkpoint_path}"
-        )
-
-
-def _validate_preregistered_run_inputs(args, base_cfg, lossfree_cfg, documents):
-    training = documents[1]["lossfree_training_contract"]
-    data = documents[1]["data_contract"]
-    lossfree_config_sha256 = sha256_file(Path(args.lossfree_config).resolve())
-    if lossfree_config_sha256 != training["config_sha256"]:
-        raise RuntimeError("Loss-Free config content differs from preregistration")
-    _require_same_output_bucket(args.lossfree_ckpt, training["planned_checkpoint"])
-    paired_base_seed = documents[1]["paired_base_contract"]["global_seed"]
-    if int(base_cfg.global_seed) != int(paired_base_seed):
-        raise RuntimeError("Base global seed differs from preregistration")
-
-    expected_config = {
-        "model_name": training["model_name"],
-        "global_seed": training["global_seed"],
-        "total_train_batch_size": training["global_batch_size"],
-        "lr": training["learning_rate"],
-    }
-    for field, expected in expected_config.items():
-        _require_preregistered_equal(
-            getattr(lossfree_cfg, field),
-            expected,
-            f"lossfree_runtime_config.{field}",
-        )
-    _require_preregistered_equal(
-        list(lossfree_cfg.gpu_ids),
-        [4, 5, 6, 7],
-        "lossfree_runtime_config.gpu_ids",
-    )
-    _require_preregistered_equal(
-        Path(lossfree_cfg.latent_data_path).resolve(),
-        Path(data["latent_root"]).resolve(),
-        "lossfree_runtime_config.latent_data_path",
-    )
-    if not bool(lossfree_cfg.use_encoded_latents):
-        raise RuntimeError("Loss-Free training must use the preregistered latent set")
-    moe_cfg = lossfree_cfg.DiT_B_config.MoE_config
-    _require_preregistered_equal(
-        bool(moe_cfg.use_lossfree_bias),
-        True,
-        "lossfree_runtime_config.use_lossfree_bias",
-    )
-    _require_preregistered_equal(
-        float(moe_cfg.bias_update_rate),
-        float(training["bias_update_rate"]),
-        "lossfree_runtime_config.bias_update_rate",
-    )
-    if int(lossfree_cfg.num_steps) <= CHECKPOINT_STEP:
-        raise RuntimeError("Loss-Free config does not train through step 200000")
-    if CHECKPOINT_STEP % int(lossfree_cfg.save_ckpt_interval) != 0:
-        raise RuntimeError("Loss-Free config does not save the planned checkpoint")
-    dataset_identity = _latent_dataset_identity(args.latent_root)
-
-    world_size = len(lossfree_cfg.gpu_ids)
-    _require_preregistered_equal(
-        world_size,
-        LOSSFREE_WORLD_SIZE,
-        "lossfree_runtime_config.world_size",
-    )
-    global_batch_size = int(lossfree_cfg.total_train_batch_size)
-    if global_batch_size % world_size != 0:
-        raise RuntimeError("Loss-Free global batch is not divisible by world size")
-    grad_mix = int(getattr(lossfree_cfg, "grad_mix", 1))
+def _expected_training(runtime_cfg, checkpoint_step, dataset_identity):
+    """Derive the trainer provenance a checkpoint of this config must carry."""
+    world_size = len(runtime_cfg.gpu_ids)
+    global_batch_size = int(runtime_cfg.total_train_batch_size)
+    if world_size <= 0 or global_batch_size % world_size != 0:
+        raise RuntimeError("Config global batch is not divisible by its world size")
+    grad_mix = int(getattr(runtime_cfg, "grad_mix", 1))
     if grad_mix <= 0:
-        raise RuntimeError("Loss-Free grad_mix must be positive")
+        raise RuntimeError("Config grad_mix must be positive")
     return {
-        "global_seed": int(training["global_seed"]),
+        "global_seed": int(runtime_cfg.global_seed),
         "world_size": world_size,
         "global_batch_size": global_batch_size,
         "per_rank_batch_size": global_batch_size // world_size,
         "grad_mix": grad_mix,
-        "checkpoint_step": CHECKPOINT_STEP,
+        "checkpoint_step": int(checkpoint_step),
         "dataset_identity": dataset_identity,
     }
 
 
 def _require_nonnegative_integer(value, field, positive=False):
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise RuntimeError(f"Loss-Free trainer provenance is invalid: {field}")
+        raise RuntimeError(f"Checkpoint trainer provenance is invalid: {field}")
     if positive and value == 0:
-        raise RuntimeError(f"Loss-Free trainer provenance is invalid: {field}")
+        raise RuntimeError(f"Checkpoint trainer provenance is invalid: {field}")
     return value
 
 
@@ -482,14 +366,20 @@ def _validate_sha256(value, field):
         or len(value) != 64
         or any(character not in "0123456789abcdef" for character in value)
     ):
-        raise RuntimeError(f"Loss-Free trainer provenance is invalid: {field}")
+        raise RuntimeError(f"Checkpoint trainer provenance is invalid: {field}")
     return value
+
+
+def _valid_run_id(value):
+    return isinstance(value, str) and bool(
+        re.fullmatch(r"[A-Za-z0-9_-]{16,128}", value)
+    )
 
 
 def _validate_checkpoint_rng_state(state):
     required_keys = {"python", "numpy", "torch", "cuda"}
     if not isinstance(state, dict) or set(state) != required_keys:
-        raise RuntimeError("Loss-Free rank RNG provenance is incomplete")
+        raise RuntimeError("Checkpoint rank RNG provenance is incomplete")
     try:
         python_rng = random.Random()
         python_rng.setstate(state["python"])
@@ -565,16 +455,16 @@ def _validate_checkpoint_rng_state(state):
         )
         cuda_generator.set_state(cuda_state.detach().cpu())
     except (KeyError, TypeError, ValueError, RuntimeError) as error:
-        raise RuntimeError("Loss-Free rank RNG provenance is invalid") from error
+        raise RuntimeError("Checkpoint rank RNG provenance is invalid") from error
 
 
 def _checkpoint_training_provenance(checkpoint, expected):
     trainer_state = checkpoint.get("trainer_state")
     if not isinstance(trainer_state, dict):
-        raise RuntimeError("Loss-Free checkpoint lacks trainer provenance")
+        raise RuntimeError("Checkpoint lacks trainer provenance")
     expected_fields = {
-        "version": LOSSFREE_TRAINER_STATE_VERSION,
-        "augmentation_seed_version": LOSSFREE_AUGMENTATION_SEED_VERSION,
+        "version": EXPECTED_TRAINER_STATE_VERSION,
+        "augmentation_seed_version": EXPECTED_AUGMENTATION_SEED_VERSION,
         "global_seed": expected["global_seed"],
         "world_size": expected["world_size"],
         "grad_mix": expected["grad_mix"],
@@ -583,15 +473,22 @@ def _checkpoint_training_provenance(checkpoint, expected):
             (expected["checkpoint_step"] + 1) * expected["grad_mix"]
         ),
     }
-    expected_trainer_keys = set(expected_fields) | {
+    required_trainer_keys = set(expected_fields) | {
         "batches_per_epoch",
         "sampler_epoch",
         "sampler_batch_offset",
         "sampler_contract",
         "rank_states",
     }
-    if set(trainer_state) != expected_trainer_keys:
-        raise RuntimeError("Loss-Free trainer provenance fields changed")
+    observed_trainer_keys = set(trainer_state)
+    if (
+        not required_trainer_keys <= observed_trainer_keys
+        or observed_trainer_keys - required_trainer_keys - OPTIONAL_TRAINER_KEYS
+    ):
+        raise RuntimeError("Checkpoint trainer provenance fields changed")
+    run_id = trainer_state.get("run_id")
+    if run_id is not None and not _valid_run_id(run_id):
+        raise RuntimeError("Checkpoint trainer provenance is invalid: run_id")
     for field, value in expected_fields.items():
         observed = _require_nonnegative_integer(
             trainer_state.get(field),
@@ -606,10 +503,10 @@ def _checkpoint_training_provenance(checkpoint, expected):
             },
         )
         if observed != value:
-            raise RuntimeError(f"Loss-Free trainer provenance changed: {field}")
+            raise RuntimeError(f"Checkpoint trainer provenance changed: {field}")
     sampler = trainer_state.get("sampler_contract")
     if not isinstance(sampler, dict):
-        raise RuntimeError("Loss-Free checkpoint lacks sampler provenance")
+        raise RuntimeError("Checkpoint lacks sampler provenance")
     expected_sampler_keys = {
         "version",
         "global_seed",
@@ -620,9 +517,9 @@ def _checkpoint_training_provenance(checkpoint, expected):
         "dataset",
     }
     if set(sampler) != expected_sampler_keys:
-        raise RuntimeError("Loss-Free sampler provenance fields changed")
+        raise RuntimeError("Checkpoint sampler provenance fields changed")
     sampler_fields = {
-        "version": LOSSFREE_SAMPLER_CONTRACT_VERSION,
+        "version": EXPECTED_SAMPLER_CONTRACT_VERSION,
         "global_seed": expected["global_seed"],
         "per_rank_batch_size": expected["per_rank_batch_size"],
         "type": "distributed",
@@ -638,7 +535,7 @@ def _checkpoint_training_provenance(checkpoint, expected):
                 positive=field in {"version", "per_rank_batch_size"},
             )
         if observed != value:
-            raise RuntimeError(f"Loss-Free sampler provenance changed: {field}")
+            raise RuntimeError(f"Checkpoint sampler provenance changed: {field}")
     dataset = sampler.get("dataset")
     if not isinstance(dataset, dict) or set(dataset) != {
         "version",
@@ -646,16 +543,16 @@ def _checkpoint_training_provenance(checkpoint, expected):
         "num_samples",
         "ordered_samples_sha256",
     }:
-        raise RuntimeError("Loss-Free sampler dataset provenance is incomplete")
+        raise RuntimeError("Checkpoint sampler dataset provenance is incomplete")
     dataset_version = _require_nonnegative_integer(
         dataset.get("version"),
         "sampler_contract.dataset.version",
         positive=True,
     )
-    if dataset_version != LOSSFREE_DATASET_IDENTITY_VERSION:
-        raise RuntimeError("Loss-Free sampler dataset version changed")
-    if dataset.get("type") != LOSSFREE_DATASET_TYPE:
-        raise RuntimeError("Loss-Free sampler dataset type changed")
+    if dataset_version != EXPECTED_DATASET_IDENTITY_VERSION:
+        raise RuntimeError("Checkpoint sampler dataset version changed")
+    if dataset.get("type") != EXPECTED_DATASET_TYPE:
+        raise RuntimeError("Checkpoint sampler dataset type changed")
     num_samples = _require_nonnegative_integer(
         dataset.get("num_samples"),
         "sampler_contract.dataset.num_samples",
@@ -667,7 +564,7 @@ def _checkpoint_training_provenance(checkpoint, expected):
     )
     if dataset != expected.get("dataset_identity"):
         raise RuntimeError(
-            "Loss-Free sampler dataset differs from the locked latent dataset"
+            "Checkpoint sampler dataset differs from the locked latent dataset"
         )
     per_rank_samples = (
         num_samples + expected["world_size"] - 1
@@ -681,7 +578,7 @@ def _checkpoint_training_provenance(checkpoint, expected):
         positive=True,
     )
     if batches_per_epoch != expected_batches_per_epoch:
-        raise RuntimeError("Loss-Free batches_per_epoch is internally inconsistent")
+        raise RuntimeError("Checkpoint batches_per_epoch is internally inconsistent")
     sampler_epoch = _require_nonnegative_integer(
         trainer_state.get("sampler_epoch"),
         "sampler_epoch",
@@ -695,18 +592,18 @@ def _checkpoint_training_provenance(checkpoint, expected):
         batches_per_epoch,
     )
     if (sampler_epoch, sampler_batch_offset) != expected_sampler_position:
-        raise RuntimeError("Loss-Free sampler position is internally inconsistent")
+        raise RuntimeError("Checkpoint sampler position is internally inconsistent")
     rank_states = trainer_state.get("rank_states")
     if not isinstance(rank_states, list) or len(rank_states) != expected["world_size"]:
-        raise RuntimeError("Loss-Free rank RNG provenance is incomplete")
+        raise RuntimeError("Checkpoint rank RNG provenance is incomplete")
     rank_ids = []
     for state in rank_states:
         if not isinstance(state, dict) or set(state) != {"rank", "rng_state"}:
-            raise RuntimeError("Loss-Free rank RNG provenance is incomplete")
+            raise RuntimeError("Checkpoint rank RNG provenance is incomplete")
         rank_ids.append(state["rank"])
         _validate_checkpoint_rng_state(state["rng_state"])
     if rank_ids != list(range(expected["world_size"])):
-        raise RuntimeError("Loss-Free rank RNG provenance IDs are invalid")
+        raise RuntimeError("Checkpoint rank RNG provenance IDs are invalid")
     return {
         "trainer_state_version": trainer_state.get("version"),
         "augmentation_seed_version": trainer_state.get(
@@ -724,50 +621,40 @@ def _checkpoint_training_provenance(checkpoint, expected):
         "sampler_batch_offset": sampler_batch_offset,
         "sampler_contract": sampler,
         "rank_ids": rank_ids,
+        "run_id": run_id,
+        "strict_training_provenance": (
+            trainer_state.get("training_provenance") is not None
+        ),
     }
 
 
-def _checkpoint_contract(
-    checkpoint_path,
-    config_path,
-    model_name,
-    expected_sha256=None,
-    expected_size=None,
-    expected_training=None,
-):
+def _checkpoint_contract(checkpoint_path, config_path, model_name, dataset_identity):
     checkpoint_path = Path(checkpoint_path).resolve()
     config_path = Path(config_path).resolve()
     if not checkpoint_path.is_file():
         raise FileNotFoundError(f"Checkpoint does not exist: {checkpoint_path}")
     if not config_path.is_file():
         raise FileNotFoundError(f"Config does not exist: {config_path}")
-    if parse_checkpoint_step(checkpoint_path) != CHECKPOINT_STEP:
-        raise ValueError("Cross-checkpoint gate requires step 200000")
-    stat = checkpoint_path.stat()
-    if expected_size is not None and stat.st_size != int(expected_size):
-        raise ValueError("Checkpoint size changed from the locked contract")
-    checkpoint_sha256 = sha256_file(checkpoint_path)
-    if expected_sha256 is not None and checkpoint_sha256 != expected_sha256:
-        raise ValueError("Checkpoint SHA256 changed from the locked contract")
+    checkpoint_step = parse_checkpoint_step(checkpoint_path)
     runtime_cfg = load_runtime_cfg(config_path)
     if runtime_cfg.model_name != model_name:
         raise ValueError(f"Checkpoint config model must be {model_name}")
-    load_kwargs = {"map_location": "cpu", "weights_only": True}
-    try:
-        checkpoint = torch.load(checkpoint_path, **load_kwargs)
-    except TypeError:
-        load_kwargs.pop("weights_only")
-        checkpoint = torch.load(checkpoint_path, **load_kwargs)
-    if checkpoint.get("step") != CHECKPOINT_STEP:
-        raise ValueError("Checkpoint payload is not step 200000")
+    expected_training = _expected_training(
+        runtime_cfg,
+        checkpoint_step,
+        dataset_identity,
+    )
+    stat = checkpoint_path.stat()
+    checkpoint_sha256 = sha256_file(checkpoint_path)
+    checkpoint = _load_checkpoint_payload(checkpoint_path)
+    if checkpoint.get("step") != checkpoint_step:
+        raise ValueError("Checkpoint payload step differs from its file name")
     if CHECKPOINT_STATE not in checkpoint:
         raise KeyError(f"Checkpoint is missing {CHECKPOINT_STATE}")
-    training_provenance = None
-    if expected_training is not None:
-        training_provenance = _checkpoint_training_provenance(
-            checkpoint,
-            expected_training,
-        )
+    training_provenance = _checkpoint_training_provenance(
+        checkpoint,
+        expected_training,
+    )
     del checkpoint
     gc.collect()
     return {
@@ -775,323 +662,102 @@ def _checkpoint_contract(
         "size": stat.st_size,
         "mtime_ns": stat.st_mtime_ns,
         "sha256": checkpoint_sha256,
-        "step": CHECKPOINT_STEP,
+        "step": checkpoint_step,
         "state": CHECKPOINT_STATE,
         "config": str(config_path),
         "config_sha256": sha256_file(config_path),
         "model_name": model_name,
+        "learning_rate": float(runtime_cfg.lr),
         "training_provenance": training_provenance,
     }
 
 
-def _preregistration_paths(args):
-    return {1: args.preregistration_v1, 2: args.preregistration_v2}
-
-
-def _verify_preregistrations(paths):
-    documents = {}
-    for row in PREREGISTRATIONS:
-        path = Path(paths[row["version"]]).resolve()
-        if not path.is_file():
-            raise FileNotFoundError(
-                f"Loss-Free preregistration v{row['version']} is missing: {path}"
-            )
-        if sha256_file(path) != row["sha256"]:
-            raise RuntimeError(
-                f"Loss-Free preregistration v{row['version']} changed"
-            )
-        document = json.loads(path.read_text(encoding="utf-8"))
-        if document.get("version") != row["version"]:
-            raise RuntimeError("Loss-Free preregistration version changed")
-        documents[row["version"]] = document
-    _validate_preregistered_constants(documents)
-    return documents
-
-
-def _require_preregistered_equal(observed, expected, field):
-    if observed != expected:
-        raise RuntimeError(f"Preregistered contract changed: {field}")
-
-
-def _validate_preregistered_constants(documents):
-    if set(documents) != {1, 2}:
-        raise RuntimeError("Both Loss-Free preregistrations are required")
-    v1 = documents[1]
-    v2 = documents[2]
-    supersedes = v2.get("supersedes", {})
-    _require_preregistered_equal(
-        supersedes.get("sha256"),
-        PREREGISTRATIONS[0]["sha256"],
-        "v2.supersedes.sha256",
-    )
-
-    training = v1.get("lossfree_training_contract", {})
-    _require_preregistered_equal(
-        training.get("config_sha256"),
-        LOSSFREE_CONFIG_SHA256,
-        "lossfree_training_contract.config_sha256",
-    )
-    _require_preregistered_equal(
-        training.get("model_name"),
-        LOSSFREE_MODEL_NAME,
-        "lossfree_training_contract.model_name",
-    )
-    _require_preregistered_equal(
-        training.get("global_seed"),
-        LOSSFREE_GLOBAL_SEED,
-        "lossfree_training_contract.global_seed",
-    )
-    _require_preregistered_equal(
-        training.get("planned_step"),
-        CHECKPOINT_STEP,
-        "lossfree_training_contract.planned_step",
-    )
-    _require_preregistered_equal(
-        training.get("planned_state"),
-        CHECKPOINT_STATE,
-        "lossfree_training_contract.planned_state",
-    )
-    _require_preregistered_equal(
-        Path(training.get("planned_checkpoint", "")).name,
-        f"ckpt_step_{CHECKPOINT_STEP}.pth",
-        "lossfree_training_contract.planned_checkpoint",
-    )
-
-    data = v1.get("data_contract", {})
-    _require_preregistered_equal(
-        data.get("reuse_exact_manifest_from_protocol_sha256"),
-        BASE_PROTOCOL_SHA256,
-        "data_contract.reuse_exact_manifest_from_protocol_sha256",
-    )
-    _require_preregistered_equal(
-        data.get("split_case_counts"),
-        SPLIT_COUNTS,
-        "data_contract.split_case_counts",
-    )
-    _require_preregistered_equal(
-        data.get("blocks_zero_based"),
-        list(BLOCKS),
-        "data_contract.blocks_zero_based",
-    )
-    _require_preregistered_equal(
-        data.get("sigmas"),
-        list(SIGMAS),
-        "data_contract.sigmas",
-    )
-    _require_preregistered_equal(
-        data.get("bootstrap_resamples"),
-        BOOTSTRAP_RESAMPLES,
-        "data_contract.bootstrap_resamples",
-    )
-    _require_preregistered_equal(
-        data.get("permutation_resamples_per_cell"),
-        PERMUTATION_RESAMPLES,
-        "data_contract.permutation_resamples_per_cell",
-    )
-    _require_preregistered_equal(
-        data.get("paired_checkpoint_inputs"),
-        True,
-        "data_contract.paired_checkpoint_inputs",
-    )
-
-    safety = v1.get("stage_1_numerical_safety", {})
-    _require_preregistered_equal(
-        safety.get("required_complete_cases"),
-        SPLIT_COUNTS["plumbing"],
-        "stage_1_numerical_safety.required_complete_cases",
-    )
-    _require_preregistered_equal(
-        safety.get("required_finite_cells"),
-        SPLIT_COUNTS["plumbing"] * len(BLOCKS) * len(SIGMAS),
-        "stage_1_numerical_safety.required_finite_cells",
-    )
-    _require_preregistered_equal(
-        safety.get("required_route_mismatches"),
-        SAFETY_REQUIREMENTS["required_route_mismatches"],
-        "stage_1_numerical_safety.required_route_mismatches",
-    )
-    _require_preregistered_equal(
-        safety.get("maximum_native_output_drift"),
-        SAFETY_REQUIREMENTS["maximum_native_output_drift"],
-        "stage_1_numerical_safety.maximum_native_output_drift",
-    )
-    _require_preregistered_equal(
-        safety.get("maximum_native_relative_mse_drift"),
-        SAFETY_REQUIREMENTS["maximum_native_relative_mse_drift"],
-        "stage_1_numerical_safety.maximum_native_relative_mse_drift",
-    )
-
-    count_gate = v1.get("stage_2_count_balance_precondition", {})
-    count_requirements = {
-        "maximum_each_block_aggregate_count_cv": MAX_BLOCK_COUNT_CV,
-        "maximum_each_block_aggregate_count_gini": MAX_BLOCK_COUNT_GINI,
-        "maximum_each_block_count_ratio": MAX_BLOCK_COUNT_RATIO,
-        "minimum_fractional_reduction_vs_paired_base_for_each_block_cv": (
-            MIN_BLOCK_FRACTIONAL_REDUCTION
-        ),
-        "minimum_fractional_reduction_vs_paired_base_for_each_block_gini": (
-            MIN_BLOCK_FRACTIONAL_REDUCTION
-        ),
-        "required_all_experts_active": True,
+def _validate_paired_training(contracts):
+    """Require the pair to share its training setup apart from the Loss-Free bias."""
+    base = contracts["base"]
+    lossfree = contracts["lossfree"]
+    fields = {
+        "checkpoint_step": (base["step"], lossfree["step"]),
+        "learning_rate": (base["learning_rate"], lossfree["learning_rate"]),
     }
-    for field, expected in count_requirements.items():
-        _require_preregistered_equal(
-            count_gate.get(field),
-            expected,
-            f"stage_2_count_balance_precondition.{field}",
-        )
-
-    credit_gate = v1.get("stage_4_count_adjusted_credit_gate", {})
-    for split, expected_requirements in (
-        ("discovery", DISCOVERY_REQUIREMENTS),
-        ("confirmatory", CONFIRMATORY_REQUIREMENTS),
+    for field in (
+        "global_seed",
+        "world_size",
+        "global_batch_size",
+        "grad_mix",
+        "sampler_contract",
     ):
-        observed = credit_gate.get(split, {})
-        for field, expected in expected_requirements.items():
-            _require_preregistered_equal(
-                observed.get(field),
-                expected,
-                f"stage_4_count_adjusted_credit_gate.{split}.{field}",
-            )
-    _require_preregistered_equal(
-        credit_gate.get("confirmatory", {}).get("multiple_comparison_correction"),
-        "Holm",
-        "stage_4_count_adjusted_credit_gate.confirmatory.correction",
-    )
-
-    parameter_gate = v2.get("replacement_stage_3", {})
-    parameter_requirements = {
-        "cells_per_case": len(BLOCKS) * len(SIGMAS),
-        "minimum_active_experts_for_cell": MIN_PARAMETER_ACTIVE_EXPERTS,
-        "minimum_mean_spearman_each_checkpoint": MIN_PARAMETER_MEAN_SPEARMAN,
-        "minimum_image_bootstrap_lcb_each_checkpoint": MIN_PARAMETER_BOOTSTRAP_LCB,
-    }
-    for field, expected in parameter_requirements.items():
-        _require_preregistered_equal(
-            parameter_gate.get(field),
-            expected,
-            f"replacement_stage_3.{field}",
+        fields[field] = (
+            base["training_provenance"][field],
+            lossfree["training_provenance"][field],
         )
-    _require_preregistered_equal(
-        parameter_gate.get("numerical_validation", {}).get(
-            "maximum_relative_error"
-        ),
-        1e-5,
-        "replacement_stage_3.numerical_validation.maximum_relative_error",
+    mismatched = sorted(
+        field for field, (left, right) in fields.items() if left != right
     )
-
-
-def _load_base_protocol(protocol_path, preregistration_path, cases):
-    protocol_path = Path(protocol_path).resolve()
-    protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
-    if _json_sha256(protocol) != BASE_PROTOCOL_SHA256:
-        raise RuntimeError("Base protocol content hash changed")
-    hash_path = protocol_path.with_suffix(".sha256")
-    if hash_path.read_text(encoding="utf-8") != BASE_PROTOCOL_SHA256 + "\n":
-        raise RuntimeError("Base protocol SHA256 sidecar changed")
-    expected_cases = [case_protocol_view(case) for case in cases]
-    if protocol.get("manifest", {}).get("cases") != expected_cases:
-        raise RuntimeError("Base protocol manifest differs from selected cases")
-    for relative, expected in protocol["project_source_sha256"].items():
-        path = PROJECT_ROOT / relative
-        if not path.is_file() or sha256_file(path) != expected:
-            raise RuntimeError(f"Base protocol source changed: {relative}")
-    preregistration_path = Path(preregistration_path).resolve()
-    if sha256_file(preregistration_path) != protocol["preregister"]["sha256"]:
-        raise RuntimeError("Base preregistration changed")
-    return protocol
+    if mismatched:
+        raise RuntimeError(
+            "Base and Loss-Free checkpoints are not a matched pair: "
+            + ", ".join(mismatched)
+        )
+    return {field: left for field, (left, _) in fields.items()}
 
 
 def _build_assignments(cases, devices):
-    assignments = {}
-    for split in SPLIT_COUNTS:
-        split_cases = [case for case in cases if case["split"] == split]
-        rows = [
+    def rows(stage_cases):
+        return [
             {
                 "index": index,
                 "case_id": case["id"],
-                "checkpoint_role": "lossfree",
+                "checkpoint_roles": list(CHECKPOINT_ROLES),
                 "device": devices[(index - 1) % len(devices)],
             }
-            for index, case in enumerate(split_cases, start=1)
+            for index, case in enumerate(stage_cases, start=1)
         ]
+
+    assignments = {}
+    for split in SPLIT_COUNTS:
+        split_rows = rows([case for case in cases if case["split"] == split])
         if split == "plumbing":
-            assignments["plumbing"] = rows
+            assignments["plumbing"] = split_rows
         else:
-            assignments[f"{split}-count"] = rows
-            assignments[f"{split}-credit"] = rows
+            assignments[f"{split}-count"] = split_rows
+            assignments[f"{split}-credit"] = split_rows
     discovery_cases = [case for case in cases if case["split"] == "discovery"]
-    assignments["parameter"] = [
-        {
-            "index": index,
-            "case_id": case["id"],
-            "checkpoint_roles": ["base", "lossfree"],
-            "device": devices[(index - 1) % len(devices)],
-        }
-        for index, case in enumerate(
-            discovery_cases[:PARAMETER_CASE_COUNT],
-            start=1,
-        )
-    ]
+    assignments["parameter"] = rows(discovery_cases[:PARAMETER_CASE_COUNT])
     return assignments
 
 
 def _build_protocol(
     args,
     cases,
-    base_protocol,
-    base_contract,
-    lossfree_contract,
+    contracts,
+    pairing,
     base_cfg,
     lossfree_cfg,
     formula_validation,
 ):
-    preregistration_paths = _preregistration_paths(args)
-    _verify_preregistrations(preregistration_paths)
-    if lossfree_contract["config_sha256"] != LOSSFREE_CONFIG_SHA256:
-        raise RuntimeError("Loss-Free training config changed after preregistration")
     if not formula_validation["passed"]:
         raise RuntimeError("Exact parameter-credit formula failed autograd validation")
     model_metadata, source_hashes = _collect_project_source_hashes(
         base_cfg,
         lossfree_cfg,
     )
-    base_protocol_path = Path(args.base_protocol).resolve()
     return {
         "runner_version": RUNNER_VERSION,
         "cross_checkpoint_version": CROSS_CHECKPOINT_VERSION,
         "credit_balance_probe_version": PROBE_VERSION,
-        "locked_after_lossfree_step_200000_checkpoint_exists": True,
         "scientific_question": (
             "After load is balanced independently in each routed block, does "
             "stable count-adjusted suffix-gradient and parameter-side credit "
             "imbalance remain?"
         ),
         "claim_boundary": (
-            "This paired frozen-checkpoint gate does not establish optimizer "
+            "This paired frozen-checkpoint analysis does not establish optimizer "
             "benefit, semantic expert value, FID improvement, or novelty."
         ),
-        "effective_preregistrations": [
-            {
-                **row,
-                "path": str(Path(preregistration_paths[row["version"]]).resolve()),
-            }
-            for row in PREREGISTRATIONS
-        ],
-        "base_protocol": {
-            "path": str(base_protocol_path),
-            "canonical_json_sha256": BASE_PROTOCOL_SHA256,
-            "file_sha256": sha256_file(base_protocol_path),
-            "hash_sidecar": str(base_protocol_path.with_suffix(".sha256")),
-            "preregistration": str(Path(args.base_preregistration).resolve()),
-            "base_git": base_protocol["git"],
-        },
-        "checkpoints": {
-            "base": base_contract,
-            "lossfree": lossfree_contract,
-        },
+        "checkpoints": dict(contracts),
+        "pairing": pairing,
         "manifest": {
-            "reuse_base_protocol_sha256": BASE_PROTOCOL_SHA256,
             "selection_salt": SELECTION_SALT,
             "latent_root": str(Path(args.latent_root).resolve()),
             "cases": [case_protocol_view(case) for case in cases],
@@ -1127,7 +793,6 @@ def _build_protocol(
         "project_source_sha256": source_hashes,
         "git": _git_contract(),
         "environment": _runtime_environment(args.devices),
-        "base_results_dir": str(Path(args.base_results_dir).resolve()),
         "output_dir": str(Path(args.output_dir).resolve()),
     }
 
@@ -1201,20 +866,6 @@ def _verify_latent_input(protocol, case):
 
 
 def _verify_protocol_inputs(protocol, cases):
-    _verify_preregistrations({
-        row["version"]: row["path"]
-        for row in protocol["effective_preregistrations"]
-    })
-    base_protocol = _load_base_protocol(
-        protocol["base_protocol"]["path"],
-        protocol["base_protocol"]["preregistration"],
-        cases,
-    )
-    if base_protocol["git"] != protocol["base_protocol"]["base_git"]:
-        raise RuntimeError("Base protocol Git contract changed")
-    base_protocol_path = Path(protocol["base_protocol"]["path"])
-    if sha256_file(base_protocol_path) != protocol["base_protocol"]["file_sha256"]:
-        raise RuntimeError("Base protocol bytes changed")
     for contract in protocol["checkpoints"].values():
         _verify_checkpoint_input(contract)
     if [case_protocol_view(case) for case in cases] != protocol["manifest"]["cases"]:
@@ -1425,40 +1076,6 @@ def _load_stage_results(
     return results
 
 
-def _base_seal_payload(result, case_id):
-    return {
-        "version": 1,
-        "case_id": case_id,
-        "protocol_sha256": BASE_PROTOCOL_SHA256,
-        "result_sha256": _json_sha256(result),
-    }
-
-
-def _load_base_results(base_results_dir, split, cases):
-    results = []
-    for index, case in enumerate(cases, start=1):
-        path = (
-            Path(base_results_dir)
-            / split
-            / f"{index:03d}_{case['id']}.json"
-        )
-        seal_path = path.with_suffix(path.suffix + ".seal.json")
-        if not path.is_file() or not seal_path.is_file():
-            raise RuntimeError(f"Sealed Base result is missing: {path}")
-        result = json.loads(path.read_text(encoding="utf-8"))
-        seal = json.loads(seal_path.read_text(encoding="utf-8"))
-        if seal != _base_seal_payload(result, case["id"]):
-            raise RuntimeError(f"Base result seal mismatch: {path}")
-        if result.get("protocol_sha256") != BASE_PROTOCOL_SHA256:
-            raise RuntimeError("Base result belongs to another protocol")
-        if result.get("batch_case") != case_protocol_view(case):
-            raise RuntimeError("Base result case metadata changed")
-        if result.get("credit_balance_probe_version") != PROBE_VERSION:
-            raise RuntimeError("Base result probe version changed")
-        results.append(result)
-    return results
-
-
 def _summary_path(output_dir, name):
     return Path(output_dir) / f"{name}-summary.json"
 
@@ -1526,7 +1143,7 @@ def _run_device_cases(payload):
             device,
         )
         _verify_checkpoint_input(checkpoint)
-        if state_name != CHECKPOINT_STATE or checkpoint_step != CHECKPOINT_STEP:
+        if state_name != CHECKPOINT_STATE or checkpoint_step != checkpoint["step"]:
             raise RuntimeError("Worker loaded the wrong checkpoint state or step")
         validate_cross_checkpoint_model(
             model,
@@ -1756,6 +1373,31 @@ def _numerical_safety(results, require_parameter=False, expected_bias=None):
     }
 
 
+def _load_paired_results(output_dir, cases, stage, protocol, protocol_sha256):
+    return {
+        role: _load_stage_results(
+            output_dir,
+            cases,
+            stage,
+            role,
+            protocol,
+            protocol_sha256,
+        )
+        for role in CHECKPOINT_ROLES
+    }
+
+
+def _paired_safety(results_by_role, require_parameter=False):
+    return {
+        role: _numerical_safety(
+            results,
+            require_parameter=require_parameter,
+            expected_bias=role == "lossfree",
+        )
+        for role, results in results_by_role.items()
+    }
+
+
 def _require_passed_summary(output_dir, name, protocol_sha256):
     summary = _load_summary(output_dir, name, protocol_sha256)
     if not summary.get("passed"):
@@ -1775,30 +1417,35 @@ def _stage_plumbing(
     _run_stage_cases(
         "plumbing",
         split_cases,
-        ("lossfree",),
+        CHECKPOINT_ROLES,
         devices,
         protocol_path,
         protocol_sha256,
     )
-    results = _load_stage_results(
+    results = _load_paired_results(
         output_dir,
         split_cases,
         "plumbing",
-        "lossfree",
         protocol,
         protocol_sha256,
     )
-    legacy_gate = aggregate_credit_balance(results, "plumbing")
-    safety = _numerical_safety(results, expected_bias=True)
-    passed = bool(legacy_gate["passed"] and safety["passed"])
+    probe_safety = _paired_safety(results)
+    base_compatible_safety = {
+        role: aggregate_credit_balance(role_results, "plumbing")
+        for role, role_results in results.items()
+    }
+    passed = bool(all(
+        probe_safety[role]["passed"] and base_compatible_safety[role]["passed"]
+        for role in CHECKPOINT_ROLES
+    ))
     path = _publish_summary(
         output_dir,
         "plumbing",
         {
             "case_ids": [case["id"] for case in split_cases],
             "efficacy_hidden": True,
-            "probe_safety": safety,
-            "base_compatible_safety": legacy_gate,
+            "probe_safety": probe_safety,
+            "base_compatible_safety": base_compatible_safety,
             "passed": passed,
         },
         protocol_sha256,
@@ -1809,7 +1456,6 @@ def _stage_plumbing(
 def _stage_discovery_count(
     output_dir,
     cases,
-    base_results_dir,
     devices,
     protocol,
     protocol_path,
@@ -1820,31 +1466,28 @@ def _stage_discovery_count(
     _run_stage_cases(
         "discovery-count",
         split_cases,
-        ("lossfree",),
+        CHECKPOINT_ROLES,
         devices,
         protocol_path,
         protocol_sha256,
     )
-    lossfree_results = _load_stage_results(
+    results = _load_paired_results(
         output_dir,
         split_cases,
         "discovery-count",
-        "lossfree",
         protocol,
         protocol_sha256,
     )
-    base_results = _load_base_results(
-        base_results_dir,
-        "discovery",
-        split_cases,
-    )
-    safety = _numerical_safety(lossfree_results, expected_bias=True)
+    safety = _paired_safety(results)
     count_balance = evaluate_count_balance(
-        lossfree_results,
-        base_results,
+        results["lossfree"],
+        results["base"],
         "discovery",
     )
-    passed = bool(safety["passed"] and count_balance["passed"])
+    passed = bool(
+        all(row["passed"] for row in safety.values())
+        and count_balance["passed"]
+    )
     path = _publish_summary(
         output_dir,
         "discovery-count",
@@ -1863,7 +1506,6 @@ def _stage_discovery_count(
 def _stage_parameter_validation(
     output_dir,
     cases,
-    base_results_dir,
     devices,
     protocol,
     protocol_path,
@@ -1879,31 +1521,20 @@ def _stage_parameter_validation(
     _run_stage_cases(
         "parameter",
         parameter_cases,
-        ("base", "lossfree"),
+        CHECKPOINT_ROLES,
         devices,
         protocol_path,
         protocol_sha256,
     )
-    parameter_results = {
-        role: _load_stage_results(
-            output_dir,
-            parameter_cases,
-            "parameter",
-            role,
-            protocol,
-            protocol_sha256,
-        )
-        for role in ("base", "lossfree")
-    }
+    parameter_results = _load_paired_results(
+        output_dir,
+        parameter_cases,
+        "parameter",
+        protocol,
+        protocol_sha256,
+    )
     parameter_gate = aggregate_parameter_credit_validation(parameter_results)
-    parameter_safety = {
-        role: _numerical_safety(
-            results,
-            require_parameter=True,
-            expected_bias=role == "lossfree",
-        )
-        for role, results in parameter_results.items()
-    }
+    parameter_safety = _paired_safety(parameter_results, require_parameter=True)
     parameter_passed = bool(
         parameter_gate["passed"]
         and all(row["passed"] for row in parameter_safety.values())
@@ -1923,22 +1554,16 @@ def _stage_parameter_validation(
     if not parameter_passed:
         return parameter_path, False
 
-    count_results = _load_stage_results(
+    count_results = _load_paired_results(
         output_dir,
         discovery_cases,
         "discovery-count",
-        "lossfree",
         protocol,
         protocol_sha256,
     )
-    base_results = _load_base_results(
-        base_results_dir,
-        "discovery",
-        discovery_cases,
-    )
     recomputed_count = evaluate_count_balance(
-        count_results,
-        base_results,
+        count_results["lossfree"],
+        count_results["base"],
         "discovery",
     )
     if recomputed_count != discovery_count["count_balance"]:
@@ -1946,34 +1571,36 @@ def _stage_parameter_validation(
     _run_stage_cases(
         "discovery-credit",
         discovery_cases,
-        ("lossfree",),
+        CHECKPOINT_ROLES,
         devices,
         protocol_path,
         protocol_sha256,
     )
-    lossfree_results = _load_stage_results(
+    credit_results = _load_paired_results(
         output_dir,
         discovery_cases,
         "discovery-credit",
-        "lossfree",
         protocol,
         protocol_sha256,
     )
-    count_replay = evaluate_count_replay(
-        count_results,
-        lossfree_results,
+    count_replay = {
+        role: evaluate_count_replay(
+            count_results[role],
+            credit_results[role],
+            "discovery",
+        )
+        for role in CHECKPOINT_ROLES
+    }
+    credit_safety = _paired_safety(credit_results)
+    lossfree_credit = aggregate_credit_balance(
+        credit_results["lossfree"],
         "discovery",
     )
-    credit_safety = _numerical_safety(
-        lossfree_results,
-        expected_bias=True,
-    )
-    lossfree_credit = aggregate_credit_balance(lossfree_results, "discovery")
-    base_credit = aggregate_credit_balance(base_results, "discovery")
+    base_credit = aggregate_credit_balance(credit_results["base"], "discovery")
     discovery_passed = bool(
         recomputed_count["passed"]
-        and count_replay["passed"]
-        and credit_safety["passed"]
+        and all(row["passed"] for row in count_replay.values())
+        and all(row["passed"] for row in credit_safety.values())
         and lossfree_credit["passed"]
         and base_credit["passed"]
     )
@@ -1998,7 +1625,6 @@ def _stage_parameter_validation(
 def _stage_confirmatory(
     output_dir,
     cases,
-    base_results_dir,
     devices,
     protocol,
     protocol_path,
@@ -2014,31 +1640,28 @@ def _stage_confirmatory(
     _run_stage_cases(
         "confirmatory-count",
         split_cases,
-        ("lossfree",),
+        CHECKPOINT_ROLES,
         devices,
         protocol_path,
         protocol_sha256,
     )
-    count_results = _load_stage_results(
+    count_results = _load_paired_results(
         output_dir,
         split_cases,
         "confirmatory-count",
-        "lossfree",
         protocol,
         protocol_sha256,
     )
-    base_results = _load_base_results(
-        base_results_dir,
-        "confirmatory",
-        split_cases,
-    )
-    count_safety = _numerical_safety(count_results, expected_bias=True)
+    count_safety = _paired_safety(count_results)
     count_balance = evaluate_count_balance(
-        count_results,
-        base_results,
+        count_results["lossfree"],
+        count_results["base"],
         "confirmatory",
     )
-    count_passed = bool(count_safety["passed"] and count_balance["passed"])
+    count_passed = bool(
+        all(row["passed"] for row in count_safety.values())
+        and count_balance["passed"]
+    )
     count_path = _publish_summary(
         output_dir,
         "confirmatory-count",
@@ -2057,100 +1680,73 @@ def _stage_confirmatory(
     _run_stage_cases(
         "confirmatory-credit",
         split_cases,
-        ("lossfree",),
+        CHECKPOINT_ROLES,
         devices,
         protocol_path,
         protocol_sha256,
     )
-    lossfree_results = _load_stage_results(
+    credit_results = _load_paired_results(
         output_dir,
         split_cases,
         "confirmatory-credit",
-        "lossfree",
         protocol,
         protocol_sha256,
     )
-    count_replay = evaluate_count_replay(
-        count_results,
-        lossfree_results,
-        "confirmatory",
-    )
-    credit_safety = _numerical_safety(
-        lossfree_results,
-        expected_bias=True,
-    )
+    count_replay = {
+        role: evaluate_count_replay(
+            count_results[role],
+            credit_results[role],
+            "confirmatory",
+        )
+        for role in CHECKPOINT_ROLES
+    }
+    credit_safety = _paired_safety(credit_results)
     lossfree_credit = aggregate_credit_balance(
-        lossfree_results,
+        credit_results["lossfree"],
         "confirmatory",
         discovery_summary=discovery_credit["lossfree_credit_gate"],
     )
-    discovery_cases = [case for case in cases if case["split"] == "discovery"]
-    base_discovery_results = _load_base_results(
-        base_results_dir,
-        "discovery",
-        discovery_cases,
-    )
-    base_discovery_credit = aggregate_credit_balance(
-        base_discovery_results,
-        "discovery",
-    )
     base_credit = aggregate_credit_balance(
-        base_results,
+        credit_results["base"],
         "confirmatory",
-        discovery_summary=base_discovery_credit,
+        discovery_summary=discovery_credit["paired_base_credit_gate"],
     )
     passed = bool(
-        count_replay["passed"]
-        and credit_safety["passed"]
+        all(row["passed"] for row in count_replay.values())
+        and all(row["passed"] for row in credit_safety.values())
         and lossfree_credit["passed"]
         and base_credit["passed"]
     )
-    payload = {
-        "case_ids": [case["id"] for case in split_cases],
-        "count_summary": str(count_path),
-        "count_balance": count_balance,
-        "count_replay": count_replay,
-        "probe_safety": credit_safety,
-        "lossfree_credit_gate": lossfree_credit,
-        "paired_base_credit_gate": base_credit,
-        "passed": passed,
-    }
     path = _publish_summary(
         output_dir,
         "confirmatory",
-        payload,
+        {
+            "case_ids": [case["id"] for case in split_cases],
+            "count_summary": str(count_path),
+            "count_balance": count_balance,
+            "count_replay": count_replay,
+            "probe_safety": credit_safety,
+            "lossfree_credit_gate": lossfree_credit,
+            "paired_base_credit_gate": base_credit,
+            "passed": passed,
+        },
         protocol_sha256,
     )
-    return path, bool(payload["passed"])
+    return path, passed
 
 
 def build_parser():
     parser = argparse.ArgumentParser(
         description=(
-            "Run the sealed Base/Loss-Free step-200K load and exact-credit gate. "
-            "Every locked input is passed explicitly and accepted only when its "
-            "content matches the sealed hash."
+            "Compare a matched Base/Loss-Free checkpoint pair: per-block load "
+            "balance, count-adjusted suffix-gradient credit and exact "
+            "parameter-side empirical Fisher."
         )
     )
     parser.add_argument(
-        "--base-protocol",
+        "--base-ckpt",
         required=True,
-        help="protocol.json of the sealed Base step-200K credit-balance gate",
-    )
-    parser.add_argument(
-        "--base-preregistration",
-        required=True,
-        help="preregistration JSON whose SHA256 the Base protocol records",
-    )
-    parser.add_argument(
-        "--base-results-dir",
-        required=True,
-        help="per-case result directory of the sealed Base gate",
-    )
-    parser.add_argument(
-        "--base-weights-ckpt",
-        required=True,
-        help="Base seed-0 step-200000 checkpoint",
+        help="ProMoE_TC_B checkpoint written by the current train.py",
     )
     parser.add_argument(
         "--base-config",
@@ -2160,30 +1756,17 @@ def build_parser():
     parser.add_argument(
         "--lossfree-ckpt",
         required=True,
-        help=(
-            "Loss-Free step-200000 checkpoint, kept under its run's own "
-            "<run>/checkpoints/ directory"
-        ),
+        help="ProMoE_TC_B_lossfree checkpoint from a matched training run",
     )
     parser.add_argument(
         "--lossfree-config",
         required=True,
-        help="preregistered Loss-Free training config",
-    )
-    parser.add_argument(
-        "--preregistration-v1",
-        required=True,
-        help="Loss-Free preregistration v1 JSON",
-    )
-    parser.add_argument(
-        "--preregistration-v2",
-        required=True,
-        help="Loss-Free preregistration v2 JSON",
+        help="config the Loss-Free checkpoint was trained with",
     )
     parser.add_argument("--latent-root", default=DEFAULT_LATENT_ROOT)
     parser.add_argument(
         "--output-dir",
-        type=_repository_output_dir,
+        type=repository_output_dir,
         required=True,
         help="git-ignored directory inside this repository",
     )
@@ -2204,53 +1787,37 @@ def build_parser():
 def main():
     args = build_parser().parse_args()
     output_dir = Path(args.output_dir).resolve()
-    base_results_dir = Path(args.base_results_dir).resolve()
-    base_config = Path(args.base_config).resolve()
-    lossfree_config = Path(args.lossfree_config).resolve()
+    checkpoints = {
+        "base": Path(args.base_ckpt).resolve(),
+        "lossfree": Path(args.lossfree_ckpt).resolve(),
+    }
+    configs = {
+        "base": Path(args.base_config).resolve(),
+        "lossfree": Path(args.lossfree_config).resolve(),
+    }
+    model_names = {"base": MODEL_NAME, "lossfree": LOSSFREE_MODEL_NAME}
     cases = select_cases(args.latent_root)
-    base_protocol = _load_base_protocol(
-        args.base_protocol,
-        args.base_preregistration,
-        cases,
-    )
-    base_cfg = load_runtime_cfg(base_config)
-    lossfree_cfg = load_runtime_cfg(lossfree_config)
-    preregistrations = _verify_preregistrations(_preregistration_paths(args))
-    expected_training = _validate_preregistered_run_inputs(
-        args,
-        base_cfg,
-        lossfree_cfg,
-        preregistrations,
-    )
+    base_cfg = load_runtime_cfg(configs["base"])
+    lossfree_cfg = load_runtime_cfg(configs["lossfree"])
     formula_validation = validate_exact_parameter_credit_formula()
     if not formula_validation["passed"]:
         raise RuntimeError("Exact parameter-credit formula failed autograd validation")
-    base_contract = _checkpoint_contract(
-        args.base_weights_ckpt,
-        base_config,
-        MODEL_NAME,
-        expected_sha256=EXPECTED_WEIGHTS_SHA256,
-        expected_size=EXPECTED_WEIGHTS_SIZE,
-    )
-    locked_base = base_protocol["checkpoint"]
-    if (
-        base_contract["sha256"] != locked_base["weights_sha256"]
-        or base_contract["size"] != locked_base["weights_size"]
-        or base_contract["config_sha256"] != locked_base["config_sha256"]
-    ):
-        raise RuntimeError("Base checkpoint contract differs from its sealed protocol")
-    lossfree_contract = _checkpoint_contract(
-        args.lossfree_ckpt,
-        lossfree_config,
-        LOSSFREE_MODEL_NAME,
-        expected_training=expected_training,
-    )
+    dataset_identity = _latent_dataset_identity(args.latent_root)
+    contracts = {
+        role: _checkpoint_contract(
+            checkpoints[role],
+            configs[role],
+            model_names[role],
+            dataset_identity,
+        )
+        for role in CHECKPOINT_ROLES
+    }
+    pairing = _validate_paired_training(contracts)
     protocol = _build_protocol(
         args=args,
         cases=cases,
-        base_protocol=base_protocol,
-        base_contract=base_contract,
-        lossfree_contract=lossfree_contract,
+        contracts=contracts,
+        pairing=pairing,
         base_cfg=base_cfg,
         lossfree_cfg=lossfree_cfg,
         formula_validation=formula_validation,
@@ -2261,7 +1828,7 @@ def main():
     )
     print(f"Locked protocol: {protocol_path}")
     print(f"Protocol SHA256: {protocol_sha256}")
-    print(f"Loss-Free checkpoint SHA256: {lossfree_contract['sha256']}")
+    print(f"Paired checkpoint step: {pairing['checkpoint_step']}")
     if args.prepare_only:
         return
 
@@ -2274,45 +1841,20 @@ def main():
             raise RuntimeError(
                 "Another cross-checkpoint orchestrator is running"
             ) from error
-        if args.stage == "plumbing":
-            summary_path, passed = _stage_plumbing(
-                output_dir,
-                cases,
-                args.devices,
-                protocol,
-                protocol_path,
-                protocol_sha256,
-            )
-        elif args.stage == "discovery":
-            summary_path, passed = _stage_discovery_count(
-                output_dir,
-                cases,
-                base_results_dir,
-                args.devices,
-                protocol,
-                protocol_path,
-                protocol_sha256,
-            )
-        elif args.stage == "parameter":
-            summary_path, passed = _stage_parameter_validation(
-                output_dir,
-                cases,
-                base_results_dir,
-                args.devices,
-                protocol,
-                protocol_path,
-                protocol_sha256,
-            )
-        else:
-            summary_path, passed = _stage_confirmatory(
-                output_dir,
-                cases,
-                base_results_dir,
-                args.devices,
-                protocol,
-                protocol_path,
-                protocol_sha256,
-            )
+        run_stage = {
+            "plumbing": _stage_plumbing,
+            "discovery": _stage_discovery_count,
+            "parameter": _stage_parameter_validation,
+            "confirmatory": _stage_confirmatory,
+        }[args.stage]
+        summary_path, passed = run_stage(
+            output_dir,
+            cases,
+            args.devices,
+            protocol,
+            protocol_path,
+            protocol_sha256,
+        )
         _assert_protocol_unchanged(protocol_path, protocol_sha256)
         _verify_protocol_inputs(protocol, cases)
         print(json.dumps({
