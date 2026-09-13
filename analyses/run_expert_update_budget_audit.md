@@ -56,6 +56,11 @@ Seed 0 和尚未训练完成的 Seed 1 使用完全相同的门槛：
 - `analyses/expert_update_budget/manifests/expert_update_budget_seed0_v1.json`
 - `analyses/expert_update_budget/manifests/expert_update_budget_seed1_v1.json`
 
+这两份协议里的 `config_basename` 指向已经删除的 `004_ProMoE_B_fresh_routing_audit_s0.yaml`
+和 `004_ProMoE_B_seed1_control.yaml`（连同 `fresh_routing` 系列一起移除，权重也已不在实验
+服务器上）。协议本身是当时封存的记录，保留它们是为了留住锁定的门槛和来源集合；要重跑这项
+审计，需要自己的配置和新的协议文件，不要改写这两份已封存的记录。
+
 ## 与已有工作的边界
 
 - GradNorm（ICML 2018）已经研究多任务损失的梯度幅度平衡；简单按 expert 梯度范数缩放不新。
@@ -75,8 +80,8 @@ Seed 0 和尚未训练完成的 Seed 1 使用完全相同的门槛：
 /home/dev/miniforge3/envs/promoe/bin/python \
   analyses/run_expert_update_budget_audit.py \
   --manifest analyses/expert_update_budget/manifests/expert_update_budget_seed0_v1.json \
-  --config configs/004_ProMoE_B_fresh_routing_audit_s0.yaml \
-  --checkpoint-dir outputs/ProMoE_TC_B/004_ProMoE_B_fresh_routing_audit_s0/checkpoints \
+  --config configs/<seed0-trajectory>.yaml \
+  --checkpoint-dir outputs/ProMoE_TC_B/<seed0-trajectory>/checkpoints \
   --output-dir analyses/archvied_analyses/2026-08-30/expert_update_budget_seed0_v1
 ```
 
@@ -91,7 +96,7 @@ Seed 0 和尚未训练完成的 Seed 1 使用完全相同的门槛：
 
 ## Seed 1 复验
 
-Seed 1 到 300K 后，用相同程序和提前提交的 Seed 1 协议运行。Seed 1 配置已经保存在 `configs/004_ProMoE_B_seed1_control.yaml`，输出目录改为对应的 Seed 1 路径。
+Seed 1 到 300K 后，用相同程序和提前提交的 Seed 1 协议运行，输出目录改为对应的 Seed 1 路径。
 
 ## 解释限制
 

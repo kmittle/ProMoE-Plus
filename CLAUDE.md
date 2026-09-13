@@ -14,6 +14,29 @@ conda create -n promoe python=3.10 -y && conda activate promoe
 pip install -r requirements.txt
 ```
 
+### Unit Tests
+There are ~49 `unittest` modules (no pytest config, no top-level `tests/` dir) — they
+cover the analysis probes/gates, the evaluator, the DINO route table contract, and the
+suspended signal-balance package. Run them from the **repo root** so package imports
+resolve, using an interpreter that has torch:
+
+```bash
+# One module (works for any test home — plain namespace-package path)
+python -m unittest analyses.routing_metric.test_phase_metric -v
+# One package's suite — `discover -s` requires the start dir to have __init__.py
+python -m unittest discover -s analyses/timestep_utility -t .
+# The signal-balance suite
+python -m unittest discover -s research_on_expert_learning_signal_balance/tests -t .
+```
+Test homes with `__init__.py` (so `discover -s <dir> -t .` works):
+`analyses/{denoising_regret,dino_utility_neighborhood,expert_function,expert_update_budget,phase_default,routing_metric,routing_translation,timestep_utility}/`,
+`research_on_expert_learning_signal_balance/tests/`.
+`evaluation/`, `models/` and `preprocess/` hold `test_*.py` but have **no** `__init__.py`, so
+`discover -s` there fails with "Start directory is not importable" — name those modules
+directly instead (`python -m unittest models.test_models_ProMoE_TC_dino_route`).
+`evaluation/test_evaluator_device.py` additionally imports TensorFlow, so it only runs in
+the `fid_eval` env. New analysis helper subpackages are expected to ship their own `test_*.py`.
+
 ### Training
 ```bash
 # Standard ProMoE training
@@ -67,7 +90,11 @@ Scripts under `scripts/` run train + sample + eval in one go. Organized by exper
 | `scripts/lossfree/` | Loss-Free Balancing bias, `bias_update_rate` sweep (`u1e4` / `u1e3` / `u1e2`) |
 | `scripts/lsreg/` | Label-smoothing regularization on routing contrastive: `fixed` (ε sweep), `dyn{both,over,under}`, `diag_idea1`/`diag_inv` (diagonal correction, strength sweep) |
 | `scripts/dagfuse_shared/` | Shared-expert augmentation: `dense` (prev-Dense-block source), `densenet` (all prev-MoE shared), `sharedroute` (router-selected prev-MoE, top1/top2), `region` (Block-AttnRes; `shared`/`resid` attach × `dag`/`softmax`) |
-| `scripts/fresh_routing/` | Strict-provenance Base ProMoE control for the longitudinal routing audit; no model change, fixed GitHub `repa` tip verification, fresh output only |
+| `scripts/capacity_combo/` | Capacity-aware expert-responsibility factorial study: single/partial/full combinations of **H** (hetero experts), **R** (token-count LS-Reg), **O** (expert-output regularizer), **P** (expert-param regularizer) — `H`, `HO`, `HP`, `HR`, `HOP`, `HRO`, `HRP`, `HROP`, plus `HO_norm`/`HROP_norm`. Also holds the gated queue supervisors (`run_capacity_combo_queue.sh`, `hrop_gate_then_q0p4.sh`) and `capacity_combo_eval_helpers.sh` |
+| `scripts/dino_route/` | DINO-assisted load-aware routing: `uncertainty` (s0 / s0p02) and `margin_gate` (v1 / v2-corrected) arms, plus their label-shuffled `permutation_seed` controls |
+| `scripts/phase_metric/` | Phase-conditioned routing-metric arms: `base_s0` control, `phase_metric`, and a timestep-shuffled control |
+| `scripts/fdrr/` | Teacher-free Base-FDRR (`ProMoE_TC_B_FDRR`) plus its seed-0 control |
+| `scripts/credit_redistribution/` | **Archived — must not be launched.** Mid-checkpoint 301K→321K continuation arms; `train.py` and `analyses/run_credit_redistribution_gate.py` hard-fail on them (see `research_on_expert_learning_signal_balance/README.md`) |
 
 ```bash
 # Example: run a MoS experiment end-to-end
@@ -118,7 +145,7 @@ incompatible GPU architectures in `--eval-device auto`.
 - The YAML filename (minus extension) becomes `custom_cfg_name`, which determines the output subdirectory: `outputs/{model_name}/{custom_cfg_name}/` containing `checkpoints/`, `training.log`, `sample.log`, `tensorboard/`, and `sample/step{N}/`.
 
 ### Model Registry
-`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, and `train_with_mae.py` each define a `model_dict` mapping `model_name` strings to `(ModelClass, config_key)` pairs. `sample.py` merges all four dicts so it can sample from any model variant. Adding a new model requires an entry in the appropriate training script's `model_dict`. Note: `train.py` hosts most model families (base DiT, baselines, ProMoE-TC/EC, ProMoE_EC_BC batch-choice, proto_t timestep-conditioned-prototype (TC + EC-BC), anchor (R3-VAE), proto_choice (prototype-choice contrastive), lbcontra (load-balance-aware routing contrastive), dagfuse (DAG-MoE shared↔cond fusion), dagfuse_shared (shared-expert augmentation: dense/densenet/sharedroute/region), adepth (adaptive routed-FFN depth), lossfree (loss-free balancing bias), teacher-free Base-FDRR (`ProMoE_TC_B_FDRR`), lsreg (routing-contrastive label smoothing), noise expert variants, expert contrastive); `train_with_MoS_repa.py` hosts MoS, MoS Naive, MoS Naive Choice (B/L/XL), MoS Naive Choice Sep, MoS Naive Choice Fused, MoS Naive Choice Blockwise, MoS Choice PerBlock, Multi-Align, Teacher-Affinity Multi-Align, SRSR Multi-Align, TCEG Multi-Align, FDRR Multi-Align (`ProMoE_TC_REPA_Multi_Align_FDRR_B`), and Cross-Attention variants (both standard REPA and MoS); `train_with_mae.py` only hosts group_align models.
+`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, and `train_with_mae.py` each define a `model_dict` mapping `model_name` strings to `(ModelClass, config_key)` pairs. `sample.py` merges all four dicts so it can sample from any model variant. Adding a new model requires an entry in the appropriate training script's `model_dict`. Note: `train.py` hosts most model families (base DiT, baselines, ProMoE-TC/EC, ProMoE_EC_BC batch-choice, ProMoE_EC_BC_hetero, proto_t timestep-conditioned-prototype (TC + EC-BC), anchor (R3-VAE), proto_choice (prototype-choice contrastive), lbcontra (load-balance-aware routing contrastive), dagfuse (DAG-MoE shared↔cond fusion), dagfuse_shared (shared-expert augmentation: dense/densenet/sharedroute/region), adepth (adaptive routed-FFN depth), lossfree (loss-free balancing bias), teacher-free Base-FDRR (`ProMoE_TC_B_FDRR`), lsreg (routing-contrastive label smoothing), capacity_combo (H/R/O/P factorial), dino_route (DINO class-uncertainty load-aware routing), noise expert variants, expert contrastive); `train_with_MoS_repa.py` hosts MoS, MoS Naive, MoS Naive Choice (B/L/XL), MoS Naive Choice Sep, MoS Naive Choice Fused, MoS Naive Choice Blockwise, MoS Choice PerBlock, Multi-Align, Teacher-Affinity Multi-Align, SRSR Multi-Align, TCEG Multi-Align, FDRR Multi-Align (`ProMoE_TC_REPA_Multi_Align_FDRR_B`), and Cross-Attention variants (both standard REPA and MoS); `train_with_mae.py` only hosts group_align models.
 
 ### Model Hierarchy (in `models/`)
 All model files follow the `models_*.py` naming convention. Key layers:
@@ -156,6 +183,9 @@ All model files follow the `models_*.py` naming convention. Key layers:
 | Loss-Free Balancing | `_lossfree.py` | `train.py` | Self-contained `ProMoE_TC` copy; DeepSeek loss-free balancing (arXiv 2408.15664): a per-prototype `expert_bias` **buffer (non-Parameter, no grad)** is added to the cond-token cos-sim for **top-1 selection only**; expert output weights use the **unbiased** cos-sim (zero interference gradient — orthogonal to the contrastive loss, which is unchanged). After each forward, no-grad update `b_i += bias_update_rate·sign(mean_c − c_i)` with cross-GPU `all_reduce`. Config `use_lossfree_bias`, `bias_update_rate` (u-sweep). Step-0-identical to base (bias init 0), non-strict loadable. Key `ProMoE_TC_B_lossfree`; forward() plain tensor. |
 | LS-Reg (label smoothing) | `_lsreg.py` | `train.py` | Self-contained `ProMoE_TC` copy; only the routing-contrastive loss changes. Two `ls_apply` modes: `"label"` smooths the InfoNCE soft target by ε (per-codeword load-dependent when `ls_mode` is dynamic, constant when `fixed`); `"diag"` adds a `.detach()`ed load-proportional offset directly on the similarity-matrix diagonal (idea-1: overloaded codewords pushed +, `ls_diag_sign=-1` inverts). Step-0-identical to base ProMoE (no new params). Key `ProMoE_TC_B_lsreg`; forward() plain tensor (`AddAuxiliaryLoss`). |
 | DAG-Fuse Shared (shared-expert augment) | `_dagfuse_dense.py`, `_dagfuse_densenet.py`, `_dagfuse_sharedroute.py`, `_dagfuse_region.py` | `train.py` | Self-contained `ProMoE_TC` copies that augment each MoE block's **shared-expert output** via a zero-init gated `SharedAugmentModule` (`fuse_mech` `dag`/`softmax`, `fuse_dim` d_g=64). Source differs per idea: `dense` = previous Dense block's output (MoE block-entry `x`); `densenet` = all previous MoE blocks' raw shared outputs (forward-local list, not detached); `sharedroute` = per-block router picks top-k (`fuse_top_k` 1/2) previous-MoE shared outputs; `region` = Block-AttnRes over previous fixed-size regions (`region_size`=3), `region_attach` `shared` (augment shared out) or `resid` (zero-init attn-residual on the main stream — structurally-but-not-behaviorally routing-preserving). `fuse_apply` `none`(=base)/`cond`/`all`. up_proj zero-init ⇒ step-0-identical (non-strict loadable). Keys `ProMoE_TC_B_dagfuse_{dense,densenet,sharedroute,region}`; forward() plain tensor. |
+| Capacity-Combo (H/R/O/P) | `_capacity_combo.py` | `train.py` | Extends `_expert_contra.py` (kept intact for historical runs) with `CapacityAwareSparseMoeBlock`. Four orthogonal training-only factors combined factorially: **H** heterogeneous routed widths at the original mean intermediate size, **R** token-count-driven LS-Reg diagonal offset (`ls_balance_mode`, `capacity_aware_lsreg`), **O** expert-**output** regularizer, **P** expert-**param** regularizer — `expert_contrastive_mode: dual_additive` scores O and P separately then weights them (`expert_contrastive_output_lam` / `_param_lam`, independent temperatures). **Inference compute is unchanged.** Key `ProMoE_TC_B_capacity_combo`. |
+| DINO-Route (load-aware) | `_dino_route.py` | `train.py` | DINOv2 is used **offline only** — `preprocess/build_dino_route_table.py` produces one per-ImageNet-class uncertainty scalar; no teacher feature enters the backbone and nothing is feature-aligned. At train time an uncertain class gets a small **detached** preference for experts whose recent conditional load is low; expert output weights keep the original cosine value. The table is contract-checked (`preprocess/dino_route_table_contract.py`: `table_version` + `table_method` + sha256), so a legacy config can never silently consume a corrected table. Arms: `uncertainty` / `margin_gate`, each with a `permutation_seed` label-shuffled control. Key `ProMoE_TC_B_dino_route`. |
+| Phase-Metric (config flag on base) | `models/phase_metric.py` | `train.py` | **Not a separate model file** — `PhaseConditionedRoutingMetric` is imported by `models_ProMoE_TC.py` and enabled per-config via `MoE_config.phase_metric_config.enabled`. A bounded low-rank trilinear residual over the existing token↔prototype cosine affinity, conditioned on the scalar diffusion phase through Fourier bands. The phase projection is zero-init ⇒ step-0 routing and active-expert count are unchanged. `shuffle_timestep: True` is the built-in control arm. Model key stays `ProMoE_TC_B`. |
 | Ablations | `_sigmoid.py`, `_symmetric.py` | `train.py` | Routing gating variants |
 
 **REPA model forward() behavior**: Returns `(pred, zs_proj)` during training (eval returns only `pred`). The `_repa_shared.py` variant aligns shared expert output specifically — requires `encoder_depth` to point to a MoE block.
@@ -229,6 +259,9 @@ Core parameters: `num_routed_experts` (typically 12), `top_k` (experts per token
 - `use_lossfree_bias` / `bias_update_rate` (lossfree variant only): `use_lossfree_bias` (default `False`) enables the per-prototype `expert_bias` buffer on top-1 selection; `bias_update_rate` is the DeepSeek update step `u` (sweep `1e-4`/`1e-3`/`1e-2`, paper-best ≈`1e-3`). Buffer is non-trainable (no grad), step-0-identical to base ProMoE (non-strict loadable).
 - `ls_mode` / `ls_apply` (lsreg variant only): `ls_apply` `"label"` (default; soft-target label smoothing on the InfoNCE) with `ls_mode` `off`/`fixed`(const ε=`ls_eps_base`)/`dyn_both`/`dyn_under`/`dyn_over` (load-dependent ε from `ls_slope`, `ls_eps_cap`, `ls_load_map` `linear`/`invsqrt`, `ls_warmup`), or `ls_apply` `"diag"` (idea-1: `.detach()`ed load-proportional offset on the similarity diagonal, `ls_diag_strength` sweep, `ls_diag_sign` `+1` original / `-1` inverse). `train.py` logs realized mean ε to TensorBoard (`lsreg/mean_eps`). Step-0-identical to base ProMoE (no new params).
 - `fuse_apply` / `fuse_mech` / `fuse_dim` (dagfuse_shared variants only): `fuse_apply` `none`(=base)/`cond`/`all` gates which tokens the shared-output augmentation touches; `fuse_mech` `dag`/`softmax` picks the `SharedAugmentModule` combiner; `fuse_dim` (d_g, default 64) is the gating bottleneck. `sharedroute` adds `fuse_top_k` (1/2); `region` adds `region_size` (default 3) and `region_attach` (`shared`/`resid`). up_proj zero-init ⇒ step-0-identical to base ProMoE (non-strict loadable).
+- `phase_metric_config` (any `ProMoE_TC`-derived model): `enabled` (default `False`), `rank` (8), `num_fourier_bands` (4), `num_train_timesteps` (1000), `scale` (0.25), `init_seed` (1729), plus `shuffle_timestep` (control arm that permutes the per-sample phase within the batch). Zero-init phase projection ⇒ step-0-identical to base ProMoE.
+- `dino_route_config` (dino_route variant only): `enabled`, `mapping` (`correct` vs the legacy arm), `table_path` + `table_version` + `table_method` (the three must satisfy `preprocess/dino_route_table_contract.SUPPORTED_TABLE_CONTRACTS`; declaring one of version/method without the other is an error, and omitting both pins the legacy contract), `num_classes`, `strength` (e.g. 0.08), `ema_decay` (0.99, recent conditional-load EMA), `permutation_seed` (label-shuffled control).
+- capacity_combo factors (capacity_combo variant only): **H** `hetero_expert` + `hetero_min_ratio`/`hetero_max_ratio`; **R** `ls_balance_mode` (`"token"` = historical diagonal LS-Reg) + `capacity_aware_lsreg` (separate follow-up hypothesis, default `False`) + `ls_include_empty`/`ls_diag_sign`/`ls_diag_strength`/`ls_ema_beta`; **O/P** `expert_contrastive_mode: dual_additive` with `expert_contrastive_output_lam`/`_param_lam` (0.5/0.5), independent `expert_contrastive_output_temperature`/`_param_temperature` (0.5/0.7), `expert_output_blocks`/`expert_param_blocks`, `expert_contrastive_output_normalize`, `expert_contrastive_signature_bins`, `expert_contrastive_margin`. **Every arm must keep its shared factors bit-aligned with the corresponding partial arm** — that is what makes the factorial interpretable.
 
 Constraints to know:
 - For the `repa_router` model, `routing_contrastive_lam` defaults to **0** (a default kwarg, not an assert) — the model expects the contrastive term off since alignment happens at the router level. For `repa_router_contra`, it is the total budget shared between REPA alignment and contrastive via linear handoff over `router_loss_decay_steps`.
@@ -262,24 +295,35 @@ Constraints to know:
 - REPA teacher encoders (DINOv2) are cached to `pretrained_ckpt/encoder/` after first download via torch.hub.
 
 ### Analysis Tools (`analyses/`)
-- `run_compute_flops.py` — Computes theoretical FLOPs, activated parameters, and expert frequencies for checkpoints.
-- `run_tokenwise_tsne.py` / `run_samplewise_pooled_tsne.py` / `run_imagewise_tsne.py` — t-SNE visualization of expert routing at different granularities.
-- `run_repa_dyna_heatmap.py` — Heatmap visualization of dynamic REPA weights across timesteps.
-- `run_token_choice_expert_heatmap.py` — Heatmap of token-to-expert assignment patterns.
-- `run_mos_routing_analysis.py` — MoS router teacher block selection analysis: per-block and aggregated frequency histograms, timestep evolution, token variance, and routing entropy. Uses hook-based routing weight capture (`analyses/mos_routing/extract.py`), online statistical aggregation (`analyses/mos_routing/aggregate.py`), and plotting (`analyses/mos_routing/plotting.py`). Supports all MoS model variants (global/blockwise/per_block/mos router types) via auto-detection.
-- Each entry script has a matching `analyses/<basename>.md` usage guide. Reusable helpers live in `analyses/t_SNE/`, `analyses/heatmap/`, `analyses/flops/`, `analyses/mos_routing/`.
+~30 `run_*.py` entrypoints, each with a matching `analyses/<basename>.md` usage guide and
+shared logic in an `analyses/<topic>/` subpackage (most of which ship `test_*.py`).
+Consult `analyses/README.md` for the authoritative per-script list; the groups are:
+
+- **Visualization / accounting** — `run_compute_flops.py` (FLOPs, activated params, expert frequency), `run_tokenwise_tsne.py` / `run_samplewise_pooled_tsne.py` / `run_imagewise_tsne.py` (routing t-SNE at three granularities), `run_repa_dyna_heatmap.py`, `run_token_choice_expert_heatmap.py`, `run_mos_routing_analysis.py` (MoS teacher-block selection: histograms, timestep evolution, token variance, routing entropy; auto-detects global/blockwise/per_block/mos router types). Helpers: `t_SNE/`, `heatmap/`, `flops/`, `mos_routing/`.
+- **Causal routing probes** — `run_routing_translation_probe.py` / `run_routing_flip_probe.py` / `run_routing_translation_stratified_probe.py` (do top-1 routes follow transported content or absolute coordinates?), `run_expert_function_consistency_probe*.py`, `run_affinity_responsibility_probe.py`, `run_cfg_route_inversion_probe.py`, `run_phase_default_probe.py`, `run_phase_metric_checkpoint_probe.py`. Helpers: `routing_translation/`, `expert_function/`, `phase_default/`, `routing_metric/`.
+- **Exact-counterfactual utility probes** — `run_timestep_utility_probe*.py`, `run_count_preserving_cycle_probe_batch.py`, `run_compute_exchange_probe_batch.py` / `run_compute_exchange_deployability_gate.py`, `run_denoising_regret_probe*.py` (FDRR evidence), `run_dino_utility_neighborhood.py`. Helpers: `timestep_utility/`, `denoising_regret/`, `dino_utility_neighborhood/`.
+- **Checkpoint / longitudinal audits and gates** — `run_expert_update_budget_audit.py`, `run_learning_credit_balance_probe_batch.py` / `run_learning_credit_balance_cross_checkpoint.py`. Helpers: `expert_update_budget/`.
+- **Archived** — `run_credit_redistribution_gate.py` refuses to launch (see the suspended research line below).
+
+Many of these are written as **pre-registered / sealed gates**: they lock a checkpoint, a
+case manifest, a discovery/confirmation split, and a bootstrap decision rule up front.
+When extending one, preserve the lock — do not loosen a gate to make a result pass.
 
 ## Coding Conventions
 - 4-space indentation, `snake_case` for functions/variables, `PascalCase` for classes.
 - Model files follow `models_*.py` naming pattern. Preserve numeric experiment prefixes in config names (e.g., `004_ProMoE_L.yaml`).
 - **1-indexed naming convention**: Script and config filenames use 1-indexed block numbers (e.g., `b3_5` means blocks 3-5 human-readable), while YAML `align_blocks` uses 0-indexed Python indices (e.g., `[2, 3, 4]`). Always maintain this distinction.
 - No formatter or linter is configured — match surrounding style in the file you edit.
-- No `tests/` directory; validate changes with `python -m py_compile <file>` for syntax checks and targeted smoke tests (short training run, sample pass).
+- Validate changes with `python -m py_compile <file>` for syntax, the relevant `unittest` module(s) (see "Unit Tests"), then a targeted smoke test (short training run, sample pass). Analysis-helper subpackages carry their own `test_*.py` — extend them rather than adding an ad-hoc script.
 
 ### Shell Script Convention
 - **All new three-in-one (train + sample + eval) `.sh` experiment scripts must follow the `scripts/template.sh` pattern** — otherwise the other experiment server cannot run them. (Legacy split-purpose scripts under `scripts/repa/` such as `train_repa_B.sh` / `sample_and_eval_repa_B.sh` predate the template and are exempt; new work should not introduce more of them.)
 - **Sequential pipeline pattern**: The template implements a train→stop→sample+eval→resume loop. For each step in `step_list_for_sample`: (1) generate a temp config with `num_steps` set to the checkpoint step + 1 and `resume_checkpoint: True`, (2) train until that step then exit, (3) sample + eval with GPUs fully free, (4) resume for the next step. The final step uses the original `num_steps` from config. This avoids concurrent training + sampling, which can exceed GPU memory for XL-scale models.
 - Key template patterns: `set -euo pipefail`, locate repo root via `SCRIPT_DIR`/`REPO_ROOT`, parse `model_name`/`gpu_ids`/`num_fid_samples`/`step_list_for_sample`/`orig_num_steps` from YAML using inline Python, call training/sampling/evaluation with absolute python paths, and `find ... -name images | sort -V` for evaluation directory traversal. Never use `conda activate`.
+- **Interpreters come from `scripts/_python_env.sh`.** `template.sh` still hardcodes them, but newer scripts `source "${REPO_ROOT}/scripts/_python_env.sh"` and use `$PROMOE_TRAIN_PYTHON` / `$PROMOE_EVAL_PYTHON`. That helper pins the experiment-server paths and **fails the script before any output bucket is touched** when they are absent, unless the caller explicitly sets `PROMOE_ALLOW_LOCAL_FALLBACK=1`. Prefer sourcing it over re-hardcoding paths.
+- **Combined run logs go to `logs/`.** Write `LOG="${REPO_ROOT}/logs/log_<name>.log"` and `mkdir -p "$(dirname "$LOG")"`. Per-experiment `training.log` / `sample.log` stay under the experiment's own output dir. No ANSI colour codes in files; retired logs move to `logs/archived/<date>/`. `*.log` is gitignored; `logs/README.md` is tracked.
+- **Gate/metric predicates live in `scripts/_eval_metric_helpers.sh`** (`promoe_eval_file_metrics_valid`, `promoe_eval_file_fid`, …). They parse the evaluator's `FID:` / `Inception Score:` lines strictly so a malformed value can never be coerced to `0` and read as a passing gate. Reuse them instead of writing a fresh `awk` one-liner.
+- **Queue / supervisor scripts** (`scripts/capacity_combo/run_capacity_combo_queue.sh`, `hrop_gate_then_q0p4.sh`) chain arms across GPU slot pairs: they require an attached tmux session, hold a kernel-owned `flock` so only one supervisor runs per repo, open one tmux window per experiment, and advance only when the preceding wrappers exit. They never background with `&`.
 - **When creating a new script**, only two things need changing from template.sh: the `CONFIG` path and `LOG` filename. Also change the training entrypoint in the train step (`train_with_repa.py`, `train_with_MoS_repa.py`, or `train.py`) to match the model family.
 - End-to-end scripts under `scripts/` use **absolute python paths** (e.g., `/mnt/workspace/yujie/.conda/envs/promoe/bin/python`) instead of `conda activate` for company server compatibility.
 - Training/sampling uses the `promoe` env; evaluation uses the `fid_eval` env.
@@ -289,6 +333,51 @@ Constraints to know:
   - **Slot naming = physical 8-GPU server map**: `X.1` → GPU `0-3`, `X.2` → GPU `4-7` (two 4-GPU jobs fill server `X`); a full 8-GPU job (e.g. XL) is named `X` with no sub-index → GPU `0-7`, consumes a whole server, so the next group starts at `X+1`. The leaf `gpu_ids` is written into each experiment's own YAML (`.1`→`[0,1,2,3]`, `.2`→`[4,5,6,7]`, full→`[0,1,2,3,4,5,6,7]`).
   - **Scope = one date dir only**: allocation reads and writes within the `--date` directory exclusively (it never inspects other date dirs), and within a date dir the assigned slots use disjoint GPUs by construction. The cross-dir caveat is operational, not automatic: don't run two date dirs' jobs on the same physical GPUs at once. Date format is `YYYY_MM_DD` (e.g. `2026_06_20`); `--date` defaults to today.
   - **Continue numbering from existing files**: a 4-GPU job takes the lowest open half in the date dir — this backfills a `.2` half (whose `.1` is an earlier 4-GPU job) that a later 8-GPU job skipped when it jumped to a fresh whole server. An 8-GPU job takes a fresh server `max_major + 1` (a whole `X`, no halves). `--desc` defaults to the semantic script's distinguishing name (`run_B_xxx_train_sample_eval.sh` → `B_xxx`). Use `--dry-run` to preview the slot without writing anything.
+
+## Experiment Discipline & Provenance Gates
+The project enforces a scientific protocol in code, not just in docs. `doc/design-todo.md`
+is the live roadmap and states the current rules; the mechanisms below implement them.
+
+**The 300K dual-CFG FID gate.** Every candidate trains **from scratch (step 0, empty output
+dir)** to 300K, then samples 50K images at CFG 1.0 **and** 1.5 and scores them with the
+OpenAI evaluator. It must beat the *fresh* ProMoE-TC baseline's 300K FID at **both** CFG
+values; a candidate that fails is abandoned on the spot and never continued to 500K. Only a
+gate-passing arm earns 500K plus routing/expert-specialization analysis. Corollaries that
+matter when writing scripts:
+- A mid-training checkpoint continuation is **not** a substitute for an independent
+  experiment, and cannot be reported as a method result.
+- Arms in a factorial study are **independent hypotheses**: a full-combination failure does
+  not disprove a partial-combination or single-point arm, so each arm runs its own gate
+  (see the comment block in `scripts/capacity_combo/run_capacity_combo_queue.sh`).
+- Comparable arms must match on seed, init, data order, global batch 256, lr 1e-4, and
+  training length. Only the factor under test may differ.
+
+**Archived configs hard-fail.** `train.py:main()` raises immediately when a config carries
+`archived_experiment: True` (currently the three `004_ProMoE_B_credit_rate_*_301k_20k.yaml`
+continuations), and `analyses/run_credit_redistribution_gate.py` refuses too. Do not strip
+the flag or retarget `num_steps` to pass an archived continuation off as a fresh run.
+
+**Suspended research line.** `research_on_expert_learning_signal_balance/` holds the MoE
+"learning-credit redistribution" hypothesis (per-expert suffix-gradient credit rate rather
+than token count). It is **paused**: no approved training command exists and its old results
+are not paper evidence. Its modules must nevertheless stay importable — `train.py` imports
+`CreditRedistributionController`, `benchmark.DistributedThroughputTimer`,
+`git_provenance.repository_state`, and `transcript.TranscriptOnlyRecorder` from it, gated by
+the top-level `credit_redistribution_config` / `throughput_timer_config` /
+`training_transcript_config` flags in `config.py` (all `enabled: False` by default). Its
+README specifies the step-0 protocol any future revival must use — read it before touching
+that directory or `scripts/credit_redistribution/`.
+
+**Strict training provenance** (`PROMOE_STRICT_PROVENANCE=1`, exactly `0` or `1`) makes a run
+self-certifying, used by the audited `expert_contra` arm. It
+requires CUDA, a **clean working tree**, `HEAD == origin/repa` with zero divergence, and
+sha256 verification of a per-model source manifest (`STRICT_PROVENANCE_SOURCE_PATHS` in
+`train.py`, registered today for `ProMoE_TC_B`, `ProMoE_TC_B_expert_contra`,
+`ProMoE_TC_B_capacity_combo`). Adding a strict-provenance model means adding its manifest
+entry. `PROMOE_RUN_ID` (16-128 chars of `[A-Za-z0-9_-]`) tags the run. On resume, a
+strict-provenance checkpoint's recorded provenance must equal this invocation's exactly
+(`_training_provenance_matches`) — there is no escape hatch, so a changed pinned source
+file means a fresh run, not a patched constant.
 
 ## Adding a New Experiment
 
@@ -315,6 +404,10 @@ If the ablation is controlled by an existing config flag (e.g., `router_norm_typ
 - `preprocess/image_paths_cache.txt` caches the dataset file list (shared by `train.py` and `preprocess_vae.py`); delete and rebuild it after switching datasets or reorganizing files. `prepare_imagenet.py` rebuilds it deterministically (sorted, atomic) so DDP ranks don't race to regenerate it.
 - When `use_pre_latents=True`, the latent directory must be a sibling of `train/` named `sd-vae-ft-mse_Latents_256img_npz` — the code derives latent paths by replacing `train` in image paths.
 - `model.py` at the repo root is an unrelated reference file (not imported anywhere in the project). Ignore it when navigating the codebase — the project's models live in `models/`.
+- **`output_dir` is a per-config top-level key** (default `outputs/`), so an output bucket is `{output_dir}/{model_name}/{custom_cfg_name}/`. Recent experiment-server configs point it outside the repo (e.g. `/home/dev/promoe-runs`) and read latents from `/home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz` with `use_encoded_latents: True` — do not assume the `/lustre01/...` layout when reading a config. `scripts/check_output_dir.py` reads only **top-level** (zero-indent) `model_name`/`output_dir` scalars on purpose.
+- `_previous_results/` holds the archived experiment table (`results_all_experiments_2026_06_21_to_08_05.md` + an HTML render). Some queue supervisors gate on that table being complete, so treat it as data a script depends on rather than a stale note.
+- `sample.py` loads checkpoints through a restricted unpickler where the installed torch supports it (`weights_only=True` plus `safe_globals([EasyDict, TorchVersion])`), falling back only when the runtime lacks `safe_globals`. Keep new checkpoint metadata inside that allowlist rather than widening the fallback.
+- Three skill directories mirror each other: `.claude/skills/` (Claude Code), `.agents/skills/` (the active Codex definitions — `check-cc`/`inspect-cc` are the Codex-side names), and `.codex/skills/`. When editing a shared workflow, update the mirrors together.
 
 ## Workflow Rules
 - **Clean up smoke-test artifacts immediately.** After a smoke test or sanity run finishes (success or failure), delete the temporary scripts, generated configs, output directories (e.g., `tb_smoke_*/`, `collapse_smoking_test*/`, `outputs/<model>/<smoke_cfg>/`), and any caches that exist only because of the smoke test. Do not let debug-only artifacts accumulate in the working tree. Long-lived artifacts — real training outputs under `outputs/`, `pretrained_ckpt/`, `training_logs/`, and project-level `__pycache__/` — are out of scope and must not be touched.
@@ -332,6 +425,13 @@ If the ablation is controlled by an existing config flag (e.g., `router_norm_typ
 - `analyses/README.md` — Overview of analysis entrypoints; per-script usage in `analyses/<basename>.md` files.
 - `plans/` — Implementation plans for Cross-Attention variants (`plan_01` through `plan_08`), covering both standard REPA and MoS cross-alignment designs.
 - `doc/implementation-plan.md` — Draft plan (Chinese) for a future "attention-weighted same-expert same-image alignment" experiment family. Not yet implemented; reference for forthcoming work, not current code.
+- `doc/design-todo.md` — **The live MoE-mainline roadmap (Chinese).** Per-improvement-group status (implemented / verified / pushed / abandoned), the decision logs, and the 300K dual-CFG gate ordering rule. Read this first to learn what the current priority is; keep it updated when an arm's status changes.
+- `doc/todo.md` — Short-lived launch queue rendered as a command table (slot · GPUs · branch · command · output dir).
+- `doc/load-balance-design.md`, `doc/contrastive-label-smoothing.md`, `doc/shared-expert-augmentation-plan.md` — Design notes behind the lbcontra / lossfree, lsreg, and dagfuse_shared families.
+- `doc/output-table-template.md`, `command-tables/command-table-template.csv` — Templates for result tables and for the `/command-table` CSV output.
+- `research_on_expert_learning_signal_balance/README.md` — Why the learning-credit-redistribution line is suspended and what a clean revival must satisfy. Read before touching that package.
+- `logs/README.md` — The `logs/` logging convention (Chinese).
+- `collapse_smoking_test/crash_diagnosis_report.md` — The cross-alignment crash investigation behind the stability constraints above.
 
 ## Project-Local Skills (`.claude/skills/`)
 Eight project-specific slash commands live under `.claude/skills/`. They encode the project-aware checks (model_dict ↔ models/ ↔ configs/ ↔ scripts/ four-way consistency, cross-alignment stability invariants, TrainingMonitor hook integrity, output-dir collision avoidance) so future Claude instances don't have to re-derive them.
