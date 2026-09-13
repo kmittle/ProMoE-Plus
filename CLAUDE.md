@@ -369,10 +369,14 @@ orphaned as soon as that server is recycled. **Inputs are the exception and are 
 the ImageNet latents / images (`data_path`, `latent_data_path`), the VAE and the DINOv2 teacher
 caches are large shared read-only dependencies that legitimately live outside the repo — being
 allowed to *read* from `/home/dev` or `/lustre01` never authorizes *writing* results there.
-Three legacy configs still violate this (`004_ProMoE_B_dino_route_margin_gate_v2_{correct,shuffled}_s0.yaml`
-and `004_ProMoE_B_proto_t_residual_phase_control_s0_v2.yaml`, all `output_dir: "/home/dev/promoe-runs"`);
-do not copy them, and do not repoint a config whose run already wrote checkpoints to the old
-path without first deciding what happens to those checkpoints.
+Two legacy configs still violate this
+(`004_ProMoE_B_dino_route_margin_gate_v2_{correct,shuffled}_s0.yaml`, both
+`output_dir: "/home/dev/promoe-runs"`); do not copy them, and do not repoint a config whose run
+already wrote checkpoints to the old path without first deciding what happens to those
+checkpoints. The third former violator,
+`004_ProMoE_B_proto_t_residual_phase_control_s0_v2.yaml`, was deleted: it was only a rerun
+bucket of `004_ProMoE_B_proto_t_residual_phase_control_s0.yaml` (re-scheduled to a fresh slot,
+no model-code change), and that surviving v1 writes to the in-repo default `outputs/`.
 
 **Archived configs hard-fail.** `train.py:main()` raises immediately when a config carries
 `archived_experiment: True`. No config carries it today (the three
