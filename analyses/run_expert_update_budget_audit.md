@@ -57,8 +57,10 @@ Seed 0 和尚未训练完成的 Seed 1 使用完全相同的门槛：
 - `analyses/expert_update_budget/manifests/expert_update_budget_seed1_v1.json`
 
 这两份协议里的 `config_basename` 指向已经删除的 `004_ProMoE_B_fresh_routing_audit_s0.yaml`
-和 `004_ProMoE_B_seed1_control.yaml`（连同 `fresh_routing` 系列一起移除，权重也已不在实验
-服务器上）。协议本身是当时封存的记录，保留它们是为了留住锁定的门槛和来源集合；要重跑这项
+和 `004_ProMoE_B_seed1_control.yaml`（随 `fresh_routing` 系列一起移除）。Seed 0 这条轨迹的
+50K–300K checkpoint 仍保存在归档
+`outputs/archived_outputs/2026-09-03/ProMoE_TC_B_baseline_controls/004_ProMoE_B_fresh_routing_audit_s0/checkpoints/`；
+Seed 1 的 checkpoint 在仓库的 `outputs/` 与 `analyses/archvied_analyses/` 中都没有找到。协议本身是当时封存的记录，保留它们是为了留住锁定的门槛和来源集合；要重跑这项
 审计，需要自己的配置和新的协议文件，不要改写这两份已封存的记录。
 
 ## 与已有工作的边界
