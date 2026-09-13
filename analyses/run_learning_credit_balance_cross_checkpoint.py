@@ -83,7 +83,7 @@ from analyses.timestep_utility.credit_balance_probe import (
 )
 
 
-RUNNER_VERSION = 1
+RUNNER_VERSION = 2
 SEAL_VERSION = 1
 PARAMETER_CASE_COUNT = 16
 LOSSFREE_MODEL_NAME = "ProMoE_TC_B_lossfree"
@@ -95,23 +95,18 @@ LOSSFREE_SAMPLER_CONTRACT_VERSION = 1
 LOSSFREE_DATASET_IDENTITY_VERSION = 1
 LOSSFREE_DATASET_TYPE = "__mp_main__.LatentFolder"
 LOCKED_DEVICES = ("cuda:4", "cuda:5", "cuda:6", "cuda:7")
+# Checkpoints, configs, sealed documents and the output directory are CLI
+# arguments. Locked inputs are recognised by content hash, so they may be
+# relocated but never edited.
 PREREGISTRATIONS = (
     {
         "version": 1,
-        "path": (
-            "/home/dev/promoe-probes/"
-            "credit-balance-lossfree-s0-200k-v1-preregister.json"
-        ),
         "sha256": (
             "59ce95f39220511c510b589b78e69b0139c961aaa1d3e4e3f013c16312565a43"
         ),
     },
     {
         "version": 2,
-        "path": (
-            "/home/dev/promoe-probes/"
-            "credit-balance-lossfree-s0-200k-v2-preregister.json"
-        ),
         "sha256": (
             "04ced5b1cebf371153c33c4f7b9cf703b58d430ee504d8d52c083a186f254b57"
         ),
@@ -123,26 +118,7 @@ BASE_PROTOCOL_SHA256 = (
 LOSSFREE_CONFIG_SHA256 = (
     "ce7ce84ad50800ddc66689d8855530ffcb58365297c3ad52845a8bff4d1bcfcc"
 )
-DEFAULT_BASE_PROTOCOL = (
-    "/home/dev/promoe-probes/credit-balance-gate-base200k-v1/protocol.json"
-)
-DEFAULT_BASE_RESULTS_DIR = (
-    "/home/dev/promoe-probes/credit-balance-gate-base200k-v1"
-)
-DEFAULT_BASE_WEIGHTS = "/home/dev/promoe-probes/base-seed0-ckpt_step_200000.pth"
-DEFAULT_BASE_CONFIG = "configs/004_ProMoE_B_seed0_control.yaml"
-DEFAULT_LOSSFREE_CHECKPOINT = (
-    "/home/dev/promoe-runs/ProMoE_TC_B_lossfree/"
-    "004_ProMoE_B_lossfree_u1e2_credit_control_s0_200k/"
-    "checkpoints/ckpt_step_200000.pth"
-)
-DEFAULT_LOSSFREE_CONFIG = (
-    "configs/004_ProMoE_B_lossfree_u1e2_credit_control_s0_200k.yaml"
-)
 DEFAULT_LATENT_ROOT = "/home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz"
-DEFAULT_OUTPUT_DIR = (
-    "/home/dev/promoe-probes/credit-balance-lossfree-s0-200k-v2"
-)
 LATENT_PATHS_CACHE = PROJECT_ROOT / "preprocess/latent_paths_cache.txt"
 STATIC_SOURCE_PATHS = (
     "requirements.txt",
@@ -190,6 +166,25 @@ def _parse_devices(value):
             "The locked cross-checkpoint gate requires cuda:4,cuda:5,cuda:6,cuda:7"
         )
     return devices
+
+
+def _repository_output_dir(value):
+    path = Path(value).resolve()
+    if PROJECT_ROOT not in path.parents:
+        raise argparse.ArgumentTypeError(
+            f"output directory must be inside the repository: {path}"
+        )
+    ignored = subprocess.run(
+        ["git", "check-ignore", "-q", str(path / "protocol.json")],
+        cwd=PROJECT_ROOT,
+        check=False,
+    ).returncode == 0
+    if not ignored:
+        raise argparse.ArgumentTypeError(
+            "output directory must be git-ignored (e.g. under outputs/ or "
+            f"analyses/archvied_analyses/) or the clean-tree check fails: {path}"
+        )
+    return path
 
 
 def _json_sha256(payload):
@@ -387,17 +382,24 @@ def _latent_dataset_identity(latent_root):
     }
 
 
+def _require_same_output_bucket(checkpoint_path, planned_checkpoint):
+    """Bind a relocated checkpoint to the preregistered run's own output bucket."""
+    observed = Path(os.path.abspath(checkpoint_path)).parts[-3:]
+    planned = Path(planned_checkpoint).parts[-3:]
+    if observed != planned:
+        raise RuntimeError(
+            "Loss-Free checkpoint must be the preregistered run's "
+            f"{'/'.join(planned)}: {checkpoint_path}"
+        )
+
+
 def _validate_preregistered_run_inputs(args, base_cfg, lossfree_cfg, documents):
     training = documents[1]["lossfree_training_contract"]
     data = documents[1]["data_contract"]
-    if Path(args.lossfree_config).resolve() != Path(training["config"]).resolve():
-        raise RuntimeError("Loss-Free config path differs from preregistration")
-    if Path(args.lossfree_ckpt).resolve() != Path(
-        training["planned_checkpoint"]
-    ).resolve():
-        raise RuntimeError("Loss-Free checkpoint path differs from preregistration")
-    if Path(args.latent_root).resolve() != Path(data["latent_root"]).resolve():
-        raise RuntimeError("Latent root differs from preregistration")
+    lossfree_config_sha256 = sha256_file(Path(args.lossfree_config).resolve())
+    if lossfree_config_sha256 != training["config_sha256"]:
+        raise RuntimeError("Loss-Free config content differs from preregistration")
+    _require_same_output_bucket(args.lossfree_ckpt, training["planned_checkpoint"])
     paired_base_seed = documents[1]["paired_base_contract"]["global_seed"]
     if int(base_cfg.global_seed) != int(paired_base_seed):
         raise RuntimeError("Base global seed differs from preregistration")
@@ -782,10 +784,18 @@ def _checkpoint_contract(
     }
 
 
-def _verify_preregistrations():
+def _preregistration_paths(args):
+    return {1: args.preregistration_v1, 2: args.preregistration_v2}
+
+
+def _verify_preregistrations(paths):
     documents = {}
     for row in PREREGISTRATIONS:
-        path = Path(row["path"]).resolve()
+        path = Path(paths[row["version"]]).resolve()
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"Loss-Free preregistration v{row['version']} is missing: {path}"
+            )
         if sha256_file(path) != row["sha256"]:
             raise RuntimeError(
                 f"Loss-Free preregistration v{row['version']} changed"
@@ -813,11 +823,6 @@ def _validate_preregistered_constants(documents):
         supersedes.get("sha256"),
         PREREGISTRATIONS[0]["sha256"],
         "v2.supersedes.sha256",
-    )
-    _require_preregistered_equal(
-        Path(supersedes.get("path", "")).resolve(),
-        Path(PREREGISTRATIONS[0]["path"]).resolve(),
-        "v2.supersedes.path",
     )
 
     training = v1.get("lossfree_training_contract", {})
@@ -847,8 +852,8 @@ def _validate_preregistered_constants(documents):
         "lossfree_training_contract.planned_state",
     )
     _require_preregistered_equal(
-        Path(training.get("planned_checkpoint", "")).resolve(),
-        Path(DEFAULT_LOSSFREE_CHECKPOINT).resolve(),
+        Path(training.get("planned_checkpoint", "")).name,
+        f"ckpt_step_{CHECKPOINT_STEP}.pth",
         "lossfree_training_contract.planned_checkpoint",
     )
 
@@ -976,7 +981,7 @@ def _validate_preregistered_constants(documents):
     )
 
 
-def _load_base_protocol(protocol_path, cases):
+def _load_base_protocol(protocol_path, preregistration_path, cases):
     protocol_path = Path(protocol_path).resolve()
     protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
     if _json_sha256(protocol) != BASE_PROTOCOL_SHA256:
@@ -991,8 +996,8 @@ def _load_base_protocol(protocol_path, cases):
         path = PROJECT_ROOT / relative
         if not path.is_file() or sha256_file(path) != expected:
             raise RuntimeError(f"Base protocol source changed: {relative}")
-    preregister = protocol["preregister"]
-    if sha256_file(preregister["path"]) != preregister["sha256"]:
+    preregistration_path = Path(preregistration_path).resolve()
+    if sha256_file(preregistration_path) != protocol["preregister"]["sha256"]:
         raise RuntimeError("Base preregistration changed")
     return protocol
 
@@ -1041,7 +1046,8 @@ def _build_protocol(
     lossfree_cfg,
     formula_validation,
 ):
-    _verify_preregistrations()
+    preregistration_paths = _preregistration_paths(args)
+    _verify_preregistrations(preregistration_paths)
     if lossfree_contract["config_sha256"] != LOSSFREE_CONFIG_SHA256:
         raise RuntimeError("Loss-Free training config changed after preregistration")
     if not formula_validation["passed"]:
@@ -1065,12 +1071,19 @@ def _build_protocol(
             "This paired frozen-checkpoint gate does not establish optimizer "
             "benefit, semantic expert value, FID improvement, or novelty."
         ),
-        "effective_preregistrations": [dict(row) for row in PREREGISTRATIONS],
+        "effective_preregistrations": [
+            {
+                **row,
+                "path": str(Path(preregistration_paths[row["version"]]).resolve()),
+            }
+            for row in PREREGISTRATIONS
+        ],
         "base_protocol": {
             "path": str(base_protocol_path),
             "canonical_json_sha256": BASE_PROTOCOL_SHA256,
             "file_sha256": sha256_file(base_protocol_path),
             "hash_sidecar": str(base_protocol_path.with_suffix(".sha256")),
+            "preregistration": str(Path(args.base_preregistration).resolve()),
             "base_git": base_protocol["git"],
         },
         "checkpoints": {
@@ -1188,8 +1201,15 @@ def _verify_latent_input(protocol, case):
 
 
 def _verify_protocol_inputs(protocol, cases):
-    _verify_preregistrations()
-    base_protocol = _load_base_protocol(protocol["base_protocol"]["path"], cases)
+    _verify_preregistrations({
+        row["version"]: row["path"]
+        for row in protocol["effective_preregistrations"]
+    })
+    base_protocol = _load_base_protocol(
+        protocol["base_protocol"]["path"],
+        protocol["base_protocol"]["preregistration"],
+        cases,
+    )
     if base_protocol["git"] != protocol["base_protocol"]["base_git"]:
         raise RuntimeError("Base protocol Git contract changed")
     base_protocol_path = Path(protocol["base_protocol"]["path"])
@@ -2107,17 +2127,66 @@ def _stage_confirmatory(
 def build_parser():
     parser = argparse.ArgumentParser(
         description=(
-            "Run the sealed Base/Loss-Free step-200K load and exact-credit gate."
+            "Run the sealed Base/Loss-Free step-200K load and exact-credit gate. "
+            "Every locked input is passed explicitly and accepted only when its "
+            "content matches the sealed hash."
         )
     )
-    parser.add_argument("--base-protocol", default=DEFAULT_BASE_PROTOCOL)
-    parser.add_argument("--base-results-dir", default=DEFAULT_BASE_RESULTS_DIR)
-    parser.add_argument("--base-weights-ckpt", default=DEFAULT_BASE_WEIGHTS)
-    parser.add_argument("--base-config", default=DEFAULT_BASE_CONFIG)
-    parser.add_argument("--lossfree-ckpt", default=DEFAULT_LOSSFREE_CHECKPOINT)
-    parser.add_argument("--lossfree-config", default=DEFAULT_LOSSFREE_CONFIG)
+    parser.add_argument(
+        "--base-protocol",
+        required=True,
+        help="protocol.json of the sealed Base step-200K credit-balance gate",
+    )
+    parser.add_argument(
+        "--base-preregistration",
+        required=True,
+        help="preregistration JSON whose SHA256 the Base protocol records",
+    )
+    parser.add_argument(
+        "--base-results-dir",
+        required=True,
+        help="per-case result directory of the sealed Base gate",
+    )
+    parser.add_argument(
+        "--base-weights-ckpt",
+        required=True,
+        help="Base seed-0 step-200000 checkpoint",
+    )
+    parser.add_argument(
+        "--base-config",
+        required=True,
+        help="config the Base checkpoint was trained with",
+    )
+    parser.add_argument(
+        "--lossfree-ckpt",
+        required=True,
+        help=(
+            "Loss-Free step-200000 checkpoint, kept under its run's own "
+            "<run>/checkpoints/ directory"
+        ),
+    )
+    parser.add_argument(
+        "--lossfree-config",
+        required=True,
+        help="preregistered Loss-Free training config",
+    )
+    parser.add_argument(
+        "--preregistration-v1",
+        required=True,
+        help="Loss-Free preregistration v1 JSON",
+    )
+    parser.add_argument(
+        "--preregistration-v2",
+        required=True,
+        help="Loss-Free preregistration v2 JSON",
+    )
     parser.add_argument("--latent-root", default=DEFAULT_LATENT_ROOT)
-    parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument(
+        "--output-dir",
+        type=_repository_output_dir,
+        required=True,
+        help="git-ignored directory inside this repository",
+    )
     parser.add_argument(
         "--devices",
         type=_parse_devices,
@@ -2139,10 +2208,14 @@ def main():
     base_config = Path(args.base_config).resolve()
     lossfree_config = Path(args.lossfree_config).resolve()
     cases = select_cases(args.latent_root)
-    base_protocol = _load_base_protocol(args.base_protocol, cases)
+    base_protocol = _load_base_protocol(
+        args.base_protocol,
+        args.base_preregistration,
+        cases,
+    )
     base_cfg = load_runtime_cfg(base_config)
     lossfree_cfg = load_runtime_cfg(lossfree_config)
-    preregistrations = _verify_preregistrations()
+    preregistrations = _verify_preregistrations(_preregistration_paths(args))
     expected_training = _validate_preregistered_run_inputs(
         args,
         base_cfg,

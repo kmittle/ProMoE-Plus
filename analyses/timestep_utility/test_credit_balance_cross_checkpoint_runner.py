@@ -1,3 +1,6 @@
+import argparse
+import contextlib
+import io
 import json
 import random
 import sys
@@ -21,6 +24,107 @@ class CrossCheckpointRunnerTests(unittest.TestCase):
         )
         with self.assertRaises(Exception):
             runner._parse_devices("cuda:0,cuda:1,cuda:2,cuda:3")
+
+    def test_locked_input_paths_have_no_defaults(self):
+        parser = runner.build_parser()
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                parser.parse_args(["--prepare-only"])
+        args = parser.parse_args(self._cli_arguments())
+        self.assertEqual(
+            args.lossfree_ckpt,
+            "/moved/004_demo_s0_200k/checkpoints/ckpt_step_200000.pth",
+        )
+        self.assertIn(runner.PROJECT_ROOT, args.output_dir.parents)
+
+    def test_output_dir_must_be_git_ignored_inside_repository(self):
+        inside = runner.PROJECT_ROOT / "outputs" / "credit-balance-unit-test"
+        self.assertEqual(runner._repository_output_dir(str(inside)), inside)
+        for rejected in (
+            "/tmp/credit-balance-unit-test",
+            str(runner.PROJECT_ROOT),
+            str(runner.PROJECT_ROOT / "analyses" / "credit-balance-unit-test"),
+        ):
+            with self.subTest(rejected=rejected):
+                with self.assertRaises(argparse.ArgumentTypeError):
+                    runner._repository_output_dir(rejected)
+
+    def test_relocated_lossfree_checkpoint_stays_bound_to_its_run(self):
+        planned = (
+            "/home/dev/promoe-runs/ProMoE_TC_B_lossfree/004_demo_s0_200k/"
+            "checkpoints/ckpt_step_200000.pth"
+        )
+        runner._require_same_output_bucket(
+            "/archive/2026-08-28/004_demo_s0_200k/checkpoints/"
+            "ckpt_step_200000.pth",
+            planned,
+        )
+        for wrong in (
+            "/archive/004_other_s0_200k/checkpoints/ckpt_step_200000.pth",
+            "/archive/004_demo_s0_200k/checkpoints/ckpt_step_190000.pth",
+        ):
+            with self.subTest(wrong=wrong):
+                with self.assertRaisesRegex(RuntimeError, "preregistered run"):
+                    runner._require_same_output_bucket(wrong, planned)
+
+    def test_preregistrations_are_recognised_by_content_not_location(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = {}
+            rows = []
+            for version in (1, 2):
+                path = Path(directory) / f"moved-v{version}.json"
+                path.write_text(
+                    json.dumps({"version": version}),
+                    encoding="utf-8",
+                )
+                paths[version] = path
+                rows.append({
+                    "version": version,
+                    "sha256": runner.sha256_file(path),
+                })
+            with (
+                mock.patch.object(runner, "PREREGISTRATIONS", tuple(rows)),
+                mock.patch.object(runner, "_validate_preregistered_constants"),
+            ):
+                self.assertEqual(
+                    sorted(runner._verify_preregistrations(paths)),
+                    [1, 2],
+                )
+                paths[2].write_text(
+                    json.dumps({"version": 2, "edited": True}),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(RuntimeError, "v2 changed"):
+                    runner._verify_preregistrations(paths)
+
+    def test_base_preregistration_is_checked_at_the_given_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            preregistration = root / "moved-preregister.json"
+            preregistration.write_text("{}", encoding="utf-8")
+            protocol = {
+                "manifest": {"cases": []},
+                "project_source_sha256": {},
+                "preregister": {
+                    "path": "/home/dev/promoe-probes/original-preregister.json",
+                    "sha256": runner.sha256_file(preregistration),
+                },
+            }
+            digest = runner._json_sha256(protocol)
+            protocol_path = root / "protocol.json"
+            protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
+            protocol_path.with_suffix(".sha256").write_text(
+                digest + "\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(runner, "BASE_PROTOCOL_SHA256", digest):
+                self.assertEqual(
+                    runner._load_base_protocol(protocol_path, preregistration, []),
+                    protocol,
+                )
+                preregistration.write_text('{"edited": true}', encoding="utf-8")
+                with self.assertRaisesRegex(RuntimeError, "Base preregistration"):
+                    runner._load_base_protocol(protocol_path, preregistration, [])
 
     def test_protocol_is_idempotent_and_rejects_changes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -379,7 +483,11 @@ class CrossCheckpointRunnerTests(unittest.TestCase):
             raise RuntimeError("stop after ordering check")
 
         with (
-            mock.patch.object(sys, "argv", ["credit-gate", "--prepare-only"]),
+            mock.patch.object(
+                sys,
+                "argv",
+                ["credit-gate", *self._cli_arguments(), "--prepare-only"],
+            ),
             mock.patch.object(runner, "select_cases", return_value=[]),
             mock.patch.object(runner, "_load_base_protocol", return_value={}),
             mock.patch.object(runner, "load_runtime_cfg", return_value=object()),
@@ -474,6 +582,23 @@ class CrossCheckpointRunnerTests(unittest.TestCase):
             )
         self.assertTrue(passed)
         self.assertEqual(summary_path, Path("discovery-credit-summary.json"))
+
+    @staticmethod
+    def _cli_arguments():
+        return [
+            "--base-protocol", "/moved/base-gate/protocol.json",
+            "--base-preregistration", "/moved/base-gate-preregister.json",
+            "--base-results-dir", "/moved/base-gate",
+            "--base-weights-ckpt", "/moved/base-seed0-ckpt_step_200000.pth",
+            "--base-config", "configs/004_ProMoE_B_seed0_control.yaml",
+            "--lossfree-ckpt",
+            "/moved/004_demo_s0_200k/checkpoints/ckpt_step_200000.pth",
+            "--lossfree-config", "/moved/lossfree.yaml",
+            "--preregistration-v1", "/moved/v1-preregister.json",
+            "--preregistration-v2", "/moved/v2-preregister.json",
+            "--output-dir",
+            str(runner.PROJECT_ROOT / "outputs" / "credit-balance-unit-test"),
+        ]
 
     @staticmethod
     def _controls(unbiased_argmax_mismatches=0):

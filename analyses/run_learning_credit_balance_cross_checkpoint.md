@@ -64,7 +64,7 @@ case manifest 复用 Base protocol：
 SHA256 9c25bd0144228e921be1a5491dafa32299356f5af00e0a5cc15d857a1eeef096
 ```
 
-runner 会先逐字段核对两个预注册文件中的 seed、batch、阈值、固定路径和模型设置，重放训练端 cache-first 的 latent 枚举与哈希规则，同时要求训练采用的缓存序列与实际磁盘完整排序清单完全一致，再把所得 dataset identity 与 checkpoint 中的 sampler provenance 逐字段比较。随后才把两个预注册 hash、Base protocol hash、Base/Loss-Free checkpoint hash、Loss-Free trainer/sampler/RNG provenance、配置、latent manifest、项目源文件 hash、Git commit 和运行环境写入新 protocol。worker 在实际加载 checkpoint 前后及读取每个 latent 前后都会复核 hash，阶段汇总后还会再次复核全部输入。每个 case 与 summary 都有独立 seal，内容被修改或只剩单边文件时会直接失败。
+runner 会先逐字段核对两个预注册文件中的 seed、batch、阈值和模型设置，重放训练端 cache-first 的 latent 枚举与哈希规则，同时要求训练采用的缓存序列与实际磁盘完整排序清单完全一致，再把所得 dataset identity 与 checkpoint 中的 sampler provenance 逐字段比较。随后才把两个预注册 hash、Base protocol hash、Base/Loss-Free checkpoint hash、Loss-Free trainer/sampler/RNG provenance、配置、latent manifest、项目源文件 hash、Git commit、运行环境以及本次给定的全部输入位置写入新 protocol。worker 在实际加载 checkpoint 前后及读取每个 latent 前后都会复核 hash，阶段汇总后还会再次复核全部输入。每个 case 与 summary 都有独立 seal，内容被修改或只剩单边文件时会直接失败。
 
 阶段必须按以下顺序运行：
 
@@ -75,43 +75,77 @@ runner 会先逐字段核对两个预注册文件中的 seed、batch、阈值、
 
 任何门槛失败都停止，不能改阈值或跳过阶段。step-10K 等中间 checkpoint 只能放在另一个明确标为 trajectory diagnostic 的协议中，不能替代这里固定的 step-200K 结论。
 
+## 输入按内容认，不按位置认
+
+所有被锁定的输入都没有默认路径，必须用命令行参数显式给出。runner 只按内容认它们：文件可以挪到任何位置，但字节必须和封存时完全一致。
+
+| 参数 | 内容 | 怎样确认是封存时那一份 |
+| --- | --- | --- |
+| `--preregistration-v1` / `--preregistration-v2` | 两份 Loss-Free 预注册 JSON | SHA256 等于上面钉住的 v1 / v2 值 |
+| `--base-protocol` | Base step-200K credit-balance gate 的 `protocol.json` | 规范化 JSON 的 SHA256 等于 `9c25bd01…`，同目录的 `.sha256` 文件一致 |
+| `--base-preregistration` | Base gate 的预注册 JSON | SHA256 等于 Base protocol 中 `preregister.sha256` 的记录 |
+| `--base-results-dir` | Base gate 的逐 case 结果目录 | 每个结果都必须通过自己的 seal，并属于上述 Base protocol |
+| `--base-weights-ckpt`、`--base-config` | Base seed-0 step-200000 checkpoint 及其训练配置 | checkpoint 大小与 SHA256 钉在代码中；配置 SHA256 等于 Base protocol 的记录 |
+| `--lossfree-ckpt` | Loss-Free step-200000 checkpoint | checkpoint 内的训练记录（seed、world size、step、sampler 位置、数据集指纹）必须与预注册的训练设置吻合，各 rank 的 RNG 状态必须完整；路径最后三级必须仍是 `004_ProMoE_B_lossfree_u1e2_credit_control_s0_200k/checkpoints/ckpt_step_200000.pth` |
+| `--lossfree-config` | Loss-Free 训练配置 | SHA256 等于预注册中的 `config_sha256`（`ce7ce84a…`） |
+| `--latent-root` | ImageNet latent 目录，默认 `/home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz` | 重算的有序数据集指纹等于 checkpoint 的 sampler 记录，每个 case 的 latent SHA256 等于 manifest |
+
+因此它只接受封存时那一对 checkpoint；换成别的 checkpoint（例如另一个 `bias_update_rate` 的 Loss-Free 训练）会被拒绝。这是封存 gate 的设计，不是路径问题。
+
+Loss-Free checkpoint 还要保留最后三级路径，是因为预注册时它还没有训练出来，当时只能记下“那次训练自己输出目录里的 step-200000 文件”。换存放的根目录没有关系，改目录名或文件名不行。
+
+`--output-dir` 同样没有默认值，而且必须是**仓库内、被 Git 忽略**的目录（例如 `outputs/` 或 `analyses/archvied_analyses/` 下），否则参数解析阶段就会拒绝：结果不允许写到仓库外；目录若不被忽略，写出的 `protocol.json` 会让工作区变脏，下一阶段的 clean-tree 检查必然失败。
+
 ## 运行
 
-代码必须先通过检查、commit 并 push，且 `HEAD == origin/repa`。Loss-Free step-200K checkpoint 存在后，先锁 protocol：
+代码必须先通过检查、commit 并 push，且 `HEAD == origin/repa`。先把锁定输入写成一个参数数组，`/path/to/...` 换成实际位置：
 
 ```bash
-/home/dev/miniforge3/envs/promoe/bin/python \
-  analyses/run_learning_credit_balance_cross_checkpoint.py \
-  --prepare-only
+PY=/home/dev/miniforge3/envs/promoe/bin/python
+LOCKED_INPUTS=(
+  --preregistration-v1 /path/to/credit-balance-lossfree-s0-200k-v1-preregister.json
+  --preregistration-v2 /path/to/credit-balance-lossfree-s0-200k-v2-preregister.json
+  --base-protocol /path/to/credit-balance-gate-base200k-v1/protocol.json
+  --base-preregistration /path/to/base-credit-balance-preregister.json
+  --base-results-dir /path/to/credit-balance-gate-base200k-v1
+  --base-weights-ckpt /path/to/base-seed0-ckpt_step_200000.pth
+  --base-config configs/004_ProMoE_B_seed0_control.yaml
+  --lossfree-ckpt /path/to/004_ProMoE_B_lossfree_u1e2_credit_control_s0_200k/checkpoints/ckpt_step_200000.pth
+  --lossfree-config /path/to/004_ProMoE_B_lossfree_u1e2_credit_control_s0_200k.yaml
+  --output-dir analyses/archvied_analyses/YYYY-MM-DD/credit-balance-lossfree-s0-200k-v2
+)
+```
+
+Loss-Free step-200K checkpoint 存在后，先锁 protocol：
+
+```bash
+"$PY" analyses/run_learning_credit_balance_cross_checkpoint.py "${LOCKED_INPUTS[@]}" --prepare-only
 ```
 
 再依次运行：
 
 ```bash
-/home/dev/miniforge3/envs/promoe/bin/python \
-  analyses/run_learning_credit_balance_cross_checkpoint.py \
-  --stage plumbing
-
-/home/dev/miniforge3/envs/promoe/bin/python \
-  analyses/run_learning_credit_balance_cross_checkpoint.py \
-  --stage discovery
-
-/home/dev/miniforge3/envs/promoe/bin/python \
-  analyses/run_learning_credit_balance_cross_checkpoint.py \
-  --stage parameter
-
-/home/dev/miniforge3/envs/promoe/bin/python \
-  analyses/run_learning_credit_balance_cross_checkpoint.py \
-  --stage confirmatory
+"$PY" analyses/run_learning_credit_balance_cross_checkpoint.py "${LOCKED_INPUTS[@]}" --stage plumbing
+"$PY" analyses/run_learning_credit_balance_cross_checkpoint.py "${LOCKED_INPUTS[@]}" --stage discovery
+"$PY" analyses/run_learning_credit_balance_cross_checkpoint.py "${LOCKED_INPUTS[@]}" --stage parameter
+"$PY" analyses/run_learning_credit_balance_cross_checkpoint.py "${LOCKED_INPUTS[@]}" --stage confirmatory
 ```
 
-默认使用 GPU 4-7，输出到：
+每个阶段都要传同一组锁定输入：protocol 记录了这些文件的实际位置，位置变了会与已锁的 protocol 不一致而直接失败。GPU 固定为 4-7（`--devices` 只接受 `cuda:4,cuda:5,cuda:6,cuda:7`）。这是长任务，必须在当前 attached tmux session 的新 window 中运行。
 
-```text
-/home/dev/promoe-probes/credit-balance-lossfree-s0-200k-v2
-```
+## 当前输入状态（2026-09-13 在实验服务器的仓库副本中核对）
 
-这是长任务，必须在当前 attached tmux session 的新 window 中运行。
+`/home/dev/promoe-probes` 和 `/home/dev/promoe-runs` 这两个仓库外目录已经不存在，保留下来的内容迁到了仓库内的 `outputs/`、`outputs/archived_outputs/` 和 `analyses/archvied_analyses/`。在这些目录中逐项核对：
+
+| 输入 | 状态 |
+| --- | --- |
+| Base step-200K checkpoint | 在 `analyses/archvied_analyses/2026-08-28/dirty_probes/promoe-probes/base-seed0-ckpt_step_200000.pth`，大小和 SHA256 都与代码钉住的值一致 |
+| Loss-Free 训练配置 | 已随实验从 `configs/` 删除（`717d172`）。钉住的字节只在 Git 历史里：`git show b75164f:configs/004_ProMoE_B_lossfree_u1e2_credit_control_s0_200k.yaml`；`0fca45a` 改过其中的 `output_dir`，之后的版本哈希对不上。取回后放在被 Git 忽略的位置，不要放回 `configs/` |
+| 两份 Loss-Free 预注册 JSON | 未找到 |
+| Base credit-balance gate 的 protocol、预注册与结果目录 | 未找到 |
+| Loss-Free step-200K checkpoint | 未找到（`outputs/archived_outputs/2026-08-28/ProMoE_TC_B_lossfree/` 是空目录） |
+
+后三项找回之前，这个 gate 无法重跑，也不能拿其他文件顶替。
 
 ## 结论边界
 
