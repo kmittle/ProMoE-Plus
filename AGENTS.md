@@ -27,7 +27,7 @@ Main code layout:
 - `repa/`: REPA helper package used by `train_with_repa.py` and `train_with_MoS_repa.py` (`encoder.py`, `loss.py`).
 - `preprocess/`: VAE latent preprocessing, parquet-direct latent encoding, ImageNet preparation helpers, and shared cache files such as `preprocess/image_paths_cache.txt` and `preprocess/latent_paths_cache.txt`.
 - `evaluation/`: OpenAI-style evaluation pipeline (`run_eval.py`, `evaluator.py`, `download_ref_batches.py`).
-- `analyses/`: analysis entry scripts live directly under this directory. Current entrypoints include `run_tokenwise_tsne.py`, `run_samplewise_pooled_tsne.py`, `run_imagewise_tsne.py`, `run_repa_dyna_heatmap.py`, `run_token_choice_expert_heatmap.py`, `run_compute_flops.py`, `run_mos_routing_analysis.py`, and the single/batch denoising-regret probes. Reusable helpers live under `analyses/t_SNE/`, `analyses/heatmap/`, `analyses/flops/`, `analyses/mos_routing/`, and `analyses/denoising_regret/`; `analyses/README.md` should remain a brief directory-level overview only, while detailed usage belongs in per-entry Markdown files that share the same basename as each entry `.py`.
+- `analyses/`: analysis entry scripts live directly under this directory. Current entrypoints include the t-SNE, REPA-DYNA heatmap, FLOPs, MoS-routing, denoising-regret, routing-equivariance, timestep-utility, compute-exchange, phase-default, expert-update-budget, learning-credit-balance, DINO-neighborhood, affinity-responsibility, CFG-route-inversion, and expert-function-consistency probes listed in `analyses/README.md`. Reusable helpers live under `analyses/t_SNE/`, `analyses/heatmap/`, `analyses/flops/`, `analyses/mos_routing/`, `analyses/denoising_regret/`, `analyses/routing_translation/`, `analyses/timestep_utility/`, `analyses/routing_metric/`, `analyses/phase_default/`, `analyses/expert_update_budget/`, and `analyses/dino_utility_neighborhood/`; `analyses/README.md` should remain a brief directory-level overview only, while detailed usage belongs in per-entry Markdown files that share the same basename as each entry `.py`.
 - `scripts/repa/`: REPA-B / REPA-Shared-B / REPA-Cond-B helpers plus router / routed / double-share, cross-alignment, and L/XL scale-up train + sample + eval wrappers.
 - `scripts/MoS_repa/`: MoS-REPA, naive / naive-choice, per-block / blockwise / fused, multi-align, Teacher-Affinity Routing, shared-routed spectral responsibility, teacher-conditioned expert geometry, first-order denoising-regret routing, cross-alignment, and B/L/XL block-range sweep wrappers following `scripts/template.sh`.
 - `scripts/hierar/`: B-scale hierarchical + heterogeneous-expert train + infer/eval wrappers.
@@ -50,6 +50,7 @@ Main code layout:
 - `command-tables/`: CSV template assets for run-time command tables.
 - `collapse_smoking_test/`, `collapse_smoking_test_10k/`: crash-diagnosis smoke configs, logs, summaries, and rerun helpers for cross-alignment stability work.
 - `tb_smoke_200/`, `tb_smoke_500/`: TensorBoard/`TrainingMonitor` smoke harnesses for selected cross-alignment configs.
+- `research_on_expert_learning_signal_balance/`: retained research note and the shared `git_provenance.py` utility. The former credit-rate continuation implementation, configs, launchers, and tests were removed; do not treat archived continuation outputs as experiments or paper evidence.
 - `REPA/` (uppercase): separate upstream-style subproject with its own docs and `AGENTS.md`.
 
 Top-level wrappers:
@@ -117,6 +118,19 @@ soft-links for experiment results. `/home/dev` must not contain any
 repository-level `literature/` directory. Keep only the checkpoints and
 analysis artifacts needed for reproducibility; regenerable PNG samples may be
 discarded after evaluator artifacts are verified.
+
+Never write experiment results outside this repository. Checkpoints, logs,
+samples, evaluator outputs, TensorBoard data, metrics, manifests, and analysis
+artifacts must use paths under the repository's `outputs/` or other
+repository-tracked experiment directories. External dataset, VAE, and teacher
+checkpoint caches are input dependencies and do not authorize placing outputs
+under `/home/dev`, `/tmp`, or any other path outside the repository.
+
+Do not revive deleted continuation studies by loading a checkpoint from another
+experiment. Any future credit-redistribution or similar optimization study
+must be implemented as a fresh, step-0-controlled experiment with matched
+seeds, data order, optimizer settings, and the same 300K dual-CFG gate as the
+active H/R/O/P matrix.
 
 ## Build, Test, and Development Commands
 Create training env:
