@@ -8,10 +8,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from credit_redistribution.controller import BRANCHES
-from credit_redistribution.git_provenance import run_git
-from credit_redistribution.heldout import canonical_json_sha256
-from credit_redistribution.protocol import (
+from research_on_expert_learning_signal_balance.controller import BRANCHES
+from research_on_expert_learning_signal_balance.git_provenance import run_git
+from research_on_expert_learning_signal_balance.heldout import canonical_json_sha256
+from research_on_expert_learning_signal_balance.protocol import (
     PROJECT_ROOT,
     SEALED_GPU_IDS,
     SOURCE_PATHS,
@@ -22,12 +22,12 @@ from credit_redistribution.protocol import (
     load_and_verify_protocol,
     resolve_archived_artifact_path,
 )
-from credit_redistribution.protocol_lock import (
+from research_on_expert_learning_signal_balance.protocol_lock import (
     V3_SHA256,
     V4_SHA256,
     load_effective_protocol,
 )
-from credit_redistribution.protocol import V3_PATH, V4_PATH
+from research_on_expert_learning_signal_balance.protocol import V3_PATH, V4_PATH
 
 
 class ProtocolTest(unittest.TestCase):
@@ -149,9 +149,9 @@ class ProtocolTest(unittest.TestCase):
                 check=True,
             )
             with mock.patch(
-                "credit_redistribution.protocol.PROJECT_ROOT", real
+                "research_on_expert_learning_signal_balance.protocol.PROJECT_ROOT", real
             ), mock.patch(
-                "credit_redistribution.git_provenance."
+                "research_on_expert_learning_signal_balance.git_provenance."
                 "AUTHORITATIVE_REMOTE_URL",
                 str(authoritative),
             ), mock.patch.dict(
@@ -183,9 +183,9 @@ class ProtocolTest(unittest.TestCase):
             )
             (real / "dirty.txt").write_text("dirty\n", encoding="utf-8")
             with mock.patch(
-                "credit_redistribution.protocol.PROJECT_ROOT", real
+                "research_on_expert_learning_signal_balance.protocol.PROJECT_ROOT", real
             ), mock.patch(
-                "credit_redistribution.git_provenance."
+                "research_on_expert_learning_signal_balance.git_provenance."
                 "AUTHORITATIVE_REMOTE_URL",
                 str(authoritative),
             ), mock.patch.dict(
@@ -200,7 +200,7 @@ class ProtocolTest(unittest.TestCase):
     def test_sealed_gpu_mapping_handles_remapped_visibility(self):
         with mock.patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "4,5,6,7"}):
             with mock.patch(
-                "credit_redistribution.protocol.torch.cuda.device_count",
+                "research_on_expert_learning_signal_balance.protocol.torch.cuda.device_count",
                 return_value=4,
             ):
                 self.assertEqual(
@@ -217,7 +217,7 @@ class ProtocolTest(unittest.TestCase):
             },
         ):
             with mock.patch(
-                "credit_redistribution.protocol.torch.cuda.device_count",
+                "research_on_expert_learning_signal_balance.protocol.torch.cuda.device_count",
                 return_value=4,
             ):
                 self.assertEqual(
@@ -232,7 +232,7 @@ class ProtocolTest(unittest.TestCase):
             clear=True,
         ):
             with mock.patch(
-                "credit_redistribution.protocol.torch.cuda.device_count",
+                "research_on_expert_learning_signal_balance.protocol.torch.cuda.device_count",
                 return_value=4,
             ):
                 with self.assertRaisesRegex(RuntimeError, "Cannot map"):
@@ -248,7 +248,7 @@ class ProtocolTest(unittest.TestCase):
             clear=True,
         ):
             with mock.patch(
-                "credit_redistribution.protocol.torch.cuda.device_count",
+                "research_on_expert_learning_signal_balance.protocol.torch.cuda.device_count",
                 return_value=4,
             ):
                 with self.assertRaisesRegex(RuntimeError, "contradicts numeric"):
@@ -267,7 +267,7 @@ class ProtocolTest(unittest.TestCase):
                 canonical_json_sha256(expected) + "\n", encoding="utf-8"
             )
             with mock.patch(
-                "credit_redistribution.protocol.build_protocol",
+                "research_on_expert_learning_signal_balance.protocol.build_protocol",
                 return_value=copy.deepcopy(expected),
             ):
                 loaded, _ = load_and_verify_protocol(path, require_git=True)
@@ -297,8 +297,8 @@ class ProtocolTest(unittest.TestCase):
     def test_source_hash_manifest_contains_every_declared_source(self):
         hashes = _source_hashes()
         self.assertTrue(set(SOURCE_PATHS).issubset(hashes))
-        self.assertIn("credit_redistribution/orchestration.py", hashes)
-        self.assertIn("credit_redistribution/git_provenance.py", hashes)
+        self.assertIn("research_on_expert_learning_signal_balance/orchestration.py", hashes)
+        self.assertIn("research_on_expert_learning_signal_balance/git_provenance.py", hashes)
         self.assertIn("analyses/run_credit_redistribution_gate.py", hashes)
         self.assertIn("models/phase_metric.py", hashes)
 

@@ -11,12 +11,12 @@ from unittest import mock
 import numpy as np
 import torch
 
-from credit_redistribution.controller import (
+from research_on_expert_learning_signal_balance.controller import (
     BRANCHES,
     CHECKPOINT_STATE_KEY,
     CONTROLLER_STATE_VERSION,
 )
-from credit_redistribution.evaluator import (
+from research_on_expert_learning_signal_balance.evaluator import (
     BLOCK_INDICES,
     CHECKPOINT_STATES,
     FINAL_STEP,
@@ -29,7 +29,7 @@ from credit_redistribution.evaluator import (
     validate_branch_transcripts,
     validate_controller_artifacts,
 )
-from credit_redistribution.transcript import (
+from research_on_expert_learning_signal_balance.transcript import (
     FIELD_ORDER,
     JsonlLedger,
     build_global_record,
@@ -217,7 +217,7 @@ class EvaluatorTest(unittest.TestCase):
             root = Path(temporary)
             _write_controller_artifacts(root, branch, record)
             with mock.patch(
-                "credit_redistribution.evaluator._validate_telemetry",
+                "research_on_expert_learning_signal_balance.evaluator._validate_telemetry",
                 return_value={},
             ):
                 result = validate_controller_artifacts(
@@ -272,7 +272,7 @@ class EvaluatorTest(unittest.TestCase):
                     root = Path(temporary)
                     _write_controller_artifacts(root, branch, record)
                     with mock.patch(
-                        "credit_redistribution.evaluator._validate_telemetry",
+                        "research_on_expert_learning_signal_balance.evaluator._validate_telemetry",
                         return_value={},
                     ), self.assertRaisesRegex(RuntimeError, expected_message):
                         validate_controller_artifacts(

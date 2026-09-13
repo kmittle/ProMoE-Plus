@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from credit_redistribution.transcript import (
+from research_on_expert_learning_signal_balance.transcript import (
     FIELD_ORDER,
     JsonlLedger,
     TranscriptOnlyRecorder,
@@ -338,10 +338,10 @@ class TranscriptTest(unittest.TestCase):
                 "artifact_root": str(root / "artifacts"),
             }
             with mock.patch(
-                "credit_redistribution.transcript.load_effective_protocol",
+                "research_on_expert_learning_signal_balance.transcript.load_effective_protocol",
                 return_value=protocol,
             ), mock.patch(
-                "credit_redistribution.transcript._dist_world_size",
+                "research_on_expert_learning_signal_balance.transcript._dist_world_size",
                 return_value=4,
             ):
                 recorder = TranscriptOnlyRecorder(Model(), runtime_cfg, cfg)

@@ -48,7 +48,7 @@ from analyses.timestep_utility.probe import (
     _validate_moe_block_contract,
     run_timestep_utility_probe,
 )
-from credit_redistribution.git_provenance import (
+from research_on_expert_learning_signal_balance.git_provenance import (
     repository_state,
     verify_worktree_source_manifest,
 )
@@ -134,7 +134,7 @@ LOCKED_SOURCE_PATHS = (
     "models/models_ProMoE_TC.py",
     "models/modules.py",
     "models/phase_metric.py",
-    "credit_redistribution/git_provenance.py",
+    "research_on_expert_learning_signal_balance/git_provenance.py",
     "analyses/denoising_regret/io.py",
     "analyses/denoising_regret/probe.py",
     "analyses/routing_translation/probe.py",
@@ -153,7 +153,7 @@ LOCKED_TRAINING_SOURCE_PATHS = (
     "models/models_ProMoE_TC.py",
     "models/modules.py",
     "models/phase_metric.py",
-    "credit_redistribution/git_provenance.py",
+    "research_on_expert_learning_signal_balance/git_provenance.py",
 )
 
 

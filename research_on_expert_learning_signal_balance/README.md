@@ -8,7 +8,7 @@
 
 当前没有任何经过批准的 credit redistribution 训练命令。三份旧配置已经标记为归档；旧 gate 和 train.py 都会直接拒绝启动它们。未来若重新启动这条线，必须先实现一套新的 fresh-training 协议，并从 step 0 训练到 500K。
 
-旧实验产生的 JSON、日志和统计结果统一放在 `archived_credit_redistribution/<日期>/`。这个归档目录由 Git 忽略，只用于保留已经做过但不能作为正式论文证据的结果。仍被 `train.py` 导入的 Python 源码留在本目录根部，避免基础训练因为整理文件而无法启动。
+旧实验产生的 JSON、日志和统计结果统一放在仓库根目录下的 `credit_redistribution/archived_credit_redistribution/<日期>/`——沿用归档当时的目录名，因为三份归档配置里记录的是这个绝对路径，`protocol.py` 的 `ARCHIVED_CREDIT_ROOT` 必须与它们保持一致。这个归档目录由 Git 忽略，只用于保留已经做过但不能作为正式论文证据的结果。仍被 `train.py` 导入的 Python 源码留在本目录根部，避免基础训练因为整理文件而无法启动。
 
 ## 这个目录原本想研究什么
 

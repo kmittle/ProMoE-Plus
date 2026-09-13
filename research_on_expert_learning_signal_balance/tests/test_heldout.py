@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
 
-from credit_redistribution.heldout import (
+from research_on_expert_learning_signal_balance.heldout import (
     _load_npy_tensor,
     _materialize_case,
     stable_seed_mod,

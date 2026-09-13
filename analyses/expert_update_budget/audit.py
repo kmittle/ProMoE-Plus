@@ -40,7 +40,7 @@ except ImportError:  # pragma: no cover - older supported Torch releases
 
 from analyses.denoising_regret.probe import _build_model
 from analyses.t_SNE.checkpoint_utils import load_runtime_cfg, parse_checkpoint_step
-from credit_redistribution.git_provenance import (
+from research_on_expert_learning_signal_balance.git_provenance import (
     repository_state,
     verify_worktree_source_manifest,
 )
@@ -56,7 +56,7 @@ LOCKED_TRAINING_SOURCE_PATHS = (
     "models/models_ProMoE_TC.py",
     "models/modules.py",
     "models/phase_metric.py",
-    "credit_redistribution/git_provenance.py",
+    "research_on_expert_learning_signal_balance/git_provenance.py",
 )
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 EXPERT_PARAMETER_PATTERN = re.compile(

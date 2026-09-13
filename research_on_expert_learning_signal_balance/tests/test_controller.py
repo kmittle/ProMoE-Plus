@@ -13,7 +13,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch import nn
 
-from credit_redistribution.controller import (
+from research_on_expert_learning_signal_balance.controller import (
     CreditRateNormalizer,
     CreditRedistributionController,
     _distributed_guard,
@@ -248,10 +248,10 @@ class ControllerFormulaTest(unittest.TestCase):
 class ControllerIntegrationTest(unittest.TestCase):
     def _make_controller(self, model, root, dataset_root):
         with mock.patch(
-            "credit_redistribution.controller.load_effective_protocol",
+            "research_on_expert_learning_signal_balance.controller.load_effective_protocol",
             return_value=_protocol(),
         ), mock.patch(
-            "credit_redistribution.controller._world_size",
+            "research_on_expert_learning_signal_balance.controller._world_size",
             return_value=4,
         ):
             controller = CreditRedistributionController(

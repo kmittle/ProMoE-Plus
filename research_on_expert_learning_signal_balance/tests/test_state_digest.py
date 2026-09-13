@@ -4,7 +4,7 @@ import unittest
 
 import torch
 
-from credit_redistribution.state_digest import (
+from research_on_expert_learning_signal_balance.state_digest import (
     canonical_state_sha256,
     checkpoint_state_digests,
 )

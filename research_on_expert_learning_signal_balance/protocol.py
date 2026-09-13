@@ -32,6 +32,10 @@ ARCHIVED_ANALYSIS_ROOT = (
     PROJECT_ROOT
     / "analyses/archvied_analyses/2026-08-28/dirty_probes/promoe-probes"
 )
+# Pre-rename spelling on purpose: this immutable archive is recorded by
+# absolute path in the three branch YAMLs, and _validate_branch_configs()
+# compares them against the constants derived here, so both must keep the
+# directory name the artefacts were sealed under.
 ARCHIVED_CREDIT_ROOT = (
     PROJECT_ROOT
     / "credit_redistribution/archived_credit_redistribution/2026-08-28"
@@ -120,28 +124,28 @@ SOURCE_PATHS = (
     "analyses/run_learning_credit_balance_cross_checkpoint.py",
     "analyses/run_credit_redistribution_gate.py",
     "analyses/t_SNE/checkpoint_utils.py",
-    "credit_redistribution/__init__.py",
-    "credit_redistribution/benchmark.py",
-    "credit_redistribution/controller.py",
-    "credit_redistribution/evaluator.py",
-    "credit_redistribution/git_provenance.py",
-    "credit_redistribution/heldout.py",
-    "credit_redistribution/orchestration.py",
-    "credit_redistribution/protocol.py",
-    "credit_redistribution/protocol_lock.py",
-    "credit_redistribution/serialization.py",
-    "credit_redistribution/state_digest.py",
-    "credit_redistribution/statistics.py",
-    "credit_redistribution/transcript.py",
-    "credit_redistribution/tests/test_controller.py",
-    "credit_redistribution/tests/test_evaluator.py",
-    "credit_redistribution/tests/test_heldout.py",
-    "credit_redistribution/tests/test_orchestration.py",
-    "credit_redistribution/tests/test_protocol.py",
-    "credit_redistribution/tests/test_state_digest.py",
-    "credit_redistribution/tests/test_statistics.py",
-    "credit_redistribution/tests/test_transcript.py",
-    "credit_redistribution/tests/test_benchmark.py",
+    "research_on_expert_learning_signal_balance/__init__.py",
+    "research_on_expert_learning_signal_balance/benchmark.py",
+    "research_on_expert_learning_signal_balance/controller.py",
+    "research_on_expert_learning_signal_balance/evaluator.py",
+    "research_on_expert_learning_signal_balance/git_provenance.py",
+    "research_on_expert_learning_signal_balance/heldout.py",
+    "research_on_expert_learning_signal_balance/orchestration.py",
+    "research_on_expert_learning_signal_balance/protocol.py",
+    "research_on_expert_learning_signal_balance/protocol_lock.py",
+    "research_on_expert_learning_signal_balance/serialization.py",
+    "research_on_expert_learning_signal_balance/state_digest.py",
+    "research_on_expert_learning_signal_balance/statistics.py",
+    "research_on_expert_learning_signal_balance/transcript.py",
+    "research_on_expert_learning_signal_balance/tests/test_controller.py",
+    "research_on_expert_learning_signal_balance/tests/test_evaluator.py",
+    "research_on_expert_learning_signal_balance/tests/test_heldout.py",
+    "research_on_expert_learning_signal_balance/tests/test_orchestration.py",
+    "research_on_expert_learning_signal_balance/tests/test_protocol.py",
+    "research_on_expert_learning_signal_balance/tests/test_state_digest.py",
+    "research_on_expert_learning_signal_balance/tests/test_statistics.py",
+    "research_on_expert_learning_signal_balance/tests/test_transcript.py",
+    "research_on_expert_learning_signal_balance/tests/test_benchmark.py",
 )
 
 
@@ -600,7 +604,7 @@ def build_protocol(require_clean=True, require_origin=True):
         "model_contract": model_contract,
         "project_source_file_sha256": source_hashes,
         "evaluator_source_file_sha256": sha256_file(
-            PROJECT_ROOT / "credit_redistribution/evaluator.py"
+            PROJECT_ROOT / "research_on_expert_learning_signal_balance/evaluator.py"
         ),
         "environment": _environment(),
         "prerequisites": prerequisites,

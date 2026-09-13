@@ -10,16 +10,16 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from credit_redistribution.controller import BRANCHES
-from credit_redistribution.git_provenance import (
+from research_on_expert_learning_signal_balance.controller import BRANCHES
+from research_on_expert_learning_signal_balance.git_provenance import (
     authoritative_remote_tip,
     repository_state,
     run_git,
     sanitized_git_environment,
     verify_worktree_source_manifest,
 )
-from credit_redistribution.heldout import canonical_json_sha256
-from credit_redistribution.orchestration import (
+from research_on_expert_learning_signal_balance.heldout import canonical_json_sha256
+from research_on_expert_learning_signal_balance.orchestration import (
     _git_blob_sha256,
     _git_commit_is_ancestor,
     _revalidate_before_aggregation,
@@ -27,7 +27,7 @@ from credit_redistribution.orchestration import (
     _verify_cross_checkpoint_git_provenance,
     verify_prerequisites,
 )
-from credit_redistribution.serialization import sha256_file
+from research_on_expert_learning_signal_balance.serialization import sha256_file
 
 
 def _write_json(path, payload):
@@ -142,7 +142,7 @@ class OrchestrationTest(unittest.TestCase):
             self.assertEqual(rewritten, forged_tip)
 
             with mock.patch(
-                "credit_redistribution.git_provenance.tempfile.tempdir",
+                "research_on_expert_learning_signal_balance.git_provenance.tempfile.tempdir",
                 str(attacker),
             ):
                 observed = authoritative_remote_tip(
@@ -387,9 +387,9 @@ class OrchestrationTest(unittest.TestCase):
             )
 
             with mock.patch(
-                "credit_redistribution.orchestration.PROJECT_ROOT", root
+                "research_on_expert_learning_signal_balance.orchestration.PROJECT_ROOT", root
             ), mock.patch(
-                "credit_redistribution.git_provenance."
+                "research_on_expert_learning_signal_balance.git_provenance."
                 "AUTHORITATIVE_REMOTE_URL",
                 str(remote),
             ):
@@ -533,7 +533,7 @@ class OrchestrationTest(unittest.TestCase):
             )
             self.assertEqual(default_ancestry.returncode, 0)
             with mock.patch(
-                "credit_redistribution.orchestration.PROJECT_ROOT", root
+                "research_on_expert_learning_signal_balance.orchestration.PROJECT_ROOT", root
             ), self.assertRaisesRegex(RuntimeError, "replace refs are forbidden"):
                 _verify_cross_checkpoint_git_provenance(protocol, root_b)
 
@@ -541,7 +541,7 @@ class OrchestrationTest(unittest.TestCase):
             grafts = root / ".git" / "info" / "grafts"
             grafts.write_text(f"{root_b} {root_a}\n", encoding="ascii")
             with mock.patch(
-                "credit_redistribution.orchestration.PROJECT_ROOT", root
+                "research_on_expert_learning_signal_balance.orchestration.PROJECT_ROOT", root
             ), self.assertRaisesRegex(RuntimeError, "grafts are forbidden"):
                 _verify_cross_checkpoint_git_provenance(protocol, root_b)
 
@@ -588,7 +588,7 @@ class OrchestrationTest(unittest.TestCase):
             with self.subTest(
                 source_hashes=source_hashes
             ), mock.patch(
-                "credit_redistribution.orchestration._git_commit_is_ancestor",
+                "research_on_expert_learning_signal_balance.orchestration._git_commit_is_ancestor",
                 return_value=True,
             ), self.assertRaisesRegex(RuntimeError, message):
                 _verify_cross_checkpoint_git_provenance(protocol, "b" * 40)
@@ -605,10 +605,10 @@ class OrchestrationTest(unittest.TestCase):
             "project_source_sha256": {"analyses/probe.py": source_sha256},
         }
         with mock.patch(
-            "credit_redistribution.orchestration._git_commit_is_ancestor",
+            "research_on_expert_learning_signal_balance.orchestration._git_commit_is_ancestor",
             return_value=True,
         ) as ancestry, mock.patch(
-            "credit_redistribution.orchestration._git_blob_sha256",
+            "research_on_expert_learning_signal_balance.orchestration._git_blob_sha256",
             return_value=source_sha256,
         ) as blob_sha256:
             _verify_cross_checkpoint_git_provenance(protocol, current_commit)
@@ -624,7 +624,7 @@ class OrchestrationTest(unittest.TestCase):
             "project_source_sha256": {"analyses/probe.py": "c" * 64},
         }
         with mock.patch(
-            "credit_redistribution.orchestration._git_commit_is_ancestor",
+            "research_on_expert_learning_signal_balance.orchestration._git_commit_is_ancestor",
             return_value=False,
         ), self.assertRaisesRegex(RuntimeError, "not an ancestor"):
             _verify_cross_checkpoint_git_provenance(protocol, "b" * 40)
@@ -638,10 +638,10 @@ class OrchestrationTest(unittest.TestCase):
             "project_source_sha256": {"analyses/probe.py": "c" * 64},
         }
         with mock.patch(
-            "credit_redistribution.orchestration._git_commit_is_ancestor",
+            "research_on_expert_learning_signal_balance.orchestration._git_commit_is_ancestor",
             return_value=True,
         ), mock.patch(
-            "credit_redistribution.orchestration._git_blob_sha256",
+            "research_on_expert_learning_signal_balance.orchestration._git_blob_sha256",
             return_value="d" * 64,
         ), self.assertRaisesRegex(RuntimeError, "Git source binding changed"):
             _verify_cross_checkpoint_git_provenance(protocol, "b" * 40)
@@ -674,17 +674,17 @@ class OrchestrationTest(unittest.TestCase):
             trainer,
         )
         with mock.patch(
-            "credit_redistribution.orchestration._load_sealed",
+            "research_on_expert_learning_signal_balance.orchestration._load_sealed",
             return_value=completion,
         ), mock.patch(
-            "credit_redistribution.orchestration.validate_protocol_for_evaluation",
+            "research_on_expert_learning_signal_balance.orchestration.validate_protocol_for_evaluation",
             return_value=validated,
         ):
             _revalidate_before_aggregation(protocol, protocol_sha256)
             changed = copy.deepcopy(completion)
             changed["branch_integrity"][BRANCHES[0]] = {"ledger": "f" * 64}
             with mock.patch(
-                "credit_redistribution.orchestration._load_sealed",
+                "research_on_expert_learning_signal_balance.orchestration._load_sealed",
                 return_value=changed,
             ), self.assertRaisesRegex(RuntimeError, "branch_integrity"):
                 _revalidate_before_aggregation(protocol, protocol_sha256)
@@ -767,13 +767,13 @@ class OrchestrationTest(unittest.TestCase):
                 legacy_v2: v2,
             }
             with mock.patch(
-                "credit_redistribution.orchestration."
+                "research_on_expert_learning_signal_balance.orchestration."
                 "_verify_continuation_git_provenance"
             ) as verify_current, mock.patch(
-                "credit_redistribution.orchestration."
+                "research_on_expert_learning_signal_balance.orchestration."
                 "_verify_cross_checkpoint_git_provenance"
             ) as verify_git, mock.patch(
-                "credit_redistribution.orchestration."
+                "research_on_expert_learning_signal_balance.orchestration."
                 "resolve_archived_artifact_path",
                 side_effect=lambda path: archived_paths[path],
             ):
@@ -791,7 +791,7 @@ class OrchestrationTest(unittest.TestCase):
 
             v2.write_text("changed", encoding="utf-8")
             with mock.patch(
-                "credit_redistribution.orchestration."
+                "research_on_expert_learning_signal_balance.orchestration."
                 "resolve_archived_artifact_path",
                 side_effect=lambda path: archived_paths[path],
             ), self.assertRaisesRegex(RuntimeError, "preregistration changed"):

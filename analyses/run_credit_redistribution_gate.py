@@ -12,15 +12,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from credit_redistribution.controller import BRANCHES
-from credit_redistribution.heldout import materialize_heldout
-from credit_redistribution.orchestration import (
+from research_on_expert_learning_signal_balance.controller import BRANCHES
+from research_on_expert_learning_signal_balance.heldout import materialize_heldout
+from research_on_expert_learning_signal_balance.orchestration import (
     run_aggregation,
     run_evaluation,
     run_preflight,
     run_throughput,
 )
-from credit_redistribution.protocol import (
+from research_on_expert_learning_signal_balance.protocol import (
     DEFAULT_OUTPUT_ROOT,
     LATENT_ROOT,
     PARENT_PROTOCOL,

@@ -19,7 +19,7 @@ import torch
 import torch.nn.functional as F
 import yaml
 
-from credit_redistribution.git_provenance import run_git
+from research_on_expert_learning_signal_balance.git_provenance import run_git
 from analyses.denoising_regret.probe import (
     _build_model,
     _compute_router,
@@ -80,6 +80,10 @@ REQUIRED_COMMON_SOURCE_PATHS = frozenset({
     "utils.py",
     "train.py",
     "models/modules.py",
+    # Pre-rename spelling on purpose: the pinned train.py digests below identify
+    # checkpoints trained before the provenance package was renamed, so their
+    # recorded manifests carry this key. Only checkpoint-recorded dicts are
+    # compared here (never the worktree), so the old key stays correct.
     "credit_redistribution/git_provenance.py",
 })
 PAIRED_IDENTICAL_SOURCE_PATHS = REQUIRED_COMMON_SOURCE_PATHS - {"train.py"}

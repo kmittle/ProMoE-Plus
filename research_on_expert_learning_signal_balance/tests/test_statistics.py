@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from credit_redistribution.statistics import (
+from research_on_expert_learning_signal_balance.statistics import (
     BLOCK_COUNT,
     CASE_COUNT,
     EXPERT_COUNT,
@@ -90,7 +90,7 @@ class StatisticsTest(unittest.TestCase):
             # tampering simulation writable before replacing its bytes.
             path.chmod(0o644)
             np.save(path, matrix, allow_pickle=False)
-            from credit_redistribution.serialization import sha256_file
+            from research_on_expert_learning_signal_balance.serialization import sha256_file
 
             path.with_suffix(path.suffix + ".sha256").chmod(0o644)
             path.with_suffix(path.suffix + ".sha256").write_text(

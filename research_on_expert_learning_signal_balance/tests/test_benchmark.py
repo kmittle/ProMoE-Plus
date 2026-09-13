@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from credit_redistribution.benchmark import DistributedThroughputTimer
+from research_on_expert_learning_signal_balance.benchmark import DistributedThroughputTimer
 
 
 class BenchmarkTest(unittest.TestCase):
@@ -28,20 +28,20 @@ class BenchmarkTest(unittest.TestCase):
                 "output_path": str(output_path),
             }
             with mock.patch(
-                "credit_redistribution.benchmark.dist.is_initialized",
+                "research_on_expert_learning_signal_balance.benchmark.dist.is_initialized",
                 return_value=True,
             ), mock.patch(
-                "credit_redistribution.benchmark.dist.get_rank", return_value=0
+                "research_on_expert_learning_signal_balance.benchmark.dist.get_rank", return_value=0
             ), mock.patch(
-                "credit_redistribution.benchmark.dist.get_world_size", return_value=4
+                "research_on_expert_learning_signal_balance.benchmark.dist.get_world_size", return_value=4
             ), mock.patch(
-                "credit_redistribution.benchmark.dist.all_gather_object"
+                "research_on_expert_learning_signal_balance.benchmark.dist.all_gather_object"
             ), mock.patch(
-                "credit_redistribution.benchmark.dist.barrier"
+                "research_on_expert_learning_signal_balance.benchmark.dist.barrier"
             ) as barrier, mock.patch(
-                "credit_redistribution.benchmark.torch.cuda.synchronize"
+                "research_on_expert_learning_signal_balance.benchmark.torch.cuda.synchronize"
             ) as synchronize, mock.patch(
-                "credit_redistribution.benchmark.time.perf_counter"
+                "research_on_expert_learning_signal_balance.benchmark.time.perf_counter"
             ) as perf_counter:
                 calls = []
                 synchronize.side_effect = lambda: calls.append("synchronize")

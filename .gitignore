@@ -35,6 +35,7 @@ latent_paths_cache.txt
 /training_logs/
 /analyses/archvied_analyses/
 /research_on_expert_learning_signal_balance/archived_credit_redistribution/
+/credit_redistribution/archived_credit_redistribution/
 
 # Local Claude Code harness settings (per-user permission allowlists)
 /.claude/settings.local.json
