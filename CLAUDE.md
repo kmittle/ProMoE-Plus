@@ -358,6 +358,22 @@ the absence of any "start from this checkpoint" parameter — `load_latest_check
 only the run's own `checkpoints/` dir, and the former `initial_checkpoint_path` seeding path
 was removed. Do not add one back.
 
+**Never write experiment results outside the repository.** `output_dir` must stay inside the
+working tree — the `config.py` default `outputs/` is the intended value, and a config should
+normally not set it at all. Checkpoints, `training.log` / `sample.log`, samples, evaluator
+outputs, TensorBoard data, metrics, manifests and analysis artifacts all belong under
+`outputs/{model_name}/{custom_cfg_name}/` (or another repo-tracked experiment dir). A result
+written to an absolute path outside the repo (`/home/dev/promoe-runs`, `/mnt/cubefs/...`,
+`/tmp`, …) is invisible to this repo's tooling, cannot be traced back from the config, and is
+orphaned as soon as that server is recycled. **Inputs are the exception and are not affected**:
+the ImageNet latents / images (`data_path`, `latent_data_path`), the VAE and the DINOv2 teacher
+caches are large shared read-only dependencies that legitimately live outside the repo — being
+allowed to *read* from `/home/dev` or `/lustre01` never authorizes *writing* results there.
+Three legacy configs still violate this (`004_ProMoE_B_dino_route_margin_gate_v2_{correct,shuffled}_s0.yaml`
+and `004_ProMoE_B_proto_t_residual_phase_control_s0_v2.yaml`, all `output_dir: "/home/dev/promoe-runs"`);
+do not copy them, and do not repoint a config whose run already wrote checkpoints to the old
+path without first deciding what happens to those checkpoints.
+
 **Archived configs hard-fail.** `train.py:main()` raises immediately when a config carries
 `archived_experiment: True`. No config carries it today (the three
 `004_ProMoE_B_credit_rate_*_301k_20k.yaml` continuations that did were deleted under the rule
@@ -413,7 +429,7 @@ If the ablation is controlled by an existing config flag (e.g., `router_norm_typ
 - `preprocess/image_paths_cache.txt` caches the dataset file list (shared by `train.py` and `preprocess_vae.py`); delete and rebuild it after switching datasets or reorganizing files. `prepare_imagenet.py` rebuilds it deterministically (sorted, atomic) so DDP ranks don't race to regenerate it.
 - When `use_pre_latents=True`, the latent directory must be a sibling of `train/` named `sd-vae-ft-mse_Latents_256img_npz` — the code derives latent paths by replacing `train` in image paths.
 - `model.py` at the repo root is an unrelated reference file (not imported anywhere in the project). Ignore it when navigating the codebase — the project's models live in `models/`.
-- **`output_dir` is a per-config top-level key** (default `outputs/`), so an output bucket is `{output_dir}/{model_name}/{custom_cfg_name}/`. Recent experiment-server configs point it outside the repo (e.g. `/home/dev/promoe-runs`) and read latents from `/home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz` with `use_encoded_latents: True` — do not assume the `/lustre01/...` layout when reading a config. `scripts/check_output_dir.py` reads only **top-level** (zero-indent) `model_name`/`output_dir` scalars on purpose.
+- **`output_dir` is a per-config top-level key** (default `outputs/`), so an output bucket is `{output_dir}/{model_name}/{custom_cfg_name}/`. It must stay inside the repo — see "Never write experiment results outside the repository" above; the three configs still pointing at `/home/dev/promoe-runs` are legacy violations, not a pattern to follow. **Input paths are separate**: an experiment-server config may read latents from `/home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz` with `use_encoded_latents: True`, so do not assume the `/lustre01/...` layout when reading a config. `scripts/check_output_dir.py` reads only **top-level** (zero-indent) `model_name`/`output_dir` scalars on purpose.
 - `_previous_results/` holds the archived experiment table (`results_all_experiments_2026_06_21_to_08_05.md` + an HTML render). Some queue supervisors gate on that table being complete, so treat it as data a script depends on rather than a stale note.
 - `sample.py` loads checkpoints through a restricted unpickler where the installed torch supports it (`weights_only=True` plus `safe_globals([EasyDict, TorchVersion])`), falling back only when the runtime lacks `safe_globals`. Keep new checkpoint metadata inside that allowlist rather than widening the fallback.
 - Three skill directories mirror each other: `.claude/skills/` (Claude Code), `.agents/skills/` (the active Codex definitions — `check-cc`/`inspect-cc` are the Codex-side names), and `.codex/skills/`. When editing a shared workflow, update the mirrors together.
