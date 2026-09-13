@@ -15,22 +15,18 @@ pip install -r requirements.txt
 ```
 
 ### Unit Tests
-There are ~49 `unittest` modules (no pytest config, no top-level `tests/` dir) — they
-cover the analysis probes/gates, the evaluator, the DINO route table contract, and the
-suspended signal-balance package. Run them from the **repo root** so package imports
-resolve, using an interpreter that has torch:
+There are ~40 `unittest` modules (no pytest config, no top-level `tests/` dir) — they
+cover the analysis probes/gates, the evaluator, and the DINO route table contract. Run them
+from the **repo root** so package imports resolve, using an interpreter that has torch:
 
 ```bash
 # One module (works for any test home — plain namespace-package path)
 python -m unittest analyses.routing_metric.test_phase_metric -v
 # One package's suite — `discover -s` requires the start dir to have __init__.py
 python -m unittest discover -s analyses/timestep_utility -t .
-# The signal-balance suite
-python -m unittest discover -s research_on_expert_learning_signal_balance/tests -t .
 ```
 Test homes with `__init__.py` (so `discover -s <dir> -t .` works):
-`analyses/{denoising_regret,dino_utility_neighborhood,expert_function,expert_update_budget,phase_default,routing_metric,routing_translation,timestep_utility}/`,
-`research_on_expert_learning_signal_balance/tests/`.
+`analyses/{denoising_regret,dino_utility_neighborhood,expert_function,expert_update_budget,phase_default,routing_metric,routing_translation,timestep_utility}/`.
 `evaluation/`, `models/` and `preprocess/` hold `test_*.py` but have **no** `__init__.py`, so
 `discover -s` there fails with "Start directory is not importable" — name those modules
 directly instead (`python -m unittest models.test_models_ProMoE_TC_dino_route`).
@@ -94,7 +90,6 @@ Scripts under `scripts/` run train + sample + eval in one go. Organized by exper
 | `scripts/dino_route/` | DINO-assisted load-aware routing: `uncertainty` (s0 / s0p02) and `margin_gate` (v1 / v2-corrected) arms, plus their label-shuffled `permutation_seed` controls |
 | `scripts/phase_metric/` | Phase-conditioned routing-metric arms: `base_s0` control, `phase_metric`, and a timestep-shuffled control |
 | `scripts/fdrr/` | Teacher-free Base-FDRR (`ProMoE_TC_B_FDRR`) plus its seed-0 control |
-| `scripts/credit_redistribution/` | **Archived — must not be launched.** Mid-checkpoint 301K→321K continuation arms; `train.py` and `analyses/run_credit_redistribution_gate.py` hard-fail on them (see `research_on_expert_learning_signal_balance/README.md`) |
 
 ```bash
 # Example: run a MoS experiment end-to-end
@@ -303,7 +298,6 @@ Consult `analyses/README.md` for the authoritative per-script list; the groups a
 - **Causal routing probes** — `run_routing_translation_probe.py` / `run_routing_flip_probe.py` / `run_routing_translation_stratified_probe.py` (do top-1 routes follow transported content or absolute coordinates?), `run_expert_function_consistency_probe*.py`, `run_affinity_responsibility_probe.py`, `run_cfg_route_inversion_probe.py`, `run_phase_default_probe.py`, `run_phase_metric_checkpoint_probe.py`. Helpers: `routing_translation/`, `expert_function/`, `phase_default/`, `routing_metric/`.
 - **Exact-counterfactual utility probes** — `run_timestep_utility_probe*.py`, `run_count_preserving_cycle_probe_batch.py`, `run_compute_exchange_probe_batch.py` / `run_compute_exchange_deployability_gate.py`, `run_denoising_regret_probe*.py` (FDRR evidence), `run_dino_utility_neighborhood.py`. Helpers: `timestep_utility/`, `denoising_regret/`, `dino_utility_neighborhood/`.
 - **Checkpoint / longitudinal audits and gates** — `run_expert_update_budget_audit.py`, `run_learning_credit_balance_probe_batch.py` / `run_learning_credit_balance_cross_checkpoint.py`. Helpers: `expert_update_budget/`.
-- **Archived** — `run_credit_redistribution_gate.py` refuses to launch (see the suspended research line below).
 
 Many of these are written as **pre-registered / sealed gates**: they lock a checkpoint, a
 case manifest, a discovery/confirmation split, and a bootstrap decision rule up front.
@@ -352,21 +346,35 @@ matter when writing scripts:
 - Comparable arms must match on seed, init, data order, global batch 256, lr 1e-4, and
   training length. Only the factor under test may differ.
 
-**Archived configs hard-fail.** `train.py:main()` raises immediately when a config carries
-`archived_experiment: True` (currently the three `004_ProMoE_B_credit_rate_*_301k_20k.yaml`
-continuations), and `analyses/run_credit_redistribution_gate.py` refuses too. Do not strip
-the flag or retarget `num_steps` to pass an archived continuation off as a fresh run.
+**A run that starts from another experiment's weights is not an experiment.** Project rule,
+no exceptions: 接着别的实验的权重继续往下训练的实验一律不承认，因为因素混杂，这种实验根本不算是干净的
+消融。A continuation cannot separate the method's effect from the borrowed checkpoint's, so it
+is not evidence of anything and must not enter the repo — delete its config, its launcher, and
+any model file exclusive to it rather than archiving them. **The exception is the same
+trajectory extended**: one model trained to 300K and then continued to 500K in its *own*
+output bucket is the normal gate-passing path, not a continuation. The mechanical enforcement
+is `train.py`'s `_validate_strict_output_bucket()` (a fresh run demands an empty bucket) plus
+the absence of any "start from this checkpoint" parameter — `load_latest_checkpoint()` reads
+only the run's own `checkpoints/` dir, and the former `initial_checkpoint_path` seeding path
+was removed. Do not add one back.
 
-**Suspended research line.** `research_on_expert_learning_signal_balance/` holds the MoE
+**Archived configs hard-fail.** `train.py:main()` raises immediately when a config carries
+`archived_experiment: True`. No config carries it today (the three
+`004_ProMoE_B_credit_rate_*_301k_20k.yaml` continuations that did were deleted under the rule
+above); the guard stays as the trip-wire for any future one. Do not strip the flag or retarget
+`num_steps` to pass an archived continuation off as a fresh run.
+
+**Removed research line.** `research_on_expert_learning_signal_balance/` once held the MoE
 "learning-credit redistribution" hypothesis (per-expert suffix-gradient credit rate rather
-than token count). It is **paused**: no approved training command exists and its old results
-are not paper evidence. Its modules must nevertheless stay importable — `train.py` imports
-`CreditRedistributionController`, `benchmark.DistributedThroughputTimer`,
-`git_provenance.repository_state`, and `transcript.TranscriptOnlyRecorder` from it, gated by
-the top-level `credit_redistribution_config` / `throughput_timer_config` /
-`training_transcript_config` flags in `config.py` (all `enabled: False` by default). Its
-README specifies the step-0 protocol any future revival must use — read it before touching
-that directory or `scripts/credit_redistribution/`.
+than token count). Its only experiments were 301K→321K continuations, so the whole study —
+configs, the scripts/credit_redistribution/ launchers, the run_credit_redistribution_gate
+entrypoint, and the controller / protocol / evaluator / orchestration modules — was deleted. The directory now
+holds **only `git_provenance.py`**, which is unrelated to the hypothesis and pinned by path +
+sha256 in both `train.py`'s `STRICT_PROVENANCE_SOURCE_PATHS` and
+`analyses/expert_update_budget/audit.py`'s `LOCKED_TRAINING_SOURCE_PATHS` — so do not move or
+rename it. Its README records the hypothesis and the step-0 protocol a clean revival would
+need; the read-only `run_learning_credit_balance_*` probes under `analyses/` are unaffected and
+still valid.
 
 **Strict training provenance** (`PROMOE_STRICT_PROVENANCE=1`, exactly `0` or `1`) makes a run
 self-certifying. **No script enables it today** — the audited `expert_contra` arm that did was
@@ -430,7 +438,7 @@ If the ablation is controlled by an existing config flag (e.g., `router_norm_typ
 - `doc/todo.md` — Short-lived launch queue rendered as a command table (slot · GPUs · branch · command · output dir).
 - `doc/load-balance-design.md`, `doc/contrastive-label-smoothing.md`, `doc/shared-expert-augmentation-plan.md` — Design notes behind the lbcontra / lossfree, lsreg, and dagfuse_shared families.
 - `doc/output-table-template.md`, `command-tables/command-table-template.csv` — Templates for result tables and for the `/command-table` CSV output.
-- `research_on_expert_learning_signal_balance/README.md` — Why the learning-credit-redistribution line is suspended and what a clean revival must satisfy. Read before touching that package.
+- `research_on_expert_learning_signal_balance/README.md` — Why the learning-credit-redistribution line was deleted (its only experiments were checkpoint continuations), what a clean revival must satisfy, and why `git_provenance.py` must stay put.
 - `logs/README.md` — The `logs/` logging convention (Chinese).
 - `collapse_smoking_test/crash_diagnosis_report.md` — The cross-alignment crash investigation behind the stability constraints above.
 
