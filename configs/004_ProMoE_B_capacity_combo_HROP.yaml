@@ -39,16 +39,12 @@ DiT_B_config:
     hetero_expert: True
     hetero_min_ratio: 1.0
     hetero_max_ratio: 3.0
-    # ``token`` is the historical diagonal LS-Reg intervention.  The
-    # capacity-aware variant is a separate follow-up hypothesis.
-    capacity_aware_lsreg: False
+    # ``token`` is the historical diagonal LS-Reg intervention.
     ls_balance_mode: "token"
-    ls_include_empty: False
     ls_diag_sign: 1.0
     ls_diag_strength: 0.05
     ls_ema_beta: 0.9
-    # Explicit coefficients keep each view at the same 0.5 strength as the
-    # corresponding single-view H+R+O and H+R+P arms.
+    # Explicit coefficients give the output and parameter views 0.5 each.
     expert_contrastive_lam: 1.0
     expert_contrastive_output_lam: 0.5
     expert_contrastive_param_lam: 0.5
@@ -58,11 +54,7 @@ DiT_B_config:
     expert_contrastive_output_temperature: 0.5
     expert_contrastive_param_temperature: 0.7
     expert_contrastive_mode: dual_additive
-    # Keep the output view identical to H+O; only the parameter view is added.
-    expert_contrastive_output_normalize: False
     expert_contrastive_signature_bins: 32
-    expert_contrastive_output_weight: 0.5
-    expert_contrastive_margin: 0.0
     expert_output_blocks: [1, 3, 5, 7, 9, 11]
     expert_param_blocks: [3]
 

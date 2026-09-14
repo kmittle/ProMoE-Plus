@@ -133,7 +133,6 @@ CAPACITY_COMBO_MODELS = {"ProMoE_TC_B_capacity_combo"}
 CAPACITY_COMBO_STAT_NAMES = (
     "moe_route_token_load_cv",
     "moe_route_active_experts",
-    "moe_route_capacity_load_cv",
     "moe_route_mean_diag_offset",
     "moe_expert_output_contrastive",
     "moe_expert_param_contrastive",
@@ -874,15 +873,6 @@ def _collect_capacity_combo_stats(model):
             )
             values["moe_route_active_experts"].append(
                 (token_load > 0).float().sum()
-            )
-
-        responsibility = getattr(submodule, "last_capacity_load", None)
-        if torch.is_tensor(responsibility) and responsibility.numel() > 1:
-            responsibility = responsibility.detach().float().reshape(-1)
-            responsibility_mean = responsibility.mean()
-            values["moe_route_capacity_load_cv"].append(
-                responsibility.std(unbiased=False)
-                / responsibility_mean.clamp_min(1e-6)
             )
 
         for name, attribute in (
