@@ -46,6 +46,14 @@ Main code layout:
 - `scripts/adepth/`: adaptive routed-FFN depth fixed-quota train + sample + eval wrappers.
 - `scripts/lossfree/`: loss-free balancing-bias train + sample + eval wrappers.
 - `scripts/lsreg/`: routing-contrastive label-smoothing and diagonal-correction sweeps.
+- `scripts/capacity_combo/`: capacity-aware H/R/O/P expert-responsibility study. Only the
+  `HROP` arm was launched; it failed the 300K gate. The nine never-launched arms (`H`,
+  `HO`, `HP`, `HR`, `HOP`, `HRO`, `HRP`, `HO_norm`, `HROP_norm`) and the old queue were
+  deleted on 2026-09-14 pending a redesign. The retained directory contains only the
+  `HROP` wrapper, its evaluation helper, and the `hrop_gate_then_q0p4.sh` supervisor.
+- `scripts/dino_route/`: DINO-assisted load-aware routing experiments and shuffled controls.
+- `scripts/phase_metric/`: phase-conditioned routing-metric experiments and controls.
+- `scripts/fdrr/`: teacher-free first-order denoising-regret routing and its control.
 - `scripts/_run_times/`: timestamped launch indirection for scheduled experiment batches; date directories may also contain generated `commands.md`/`commands.csv` launch tables and `*-describe.txt` experiment notes.
 - `command-tables/`: CSV template assets for run-time command tables.
 - `collapse_smoking_test/`, `collapse_smoking_test_10k/`: crash-diagnosis smoke configs, logs, summaries, and rerun helpers for cross-alignment stability work.
@@ -69,6 +77,7 @@ Companion documentation:
 - `.agents/skills/`: active Codex workflow definitions. For Codex experiment work, use `command-table`, `describe-experiment`, `new-experiment`, and `rerun-experiment` from this directory rather than translating Claude slash-command mechanics literally.
 - `.codex/skills/`: project-local Codex helper skills.
 - `doc/implementation-plan.md`: Chinese draft plan for a future attention-weighted same-expert same-image alignment family; reference only, not current code.
+- `_previous_results/`: archived experiment result tables and renders. They are reference data only; no current queue or training script reads them.
 
 Outputs follow:
 
@@ -92,11 +101,19 @@ MoE mechanisms:
 - `O`: expert-output representation regularization;
 - `P`: expert-parameter regularization.
 
-The active combination matrix is `H`, `HO`, `HP`, `HOP`, `HR`, `HRO`, `HRP`,
-and `HROP`. New training, sampling, or evaluation work should stay within
-this matrix unless the user explicitly reopens another direction. REPA and
-DINO are not the current main line; DINO may only return as a router/load/
+The validated combination design matrix is `H`, `HO`, `HP`, `HOP`, `HR`, `HRO`,
+`HRP`, and `HROP`. New training, sampling, or evaluation work should stay
+within this matrix unless the user explicitly reopens another direction. REPA
+and DINO are not the current main line; DINO may only return as a router/load/
 specialization signal, never as direct feature alignment.
+
+As of 2026-09-14, only the `HROP` combination was actually launched. Its 300K
+CFG 1.0/1.5 FIDs were `31.19`/`10.07`, both worse than the fresh Base gate
+(`30.58`/`9.59`), so it was abandoned before 500K. The other nine planned
+combination arms were never launched and their configs, wrappers, descriptions,
+and queue supervisor were deleted pending a redesigned study. Do not recreate
+or schedule those arms from the historical design notes without an explicit
+redesign decision.
 
 Adaptive-depth (`scripts/adepth/`) is a separate historical exploration, not
 part of the H/R/O/P factorial study. Its repeated application of the same
@@ -323,7 +340,7 @@ bash tb_smoke_500/run_all.sh
 bash scripts/run_all_infer_eval_500K.sh
 ```
 
-When adding any new train + sample + eval all-in-one `.sh` wrapper, follow the structure and execution pattern of `scripts/template.sh` rather than inventing a new style; this is required for compatibility with another experiment server. All such experimental `.sh` wrappers must launch Python exactly in the template style: use `/mnt/workspace/yujie/.conda/envs/promoe/bin/python` for training/sampling and `/mnt/workspace/yujie/.conda/envs/fid_eval/bin/python` for evaluation, and do not rely on `conda activate` at runtime.
+When adding any new train + sample + eval all-in-one `.sh` wrapper, follow the structure and execution pattern of `scripts/template.sh` rather than inventing a new style; this is required for compatibility with another experiment server. All such experimental `.sh` wrappers must use the pinned absolute interpreters: either the template paths (`/mnt/workspace/yujie/.conda/envs/promoe/bin/python` and `/mnt/workspace/yujie/.conda/envs/fid_eval/bin/python`) or the validated paths supplied by `scripts/_python_env.sh`. Do not rely on `conda activate` at runtime.
 
 Template-specific requirements:
 
@@ -331,6 +348,8 @@ Template-specific requirements:
 - New scripts should only change `CONFIG`, `LOG`, and the training entrypoint (`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, or `train_with_mae.py`) unless the experiment genuinely needs extra logic.
 - Preserve `set -euo pipefail`, repo-root discovery via `SCRIPT_DIR` / `REPO_ROOT`, inline Python YAML parsing, absolute Python interpreter paths, and `find ... -name images | sort -V` evaluation traversal.
 - Legacy split scripts such as `scripts/repa/train_repa_B.sh` and `scripts/repa/sample_and_eval_repa_B.sh` predate the template; do not introduce new split-purpose experiment scripts.
+- Prefer `scripts/_python_env.sh` for newer wrappers: it provides the pinned training and evaluation interpreters and fails before touching an output bucket when they are unavailable. Local interpreter fallback requires explicit `PROMOE_ALLOW_LOCAL_FALLBACK=1`.
+- Reuse the strict evaluator predicates in `scripts/_eval_metric_helpers.sh` (for example `promoe_eval_file_metrics_valid` and `promoe_eval_file_fid`) for gate decisions; do not parse evaluator output with an ad-hoc command that can turn malformed values into zero.
 
 Runtime GPU-slot grouping:
 
@@ -340,6 +359,7 @@ Runtime GPU-slot grouping:
 - The allocator currently accepts only `--gpus 4` and `--gpus 8`; do not pass `--gpus 2` unless the allocator is changed at the same time. The checked-in `scripts/_run_times/2026_08_05/` batch is a historical, manually repacked exception: `X.1`/`X.2`/`X.3`/`X.4` use `[0,1]`/`[2,3]`/`[4,5]`/`[6,7]` (four 2-GPU jobs per 8-GPU server), while older date directories retain the 4-GPU layout.
 - Allocation is scoped to one date directory only. Do not run jobs from different date directories on the same physical GPUs unless you have checked the assignments manually.
 - Use `--dry-run` first when scheduling a new run-time wrapper so the slot and YAML patch are visible before writing.
+- Queue or supervisor scripts that chain experiments must run inside an attached tmux session, hold a repository-local `flock`, and advance only after the preceding wrapper exits. They must not use shell backgrounding (`&`, `nohup`, or detached execution).
 
 Create evaluation env (TensorFlow-based):
 
