@@ -1,6 +1,7 @@
 ---
 name: check
-description: Like /inspect, but the carpet scan is scoped to the current uncommitted diff only (modified + staged + untracked relative to HEAD). Iterate (scan → fix → smoke test) until 5 consecutive iterations on the dirty working tree find zero issues. Use when the user invokes /check or wants to validate WIP before committing.
+description: Like /inspect, but the carpet scan is scoped to the current uncommitted diff only (modified + staged + untracked relative to HEAD). Iterate (scan → fix → smoke test) until n consecutive iterations on the dirty working tree find zero issues (optional argument n, default 2). Use when the user invokes /check or wants to validate WIP before committing.
+argument-hint: "[n]"
 ---
 
 # /check — Iterative carpet check on uncommitted changes
@@ -8,6 +9,16 @@ description: Like /inspect, but the carpet scan is scoped to the current uncommi
 Same loop shape as `/inspect`, but **scoped to uncommitted changes** and **does not commit during the loop**. The deliverable is a clean working tree that the user can then commit themselves.
 
 Hard cap: **20 iterations total** — if hit, stop and report what remains.
+
+## Argument `n` — consecutive clean iterations to pass
+Usage: `/check [n]`, e.g. `/check`, `/check 3` or `/check n=3`. Argument text for this run: `$ARGUMENTS`
+
+Resolve `n` once, before iteration 1:
+- No argument (the text above is empty, or still shows the unsubstituted placeholder) → `n = 2`.
+- A bare integer (`3`) or `n=<integer>` (`n=3`) → that integer.
+- `n` must be an integer from 1 to 20; the loop stops at 20 iterations, so a larger `n` could never pass. For any other argument, stop before iteration 1 without changing anything and tell the user the accepted forms.
+
+Print the value in use before iteration 1 (e.g. `n = 2 (default)`). An iteration is clean when it has zero findings AND a passing smoke test; the check passes once `n` iterations in a row are clean.
 
 ## State to maintain across iterations
 - `iter`: 1-indexed iteration counter
@@ -73,13 +84,14 @@ Do NOT start real training, sampling, or evaluation — out of scope.
 ### 4. Bookkeeping (NO commit)
 - If `findings.count == 0` AND smoke test passed: `consecutive_clean += 1`.
 - Else: `consecutive_clean = 0`.
-- Emit a one-line summary: `iter N: dirty=<count>, K findings, M fixed, smoke=<ok|fail>, consecutive_clean=X/5`.
+- Emit a one-line summary: `iter N: dirty=<count>, K findings, M fixed, smoke=<ok|fail>, consecutive_clean=X/<n>`.
 - **Do not run `git add`, `git commit`, or `git stash`.** The working tree stays dirty by design — the goal is to hand a clean WIP back to the user.
 
 ## Termination
 
-- **Success:** `consecutive_clean == 5`. Print final summary: total iterations, total findings fixed, current dirty set (`git status --short`), and one line suggesting the user commit when ready. **Do not commit on the user's behalf** — leave that to them.
-- **Cap hit:** `iter == 20` without reaching 5/5. Print final summary, outstanding findings, and the current dirty set.
+- **Invalid argument:** `n` is not an integer from 1 to 20. Stop before iteration 1 with the accepted forms (`/check`, `/check 3`, `/check n=3`).
+- **Success:** `consecutive_clean == n`. Print final summary: `n`, total iterations, total findings fixed, current dirty set (`git status --short`), and one line suggesting the user commit when ready. **Do not commit on the user's behalf** — leave that to them.
+- **Cap hit:** `iter == 20` without reaching `consecutive_clean == n`. Print final summary, outstanding findings, and the current dirty set.
 - **Clean tree at start of an iteration:** stop with "nothing to debug — working tree is clean. Did you mean /inspect?"
 - **Ambiguity pause:** halt with the question and the current state (`iter`, `consecutive_clean`, dirty set, pending finding). Resume on user input.
 

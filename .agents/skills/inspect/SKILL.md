@@ -1,6 +1,6 @@
 ---
 name: inspect
-description: Audit the entire PromeMoE++ (ProMoE-Plus) repository with three independent Codex subagents using one project-specific criterion. Use for whole-project audits, pre-milestone sweeps, or explicit $inspect requests. Report findings by default; repair only when explicitly requested, and commit repairs only with explicit commit authorization.
+description: Audit the entire PromeMoE++ (ProMoE-Plus) repository with three independent Codex subagents using one project-specific criterion. Use for whole-project audits, pre-milestone sweeps, or explicit $inspect requests. The audit passes after n consecutive clean rounds (n from the request, default 2). Report findings by default; repair only when explicitly requested, and commit repairs only with explicit commit authorization.
 ---
 
 # Inspect the Whole ProMoE-Plus Project
@@ -9,9 +9,16 @@ Audit `/mnt/cubefs/caoboyuan/ProMoE-Plus` with three independent, read-only Code
 
 ## Select the Authorization Mode
 
-- **Report-only mode is the default.** A whole-project audit, inspection, or pre-milestone sweep does not authorize edits. Run one full review round plus the static smoke test, report verified findings, and stop without modifying files or Git state.
-- **Repair-only mode requires an explicit request to fix or repair findings.** Apply verified fixes and repeat until clean, but do not stage or commit.
+- **Report-only mode is the default.** A whole-project audit, inspection, or pre-milestone sweep does not authorize edits. Run review rounds plus the static smoke test without modifying files or Git state: stop and report after the first round that is not clean, or report a pass after `n` consecutive clean rounds.
+- **Repair-only mode requires an explicit request to fix or repair findings.** Apply verified fixes and repeat until `n` consecutive rounds are clean, but do not stage or commit.
 - **Repair-and-commit mode additionally requires explicit commit authorization.** Commit only the fixes from each completed repair round. A request to inspect or repair alone never grants commit permission.
+
+## Read the Pass Threshold `n`
+
+`n` is the number of consecutive clean rounds that counts as a passed audit. A round is clean when all three reports end in `ALL_CLEAN` and the parent smoke test passes. A round that is not clean resets the count to zero; warnings alone do not make a round unclean.
+
+- Take `n` from the request, for example `$inspect 3`, `$inspect n=3`, or `连续 3 轮`. Without one, use `n = 2`.
+- `n` must be an integer from 1 to 10, the repair-mode round cap. For any other value, stop before round 1 without changing anything and state the accepted forms.
 
 ## Preconditions and Boundaries
 
@@ -19,12 +26,12 @@ Audit `/mnt/cubefs/caoboyuan/ProMoE-Plus` with three independent, read-only Code
 - Read root `AGENTS.md` and `CLAUDE.md` before inspecting. Root instructions override this workflow when they conflict.
 - Do not inspect or modify the uppercase `REPA/` directory; it is a separate vendored subproject with its own instructions.
 - Exclude `.git/`, `outputs/`, `_previous_results/`, `pretrained_ckpt/`, `training_logs/`, TensorBoard data, smoke-test output, checkpoints, logs, caches, generated images, and generated datasets.
-- In either repair mode, run at most 10 rounds and fix at most 30 verified findings per round. Report-only mode runs one round.
+- In either repair mode, run at most 10 rounds and fix at most 30 verified findings per round. Report-only mode runs at most `n` rounds.
 - Stop for user guidance when more than 3 findings in one round are false positives.
 - Do not run training, sampling, evaluation, preprocessing, downloads, or GPU jobs.
 - Treat warnings as advisory. Only blockers and errors prevent convergence.
 
-Before round 1, tell the user that three inspectors will run concurrently and name the selected authorization mode. In a repair mode, also state the 10-round cap; mention commits only when repair-and-commit mode is authorized.
+Before round 1, tell the user that three inspectors will run concurrently and name the selected authorization mode and `n`. In a repair mode, also state the 10-round cap; mention commits only when repair-and-commit mode is authorized.
 
 ## Dispatch Three Independent Inspectors
 
@@ -89,7 +96,7 @@ Allow `blocker`, `error`, and `warning`. Require the final line `ALL_CLEAN` when
 
 Merge findings by `path:line`, retain source hit count `x/3`, and sort by severity. Verify every finding against the code and project rules. Give extra scrutiny to `1/3` findings and record why rejected reports are false positives.
 
-In report-only mode, run the static smoke test, report every verified finding and check failure after the first round, and stop without editing. Findings do not authorize a repair round.
+In report-only mode, run the static smoke test in every round and never edit. After a round that is not clean, report every verified finding and check failure, then stop. After a clean round, run the next round until `n` consecutive rounds are clean, then report the pass and any warnings. Findings do not authorize a repair round.
 
 When a verified blocker or error exists in either repair mode:
 
@@ -98,7 +105,7 @@ When a verified blocker or error exists in either repair mode:
 3. Ask the user only when intended behavior is genuinely ambiguous after reading code, config, and documentation.
 4. Run the smoke test before staging anything.
 
-Run the parent static smoke test in every round, including when all inspectors report `ALL_CLEAN`. A round converges only when all three reports are clean and the parent smoke test passes.
+Run the parent static smoke test in every round, including when all inspectors report `ALL_CLEAN`. A round is clean only when all three reports are clean and the parent smoke test passes; the audit converges after `n` consecutive clean rounds.
 
 ## Static Smoke Test
 
@@ -139,12 +146,12 @@ After all static checks pass in repair-and-commit mode:
 - Use a concise imperative subject such as `fix(inspect): resolve round N findings` and a short body naming the corrected areas.
 - Do not amend, bypass hooks, push, force-push, or add a fabricated co-author trailer.
 
-In repair-only mode, do not stage or commit; begin the next round directly after checks pass. In repair-and-commit mode, begin it after committing. Either repair mode converges only when all three reports end in `ALL_CLEAN` in the same round and the parent smoke test passes.
+In repair-only mode, do not stage or commit; begin the next round directly after checks pass. In repair-and-commit mode, begin it after committing. A clean round that has not reached `n` has nothing to commit and goes straight to the next round. Either repair mode converges only after `n` consecutive rounds in which all three reports end in `ALL_CLEAN` and the parent smoke test passes.
 
 On repair-and-commit success, report:
 
 ```text
-$inspect converged at round R. Total commits: M. Issues fixed: K.
+$inspect converged at round R after n consecutive clean rounds. Total commits: M. Issues fixed: K.
 ```
 
-List the commits created by this invocation. In repair-only mode, instead report the converged round, issue count, modified files, and confirmation that they remain uncommitted. In report-only mode, report the one-round findings and smoke-test result and confirm that no file or Git state changed. If a round, retry, finding, or false-positive limit is reached, stop and report the unresolved state without creating a partial commit.
+List the commits created by this invocation. In repair-only mode, instead report the converged round, issue count, modified files, and confirmation that they remain uncommitted. In report-only mode, report the rounds run, whether `n` consecutive clean rounds were reached, the findings, and the smoke-test result, and confirm that no file or Git state changed. If a round, retry, finding, or false-positive limit is reached, stop and report the unresolved state without creating a partial commit.

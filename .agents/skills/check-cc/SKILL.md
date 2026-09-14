@@ -1,6 +1,6 @@
 ---
 name: check-cc
-description: "Cross-check all current staged, unstaged, and untracked PromeMoE++ (ProMoE-Plus) changes with two concurrent tracks: one report-only Claude Code reviewer through cc-yolo-api and three read-only Codex subagents. Use for $check-cc, second-opinion pre-commit review, or uncommitted-change audits. Report findings by default; repair only when the user explicitly asks for fixes. Never stage or commit."
+description: "Cross-check all current staged, unstaged, and untracked PromeMoE++ (ProMoE-Plus) changes with two concurrent tracks: one report-only Claude Code reviewer through cc-yolo-api and three read-only Codex subagents. Use for $check-cc, second-opinion pre-commit review, or uncommitted-change audits. The check passes after n consecutive clean rounds (n from the request, default 2). Report findings by default; repair only when the user explicitly asks for fixes. Never stage or commit."
 ---
 
 # Check ProMoE-Plus Changes with Claude Code
@@ -14,15 +14,22 @@ Merge and verify both tracks, run proportional static checks, and honor the auth
 
 ## Select the Authorization Mode
 
-- **Report-only mode is the default.** A request to check, review, audit, or obtain a second opinion does not authorize edits. Run one complete dual-track round plus parent checks, verify and report the findings, and stop without changing files.
-- **Repair mode requires an explicit request to fix or repair findings.** Fix only verified defects, rerun both tracks and parent checks, and iterate until all tracks are clean.
+- **Report-only mode is the default.** A request to check, review, audit, or obtain a second opinion does not authorize edits. Run dual-track rounds plus parent checks without changing files: stop and report after the first round that is not clean, or report a pass after `n` consecutive clean rounds.
+- **Repair mode requires an explicit request to fix or repair findings.** Fix only verified defects, rerun both tracks and parent checks, and iterate until `n` consecutive rounds are clean.
 - A request to commit or push after review does not itself authorize repairs. This skill never stages or commits in either mode.
+
+## Read the Pass Threshold `n`
+
+`n` is the number of consecutive clean rounds that counts as a passed check. A round is clean when Claude Code and all three Codex reports end in `ALL_CLEAN` and the parent checks pass. A round that is not clean resets the count to zero; warnings alone do not make a round unclean.
+
+- Take `n` from the request, for example `$check-cc 3`, `$check-cc n=3`, or `连续 3 轮`. Without one, use `n = 2`.
+- `n` must be an integer from 1 to 10, the repair-mode round cap. For any other value, stop before round 1 without changing anything and state the accepted forms.
 
 ## Boundaries
 
 - Read root `AGENTS.md` and `CLAUDE.md`; root instructions override this workflow when they conflict.
 - Require an attached tmux session: `test -n "${TMUX:-}"`. If absent, abort and ask the user to attach first.
-- In repair mode, run at most 10 rounds and fix at most 30 verified findings per round. Report-only mode runs one round.
+- In repair mode, run at most 10 rounds and fix at most 30 verified findings per round. Report-only mode runs at most `n` rounds.
 - Stop when more than 5 combined findings in one round are false positives.
 - Preserve unrelated changes and avoid opportunistic refactors, renames, or feature work.
 - Exclude and never edit uppercase `REPA/` or runtime/generated content under `outputs/`, `_previous_results/`, `pretrained_ckpt/`, `training_logs/`, TensorBoard, smoke output, checkpoints, logs, caches, generated images, and generated datasets.
@@ -42,7 +49,7 @@ Build `files` before every round:
 } | sort -u
 ```
 
-If empty, report `nothing to check`. Exclude deleted files from direct inspection, but validate references to deleted paths or symbols. Report uppercase `REPA/` changes as out of scope without touching them. Announce the file count and explicitly state that no Git write will occur.
+If empty, report `nothing to check`. Exclude deleted files from direct inspection, but validate references to deleted paths or symbols. Report uppercase `REPA/` changes as out of scope without touching them. Announce the file count and `n`, and explicitly state that no Git write will occur.
 
 ## Verify the Claude Code Entry Point
 
@@ -154,9 +161,9 @@ Merge by `path:line` and label sources `cc`, `codex x/3`, or `both`. Treat `both
 
 Run the parent proportional static checks in every round; reviewer checks do not replace them.
 
-In report-only mode, report all verified findings and static-check failures after the first dual-track round, then stop without editing. An `ALL_CLEAN` result means no blocker or error was found; findings do not authorize a repair round.
+In report-only mode, never edit. After a dual-track round that is not clean, report all verified findings and static-check failures, then stop. After a clean round, run the next dual-track round on the same scope until `n` consecutive rounds are clean, then report the pass and any warnings. An `ALL_CLEAN` result means no blocker or error was found; findings do not authorize a repair round.
 
-In repair mode, converge only when Claude Code and all three Codex reports end in `ALL_CLEAN` in the same round and the parent checks pass. Otherwise:
+In repair mode, converge only after `n` consecutive rounds in which Claude Code and all three Codex reports end in `ALL_CLEAN` and the parent checks pass. After a clean round that has not reached `n`, recollect `files` and start the next dual-track round without editing. Otherwise:
 
 1. Fix verified blockers/errors only with `apply_patch`.
 2. Keep fixes in the dirty set when possible. If a changed contract requires touching a formerly clean file, tell the user.
@@ -170,6 +177,6 @@ In repair mode, retry static-check fixes at most five times. In report-only mode
 
 Do not run `git add`, `git commit`, `git stash`, `git reset`, `git checkout`, or another Git write operation. Use only read-only status, diff, log, show, and `ls-files` queries.
 
-On repair-mode success, report rounds, files inspected, issues fixed, Claude Code false positives, Codex false positives, files modified by this workflow, and final `git status --short`.
+On repair-mode success, report rounds, `n`, files inspected, issues fixed, Claude Code false positives, Codex false positives, files modified by this workflow, and final `git status --short`.
 
-For report-only mode, report the single round, verified findings, false positives, parent-check results, and final `git status --short`, and explicitly confirm that no file or Git state was changed.
+For report-only mode, report the rounds run and whether `n` consecutive clean rounds were reached, verified findings, false positives, parent-check results, and final `git status --short`, and explicitly confirm that no file or Git state was changed.

@@ -1,6 +1,6 @@
 ---
 name: check
-description: Review all current staged, unstaged, and untracked changes in PromeMoE++ (ProMoE-Plus) with three independent Codex subagents using one project-specific criterion. Use for pre-commit hygiene, code/config/script consistency checks, explicit $check requests, or requests to check uncommitted changes. Report findings by default; repair only when the user explicitly asks for fixes. Never stage or commit.
+description: Review all current staged, unstaged, and untracked changes in PromeMoE++ (ProMoE-Plus) with three independent Codex subagents using one project-specific criterion. Use for pre-commit hygiene, code/config/script consistency checks, explicit $check requests, or requests to check uncommitted changes. The check passes after n consecutive clean rounds (n from the request, default 2). Report findings by default; repair only when the user explicitly asks for fixes. Never stage or commit.
 ---
 
 # Check Uncommitted ProMoE-Plus Changes
@@ -9,14 +9,21 @@ Inspect only the current uncommitted changes in `/mnt/cubefs/caoboyuan/ProMoE-Pl
 
 ## Select the Authorization Mode
 
-- **Report-only mode is the default.** A request to check, review, audit, or perform pre-commit hygiene does not authorize file edits. Run one complete three-inspector round plus parent checks, verify the findings, report them, and stop without changing files.
-- **Repair mode requires an explicit request to fix or repair the findings.** Make only verified corrections, rerun the checks, and iterate until every inspector reports no blocker or error.
+- **Report-only mode is the default.** A request to check, review, audit, or perform pre-commit hygiene does not authorize file edits. Run three-inspector rounds plus parent checks without changing files: stop and report after the first round that is not clean, or report a pass after `n` consecutive clean rounds.
+- **Repair mode requires an explicit request to fix or repair the findings.** Make only verified corrections, rerun the checks, and iterate until `n` consecutive rounds are clean.
 - A request to commit or push after the review does not by itself authorize repairs. Keep Git staging and commits outside this skill in every mode.
+
+## Read the Pass Threshold `n`
+
+`n` is the number of consecutive clean rounds that counts as a passed check. A round is clean when all three reports end in `ALL_CLEAN` and the parent checks pass. A round that is not clean resets the count to zero; warnings alone do not make a round unclean.
+
+- Take `n` from the request, for example `$check 3`, `$check n=3`, or `连续 3 轮`. Without one, use `n = 2`.
+- `n` must be an integer from 1 to 10, the repair-mode round cap. For any other value, stop before round 1 without changing anything and state the accepted forms.
 
 ## Operating Boundaries
 
 - Read root `AGENTS.md` and `CLAUDE.md` before reviewing. Root instructions override this workflow when they conflict.
-- In repair mode, run at most 10 rounds and fix at most 30 verified findings per round. Report-only mode runs one round.
+- In repair mode, run at most 10 rounds and fix at most 30 verified findings per round. Report-only mode runs at most `n` rounds.
 - Stop for user guidance when more than 3 findings in one round are false positives.
 - Preserve unrelated working-tree changes. Do not refactor, rename, or add features opportunistically.
 - Exclude and never edit uppercase `REPA/`; it is a separate vendored subproject.
@@ -44,7 +51,7 @@ Use the result as `files`.
 - Recollect `files` before every round because fixes can add or modify files.
 - If more than 50 files are in scope, tell inspectors to prioritize high-risk paths while still checking every changed contract.
 
-Before round 1, show the user the file count and selected authorization mode, and state that this workflow will not stage or commit anything.
+Before round 1, show the user the file count, the selected authorization mode, and `n`, and state that this workflow will not stage or commit anything.
 
 ## Dispatch Three Independent Inspectors
 
@@ -112,9 +119,9 @@ Merge reports by `path:line`, preserve severity, and record source agreement as 
 
 Run the parent proportional static checks after aggregation in every round; reviewer checks do not replace them.
 
-In report-only mode, report all verified findings and static-check failures after the first round, then stop without editing. An `ALL_CLEAN` result means the review found no blocker or error; findings do not authorize a repair round.
+In report-only mode, never edit. After a round that is not clean, report all verified findings and static-check failures, then stop. After a clean round, start the next round on the same scope until `n` consecutive rounds are clean, then report the pass and any warnings. An `ALL_CLEAN` result means the review found no blocker or error; findings do not authorize a repair round.
 
-In repair mode, finish only when all three reports end in `ALL_CLEAN` and the parent checks pass. Otherwise:
+In repair mode, finish only after `n` consecutive clean rounds. After a clean round that has not reached `n`, recollect `files` and start the next round without editing. Otherwise:
 
 1. Fix only verified blockers/errors with `apply_patch`.
 2. Keep fixes within the dirty set when possible. If a changed contract requires a formerly clean file, call that out to the user.
@@ -137,10 +144,10 @@ Do not run `git add`, `git commit`, `git stash`, `git reset`, `git checkout`, or
 On a clean repair-mode completion, report:
 
 ```text
-$check converged at round R. Files inspected: F. Issues fixed: K.
+$check converged at round R after n consecutive clean rounds. Files inspected: F. Issues fixed: K.
 Working tree remains uncommitted and ready for user review.
 ```
 
 Include the final `git status --short` snapshot and list only the files actually modified by this workflow.
 
-For report-only mode, state that one review round completed, list the verified findings and check results, and explicitly confirm that no file or Git state was changed.
+For report-only mode, state how many review rounds completed and whether `n` consecutive clean rounds were reached, list the verified findings and check results, and explicitly confirm that no file or Git state was changed.

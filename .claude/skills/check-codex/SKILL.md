@@ -1,15 +1,26 @@
 ---
 name: check-codex
-description: Codex-augmented carpet check scoped to the uncommitted diff (modified + staged + untracked vs HEAD). Each iteration briefs an independent Codex reviewer (xhigh reasoning, launched headless via codex exec --dangerously-bypass-approvals-and-sandbox in a new tmux window that closes itself when the review finishes, kept review-only by instruction + a checksum-revert guard) that runs in parallel with Claude's own diff-scoped scan; Claude aggregates both finding sets, adjudicates the real problems, and fixes them, then smoke-tests — but never commits (leaves validated WIP dirty for the user). Repeats until 5 consecutive iterations find zero real problems. Runs FULLY HANDS-OFF: the Codex window auto-opens and auto-closes, findings are auto-collected and auto-fixed, and the required tmux/codex/git/mktemp commands are pre-allowlisted, so the loop never stops mid-run to ask the user to choose — the only stops are a missing tmux session (must abort), an already-clean tree, or a genuinely destructive/irreversible fix. Use when the user invokes /check-codex or wants a Codex second opinion on WIP before committing.
+description: "Codex-augmented carpet check scoped to the uncommitted diff (modified + staged + untracked vs HEAD). Each iteration briefs an independent Codex reviewer (xhigh reasoning, launched headless via codex exec --dangerously-bypass-approvals-and-sandbox in a new tmux window that closes itself when the review finishes, kept review-only by instruction + a checksum-revert guard) that runs in parallel with Claude's own diff-scoped scan; Claude aggregates both finding sets, adjudicates the real problems, and fixes them, then smoke-tests — but never commits (leaves validated WIP dirty for the user). Repeats until n consecutive iterations find zero real problems (optional argument n, default 2). Runs FULLY HANDS-OFF: the Codex window auto-opens and auto-closes, findings are auto-collected and auto-fixed, and the required tmux/codex/git/mktemp commands are pre-allowlisted, so the loop never stops mid-run to ask the user to choose — the only stops are an invalid n argument or a missing tmux session (both before iteration 1), an already-clean tree, or a genuinely destructive/irreversible fix. Use when the user invokes /check-codex or wants a Codex second opinion on WIP before committing."
+argument-hint: "[n]"
 ---
 
 # /check-codex — Codex-augmented check on uncommitted changes
 
-Same loop as `/inspect-codex`, but **scoped to the uncommitted diff** and — like `/check` — it **never commits**. The deliverable is a clean, Codex-and-Claude-vetted working tree that the user commits themselves. Codex only reviews; **Claude is the sole adjudicator and fixer**. Repeat until **5 consecutive iterations** find zero real problems AND a passing smoke test. Hard cap: **20 iterations**.
+Same loop as `/inspect-codex`, but **scoped to the uncommitted diff** and — like `/check` — it **never commits**. The deliverable is a clean, Codex-and-Claude-vetted working tree that the user commits themselves. Codex only reviews; **Claude is the sole adjudicator and fixer**. Repeat until **`n` consecutive iterations** find zero real problems AND a passing smoke test (`n` is the optional argument, default 2 — see Argument below). Hard cap: **20 iterations**.
 
-**Run this fully hands-off.** Once invoked, drive every iteration to completion on your own — auto-launch the self-closing Codex window, auto-collect its findings, auto-adjudicate, auto-fix, auto-smoke-test — and do **not** pause to ask the user to confirm or choose. The required `codex` / `tmux new-window` / `mktemp` / `cat` / `cp` / `rm` / `sha256sum` commands (this skill snapshots the dirty set with `cp`, not `git stash`) are pre-allowlisted in `.claude/settings.local.json`, so no per-command permission prompt should appear. There are exactly **three** legitimate stops: (a) `$TMUX` is unset at the start (must abort — see Prerequisites), (b) the working tree is already clean at the start of an iteration (stop — nothing to check), and (c) a specific fix would be genuinely destructive or irreversible (see step 6). Everything else proceeds automatically. (No commit stop exists here — this skill never commits by design.)
+**Run this fully hands-off.** Once invoked, drive every iteration to completion on your own — auto-launch the self-closing Codex window, auto-collect its findings, auto-adjudicate, auto-fix, auto-smoke-test — and do **not** pause to ask the user to confirm or choose. The required `codex` / `tmux new-window` / `mktemp` / `cat` / `cp` / `rm` / `sha256sum` commands (this skill snapshots the dirty set with `cp`, not `git stash`) are pre-allowlisted in `.claude/settings.local.json`, so no per-command permission prompt should appear. There are exactly **four** legitimate stops: (a) the `n` argument is invalid (stop before iteration 1 — see Argument), (b) `$TMUX` is unset at the start (must abort — see Prerequisites), (c) the working tree is already clean at the start of an iteration (stop — nothing to check), and (d) a specific fix would be genuinely destructive or irreversible (see step 6). Everything else proceeds automatically. (No commit stop exists here — this skill never commits by design.)
 
 Iteration shape: **brief Codex (diff scope) → (Codex reviews ‖ Claude scans) → aggregate → adjudicate → fix → smoke test** — no commit, ever.
+
+## Argument `n` — consecutive clean iterations to pass
+Usage: `/check-codex [n]`, e.g. `/check-codex`, `/check-codex 3` or `/check-codex n=3`. Argument text for this run: `$ARGUMENTS`
+
+Resolve `n` once, before iteration 1 and before launching any Codex run:
+- No argument (the text above is empty, or still shows the unsubstituted placeholder) → `n = 2`.
+- A bare integer (`3`) or `n=<integer>` (`n=3`) → that integer.
+- `n` must be an integer from 1 to 20; the loop stops at 20 iterations, so a larger `n` could never pass. For any other argument, stop before iteration 1 without changing anything and tell the user the accepted forms.
+
+Print the value in use before iteration 1 (e.g. `n = 2 (default)`). An iteration is clean when zero true-positive findings survive adjudication AND the smoke test passes; the check passes once `n` iterations in a row are clean.
 
 ## Prerequisites
 Same as `/inspect-codex`: **must be inside tmux** (else abort and ask the user to attach — never background with `&`/`nohup`/`run_in_background`; this is the only setup question the skill may ask); `codex` CLI authed; repo path `trusted`; `model_reasoning_effort=xhigh`. **Each iteration is billed** (Codex xhigh) — hence the 20-iteration cap.
@@ -24,7 +35,7 @@ git status --porcelain
 Dirty set = anything reported `M` / `A` / `??` / `R` / `C`. Track both the **paths** and, for `M`/`A`/staged, the **hunks** via `git diff HEAD -- <path>`. **If the dirty set is empty at the start of an iteration: stop immediately with "nothing to check — working tree is clean. Did you mean /inspect-codex?"**
 
 ## State to maintain
-`iter`, `consecutive_clean` (0..5), `findings_history[]`. **No `commits[]`** — this skill does not commit.
+`iter`, `consecutive_clean` (0..n), `findings_history[]`. **No `commits[]`** — this skill does not commit.
 
 ## One iteration
 
@@ -77,16 +88,17 @@ Never run real training / sampling / evaluation.
 - `consecutive_clean += 1` iff zero true-positive findings survived adjudication AND smoke passed; otherwise `consecutive_clean = 0`.
 - **Do not run `git add` / `git commit` / `git stash`.** The working tree stays dirty by design — the goal is to hand a vetted WIP back to the user.
 - Delete this iteration's `$CODEX_TMP/*_${iter}.*` files.
-- One-line summary: `iter N: dirty=<d>, codex=<c>/claude=<m> raw, <tp> real, <fixed> fixed, smoke=<ok|fail>, consecutive_clean=X/5`.
+- One-line summary: `iter N: dirty=<d>, codex=<c>/claude=<m> raw, <tp> real, <fixed> fixed, smoke=<ok|fail>, consecutive_clean=X/<n>`.
 
 ## Termination
-- **Success:** `consecutive_clean == 5`. Print: total iterations, total real problems fixed, current dirty set (`git status --short`), and a line suggesting the user commit when ready. **Do not commit on the user's behalf.** Remove `$CODEX_TMP`.
-- **Cap hit:** `iter == 20` without 5/5. Print the summary + outstanding findings + the current dirty set. Remove `$CODEX_TMP`.
+- **Invalid argument:** `n` is not an integer from 1 to 20. Stop before iteration 1 (no Codex launch, no `$CODEX_TMP`) with the accepted forms (`/check-codex`, `/check-codex 3`, `/check-codex n=3`).
+- **Success:** `consecutive_clean == n`. Print: `n`, total iterations, total real problems fixed, current dirty set (`git status --short`), and a line suggesting the user commit when ready. **Do not commit on the user's behalf.** Remove `$CODEX_TMP`.
+- **Cap hit:** `iter == 20` without reaching `consecutive_clean == n`. Print the summary + outstanding findings + the current dirty set. Remove `$CODEX_TMP`.
 - **Clean tree at start of an iteration:** stop with "nothing to check — working tree is clean. Did you mean /inspect-codex?"
 - **Destructive-fix pause (rare):** only if step 6 hit a genuinely destructive/irreversible fix — never for ordinary or merely-ambiguous findings, which are auto-resolved. Halt with the specific change + state (`iter`, `consecutive_clean`, dirty set, pending finding). Resume on user input (do not remove `$CODEX_TMP` while paused).
 
 ## Workflow rules / What this skill must NOT do
-- **Run hands-off — no mid-run confirmation prompts.** Drive the whole loop autonomously; never stop to ask the user to confirm launching Codex, approve an allowlisted command, advance to the next iteration, or adjudicate an ordinary/ambiguous finding. The only permitted stops are the missing-tmux abort, the clean-tree stop, and the destructive-fix pause.
+- **Run hands-off — no mid-run confirmation prompts.** Drive the whole loop autonomously; never stop to ask the user to confirm launching Codex, approve an allowlisted command, advance to the next iteration, or adjudicate an ordinary/ambiguous finding. The only permitted stops are the invalid-argument stop, the missing-tmux abort, the clean-tree stop, and the destructive-fix pause.
 - **No git commits** — not per-iteration, not at the end, not "just one for the fixes." Committing is the user's call. No `git stash` / `reset` / `checkout --` that drops or hides WIP. No push / force-push / amend.
 - **Codex runs headless via `codex exec` (yolo / unsandboxed), review-only, in a new tmux window** that closes itself when its review finishes (abort if `$TMUX` unset) — kept review-only by instruction **plus** the step-2 dirty-set backup / step-5 checksum-revert guard that reverts any file it touches (restoring pre-Codex WIP, never HEAD). **Claude is the only writer.** Never `&` / `nohup` / `run_in_background`.
 - No real training / sampling / evaluation — smoke test is `py_compile` + import only.

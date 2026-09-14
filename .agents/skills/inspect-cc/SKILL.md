@@ -1,6 +1,6 @@
 ---
 name: inspect-cc
-description: "Audit the entire PromeMoE++ (ProMoE-Plus) repository with two concurrent tracks: one report-only Claude Code reviewer launched through cc-yolo-api and three read-only Codex subagents. Use for $inspect-cc, whole-project dual-model review, or a Claude Code second opinion. Report findings by default; repair only when explicitly requested, and commit repairs only with explicit commit authorization."
+description: "Audit the entire PromeMoE++ (ProMoE-Plus) repository with two concurrent tracks: one report-only Claude Code reviewer launched through cc-yolo-api and three read-only Codex subagents. Use for $inspect-cc, whole-project dual-model review, or a Claude Code second opinion. The audit passes after n consecutive clean rounds (n from the request, default 2). Report findings by default; repair only when explicitly requested, and commit repairs only with explicit commit authorization."
 ---
 
 # Inspect ProMoE-Plus with Claude Code
@@ -14,9 +14,16 @@ Cross-validate all findings, run static smoke checks, and honor the authorizatio
 
 ## Select the Authorization Mode
 
-- **Report-only mode is the default.** A whole-project audit, inspection, or second-opinion request does not authorize edits. Run one complete dual-track round plus the parent smoke test, report verified findings, and stop without modifying files or Git state.
-- **Repair-only mode requires an explicit request to fix or repair findings.** Apply verified fixes and repeat both tracks until clean, but do not stage or commit.
+- **Report-only mode is the default.** A whole-project audit, inspection, or second-opinion request does not authorize edits. Run dual-track rounds plus the parent smoke test without modifying files or Git state: stop and report after the first round that is not clean, or report a pass after `n` consecutive clean rounds.
+- **Repair-only mode requires an explicit request to fix or repair findings.** Apply verified fixes and repeat both tracks until `n` consecutive rounds are clean, but do not stage or commit.
 - **Repair-and-commit mode additionally requires explicit commit authorization.** Commit only the fixes from each completed repair round. A request to inspect or repair alone never grants commit permission.
+
+## Read the Pass Threshold `n`
+
+`n` is the number of consecutive clean rounds that counts as a passed audit. A round is clean when Claude Code and all three Codex reports end in `ALL_CLEAN` and the parent smoke test passes. A round that is not clean resets the count to zero; warnings alone do not make a round unclean.
+
+- Take `n` from the request, for example `$inspect-cc 3`, `$inspect-cc n=3`, or `连续 3 轮`. Without one, use `n = 2`.
+- `n` must be an integer from 1 to 10, the repair-mode round cap. For any other value, stop before round 1 without changing anything and state the accepted forms.
 
 ## Preconditions and Limits
 
@@ -24,13 +31,13 @@ Cross-validate all findings, run static smoke checks, and honor the authorizatio
 - Read root `AGENTS.md` and `CLAUDE.md`. Root instructions override this workflow when they conflict.
 - Require an attached tmux session: `test -n "${TMUX:-}"`. If absent, abort and ask the user to attach first.
 - Exclude uppercase `REPA/`, `.git/`, `outputs/`, `_previous_results/`, `pretrained_ckpt/`, `training_logs/`, TensorBoard, smoke output, checkpoints, logs, caches, generated images, and generated datasets.
-- In either repair mode, run at most 10 rounds and fix at most 30 verified findings per round. Report-only mode runs one round.
+- In either repair mode, run at most 10 rounds and fix at most 30 verified findings per round. Report-only mode runs at most `n` rounds.
 - Stop when more than 5 combined findings in one round are false positives.
 - Do not run training, sampling, evaluation, preprocessing, downloads, or GPU jobs.
 - Treat warnings as advisory. Blockers/errors alone prevent convergence.
 - Remove every temporary Claude Code run directory through the bundled launcher after consuming it.
 
-Announce both tracks, the three-agent Codex concurrency, and the selected authorization mode before starting. In a repair mode, also state the 10-round cap; mention per-round commits only in repair-and-commit mode.
+Announce both tracks, the three-agent Codex concurrency, the selected authorization mode, and `n` before starting. In a repair mode, also state the 10-round cap; mention per-round commits only in repair-and-commit mode.
 
 ## Verify `cc-yolo-api`
 
@@ -141,9 +148,9 @@ Merge findings by `path:line`; label sources `cc`, `codex x/3`, or `both`; sort 
 
 Run the parent static smoke test in every round; reviewer checks do not replace it.
 
-In report-only mode, report all verified findings and smoke-test failures after the first dual-track round, then stop without editing. Findings do not authorize a repair round.
+In report-only mode, never edit. After a dual-track round that is not clean, report all verified findings and smoke-test failures, then stop. After a clean round, run the next dual-track round until `n` consecutive rounds are clean, then report the pass and any warnings. Findings do not authorize a repair round.
 
-In either repair mode, converge only when all four reports end in `ALL_CLEAN` and the parent smoke test passes. Otherwise:
+In either repair mode, converge only after `n` consecutive rounds in which all four reports end in `ALL_CLEAN` and the parent smoke test passes. After a clean round that has not reached `n`, start the next dual-track round without editing. Otherwise:
 
 1. Fix verified blockers/errors only, with `apply_patch` and no adjacent refactor.
 2. Ask the user only when intended behavior remains genuinely ambiguous after inspecting code, config, and documentation.
@@ -162,4 +169,4 @@ After static checks pass in repair-and-commit mode:
 - Use a concise imperative subject such as `fix(inspect-cc): resolve round N findings`; summarize whether each fix came from `both`, `cc`, or `codex` in the body.
 - Never amend, bypass hooks, push, force-push, or add a fabricated co-author trailer.
 
-In repair-only mode, do not stage or commit; start the next dual-track round directly after checks pass. In repair-and-commit mode, start it after committing. On success, report rounds, issues fixed, and false positives by source; include commit summaries only in repair-and-commit mode. In report-only mode, report the single round, verified findings, smoke-test result, and false positives, and explicitly confirm that no file or Git state changed. If a limit or external-review failure is reached, stop with unresolved findings and do not create a partial commit.
+In repair-only mode, do not stage or commit; start the next dual-track round directly after checks pass. In repair-and-commit mode, start it after committing. On success, report rounds, `n`, issues fixed, and false positives by source; include commit summaries only in repair-and-commit mode. In report-only mode, report the rounds run, whether `n` consecutive clean rounds were reached, verified findings, smoke-test result, and false positives, and explicitly confirm that no file or Git state changed. If a limit or external-review failure is reached, stop with unresolved findings and do not create a partial commit.

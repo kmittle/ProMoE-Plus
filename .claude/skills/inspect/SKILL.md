@@ -1,11 +1,22 @@
 ---
 name: inspect
-description: Run a project-wide carpet-style code-quality loop on ProMoE-Plus — for each iteration do (scan → fix → commit → smoke test), repeating until 5 consecutive iterations find zero issues. Use when the user invokes /inspect or asks for a thorough sweep before a milestone.
+description: Run a project-wide carpet-style code-quality loop on ProMoE-Plus — for each iteration do (scan → fix → commit → smoke test), repeating until n consecutive iterations find zero issues (optional argument n, default 2). Use when the user invokes /inspect or asks for a thorough sweep before a milestone.
+argument-hint: "[n]"
 ---
 
 # /inspect — Iterative carpet check loop
 
-Sweep the ProMoE-Plus codebase for issues, fix them, commit the fixes, then run a smoke test. Repeat until **5 consecutive iterations** produce zero findings AND a passing smoke test. Hard cap: **20 iterations total** — if hit, stop and report what remains.
+Sweep the ProMoE-Plus codebase for issues, fix them, commit the fixes, then run a smoke test. Repeat until **`n` consecutive iterations** produce zero findings AND a passing smoke test (`n` is the optional argument, default 2). Hard cap: **20 iterations total** — if hit, stop and report what remains.
+
+## Argument `n` — consecutive clean iterations to pass
+Usage: `/inspect [n]`, e.g. `/inspect`, `/inspect 3` or `/inspect n=3`. Argument text for this run: `$ARGUMENTS`
+
+Resolve `n` once, before iteration 1:
+- No argument (the text above is empty, or still shows the unsubstituted placeholder) → `n = 2`.
+- A bare integer (`3`) or `n=<integer>` (`n=3`) → that integer.
+- `n` must be an integer from 1 to 20; the loop stops at 20 iterations, so a larger `n` could never pass. For any other argument, stop before iteration 1 without changing anything and tell the user the accepted forms.
+
+Print the value in use before iteration 1 (e.g. `n = 2 (default)`).
 
 ## State to maintain across iterations
 - `iter`: 1-indexed iteration counter
@@ -74,12 +85,13 @@ Do NOT start a real training run, sample run, or anything that occupies a GPU �
 ### 5. Bookkeeping
 - If `findings.count == 0` AND smoke test passed: `consecutive_clean += 1`.
 - Else: `consecutive_clean = 0`.
-- Emit a one-line summary: `iter N: K findings, M fixed, smoke=<ok|fail>, consecutive_clean=X/5`.
+- Emit a one-line summary: `iter N: K findings, M fixed, smoke=<ok|fail>, consecutive_clean=X/<n>`.
 
 ## Termination
 
-- **Success:** `consecutive_clean == 5`. Print final summary: total iterations, total findings fixed, list of commit SHAs created, and "5/5 consecutive clean — codebase is in a clean state for this scope."
-- **Cap hit:** `iter == 20` without reaching 5/5. Print final summary and the outstanding findings from the last iteration.
+- **Invalid argument:** `n` is not an integer from 1 to 20. Stop before iteration 1 with the accepted forms (`/inspect`, `/inspect 3`, `/inspect n=3`).
+- **Success:** `consecutive_clean == n`. Print final summary: total iterations, total findings fixed, list of commit SHAs created, and "<n>/<n> consecutive clean — codebase is in a clean state for this scope."
+- **Cap hit:** `iter == 20` without reaching `consecutive_clean == n`. Print final summary and the outstanding findings from the last iteration.
 - **Ambiguity pause:** if step 2 surfaced something to the user, halt with the question and the current state (`iter`, `consecutive_clean`, pending finding). Resume on user input.
 
 ## Workflow rules (project-wide, see CLAUDE.md)
