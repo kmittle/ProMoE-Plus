@@ -9,6 +9,7 @@
 > 4. **改进组四 · lossfree**（无损路由负载均衡，DeepSeek arXiv 2408.15664）—— ✅ 已实现 + 验证（`ProMoE_TC_B_lossfree`，扫 u ×3）；未提交（本次新增）
 > 5. **当前任务 · 300K 门禁与四点组合**——对尚未判定的候选先执行 300K 门禁；已淘汰 `adepth_q0p2`、`expert_contra_param_cos` 和 `lossfree_u1e2_credit_control`，不再续训。四点组合只跑了 `H+R+O+P`，300K 门禁未通过（CFG 1.0 / 1.5 的 FID 为 31.19 / 10.07，fresh baseline 为 30.58 / 9.59）；其余 9 个从未启动的组合臂（H、H+R、H+O、H+P、H+O+P、H+R+O、H+R+P，以及 `HO_norm`、`HROP_norm`）已于 2026-09-14 连同配置、脚本、队列和只给它们用的模型开关一起删除，组合方式待重新设计。
 > 6. **当前任务 · EC 混合训练（2026-09-14）**——在 TC 训练中混入 Expert-Choice：系列一混合 TC/EC 路由对比损失，系列二把一定比例的 step 换成完整 EC step；共 11 个，每个 2 卡，按用户决定不设 300K 门禁、只在 500K 采样评测。见文末同名章节。
+> 7. **工程改进 · 全局类中心（2026-09-14）**——路由对比损失的专家类中心改用整个 global batch 计算（各卡同步 token 之和与个数）；4 卡、与 fresh baseline 同设置，300K 和 500K 都评测、不自动停。见文末同名章节。
 >
 > 运行时 slot 按实验批次保存在对应的 `scripts/_run_times/<date>/` 目录；当前 `q0p1` 300K 门禁使用 0--3 号卡。
 > **四组共用约定**：均在 base `ProMoE_TC`（`models/models_ProMoE_TC.py`：两步路由 + 静态 `cluster_centers` + top-1 token-choice + shared expert + 路由 InfoNCE 对比损失）上做**自包含变体**（`models_ProMoE_TC_<variant>.py` + config 开关）；**uncond token 一律不受影响**；尽量 **step-0 与 base 前向逐比特一致**；默认各自**独立消融**、不叠加。运行时 slot 按实验批次保存在对应的 `scripts/_run_times/<date>/` 目录。
@@ -454,3 +455,20 @@ CFG1.0 略高，其余三个点都更低。再加上两组都使用了上面所�
 - **训练设置**对齐 `configs/004_ProMoE_B.yaml`（batch 256、lr 1e-4、501K 步），但每个实验 2 卡（每卡 128 张图），不能直接和 4 卡的 fresh baseline 比；2 卡 baseline 以后再定。
 - **评测**：按用户决定，这批实验不设 300K 门禁、不做 300K 评测，只在 500K 采样评测；300K checkpoint 保留。
 - **日志**：`ecmix_ratio`、`ecmix_ec_step`、按 TC 分配算的负载 CV / 最大份额 / 活跃专家数、两种对比损失。
+
+---
+
+# 工程改进 · 全局类中心：路由对比损失的类中心用整个 global batch 计算（2026-09-14）
+
+> **状态**：代码、配置和脚本已写好，由用户手动启动。模型 `models/models_ProMoE_TC_global_center.py`，配置 `configs/004_ProMoE_B_global_center.yaml`，运行脚本 `scripts/global_center/`，启动脚本在 `scripts/_run_times/2026_09_14/`。
+
+**问题**：会议版路由对比损失在每张卡上各自算"分到专家 j 的 token 平均"作为类中心，每张卡的类中心不同、冷门专家尤其不稳，而且结果随卡数变化（同样 global batch，2 卡和 4 卡算出的类中心不一样）。
+
+**做法**（作为工程改进单独消融，不改会议版文件）：
+- 前向时每个专家同步两样数值：本卡分到的 token 之和、token 个数；所有卡用同一组全局类中心，算出同一个对比损失。
+- 不跨进程传梯度：别的卡的部分只是数值。
+- 本卡 token 那一侧的梯度乘以卡数：每张卡算的是同一个损失，但每个 token 只在自己那张卡上拿到梯度，DDP 又会把梯度除以卡数；乘以卡数后，DDP 平均的结果等于"整个 global batch 算一次损失"。原型那一侧各卡梯度相同，不乘。
+- 路由、前向、评测和采样都不变；单卡时与会议版逐位一致。
+- `models/test_models_ProMoE_TC_global_center.py` 用 3 个 gloo 进程验证：各卡损失相同，按 DDP 平均后的 token 和原型梯度与整批直接计算一致。
+
+**实验**：4 卡、seed 0，数据顺序与 fresh baseline 相同，只差类中心的算法，300K 可直接与 fresh baseline 的 30.58 / 9.59 比；按用户决定 300K 和 500K 都评测，300K 结果不触发停止。

@@ -80,6 +80,7 @@ from models.models_ProMoE_TC_dagfuse_region import DiT as ProMoE_TC_dagfuse_regi
 from models.models_ProMoE_TC_denoising_regret import DiT as ProMoE_TC_denoising_regret
 from models.models_ProMoE_TC_dino_route import DiT as ProMoE_TC_dino_route
 from models.models_ProMoE_TC_ecmix import DiT as ProMoE_TC_ecmix
+from models.models_ProMoE_TC_global_center import DiT as ProMoE_TC_global_center
 
 model_dict = {
     "DiT_B": (DiT, "DiT_B_config"),
@@ -128,6 +129,7 @@ model_dict = {
     "ProMoE_TC_B_FDRR": (ProMoE_TC_denoising_regret, "DiT_B_config"),
     "ProMoE_TC_B_dino_route": (ProMoE_TC_dino_route, "DiT_B_config"),
     "ProMoE_TC_B_ecmix": (ProMoE_TC_ecmix, "DiT_B_config"),
+    "ProMoE_TC_B_global_center": (ProMoE_TC_global_center, "DiT_B_config"),
 }
 
 DENOISING_REGRET_MODELS = {"ProMoE_TC_B_FDRR"}
