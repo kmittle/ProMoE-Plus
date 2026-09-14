@@ -20,7 +20,7 @@ Before doing anything, pin down (ask only if genuinely ambiguous — otherwise u
   `train_with_repa.py` / `train_with_MoS_repa.py` / `train_with_mae.py`). See CLAUDE.md "Model Registry".
 - **Size** — `B` / `L` / `XL` (maps to `DiT_<size>_config`).
 - **Config knobs** — any `MoE_config` / `repa_config` flags the experiment sets.
-- **GPU count** — `4` (half server) by default; **XL defaults to `8`** (whole server). Honor an explicit override.
+- **GPU count** — `4` (half server) by default; **XL defaults to `8`** (whole server); `2` (quarter server) when requested. Honor an explicit override.
 - **Date directory** — `scripts/_run_times/<date>/`, format `YYYY_MM_DD`, default **today**.
 
 ## Step 0 — Classify the experiment
@@ -74,7 +74,7 @@ and the **training entrypoint** in the train step to match the model family. Kee
 1. **Preview first (mandatory):**
    ```
    scripts/_run_times/new_run.sh --script scripts/<family>/run_<...>.sh \
-       [--date <YYYY_MM_DD>] --gpus <4|8> --dry-run
+       [--date <YYYY_MM_DD>] --gpus <2|4|8> --dry-run
    ```
    Echo the plan it prints: computed slot, `gpu_ids`, target config, wrapper path.
 2. **Then write** (drop `--dry-run`): allocates the slot, patches the experiment YAML's `gpu_ids`,
@@ -82,7 +82,7 @@ and the **training entrypoint** in the train step to match the model family. Kee
 3. Pause for confirmation **only** if intent is ambiguous (GPU count, date dir, or new-vs-existing
    variant). Otherwise the preview is the checkpoint — proceed to write.
 
-Slot/`gpu_ids` semantics are owned by `new_run.sh` (4-GPU `X.1`→`[0,1,2,3]` / `X.2`→`[4,5,6,7]`,
+Slot/`gpu_ids` semantics are owned by `new_run.sh` (2-GPU `X.1`–`X.4`→`[0,1]`/`[2,3]`/`[4,5]`/`[6,7]`, 4-GPU `X.1`→`[0,1,2,3]` / `X.2`→`[4,5,6,7]`,
 8-GPU `X`→`[0..7]`, scoped to one date dir). Do not re-implement that math here.
 
 ## Step 5 — Auto-write the experiment description

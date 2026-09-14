@@ -123,7 +123,7 @@ When allocation is required, always preview the allocator before letting it writ
 scripts/_run_times/new_run.sh \
   --script scripts/<family>/run_<...>_train_sample_eval.sh \
   --date <YYYY_MM_DD> \
-  --gpus <4|8> \
+  --gpus <2|4|8> \
   --dry-run
 ```
 
