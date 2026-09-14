@@ -8,6 +8,7 @@
 > 3. **改进组三 · adaptive-depth**（token 自适应跳过 / 加深 FFN，MoD 式）—— ✅ 已实现 + 验证 + **已 push**（`ProMoE_TC_B_adepth`，fixed_q，扫 depth_q ×4）
 > 4. **改进组四 · lossfree**（无损路由负载均衡，DeepSeek arXiv 2408.15664）—— ✅ 已实现 + 验证（`ProMoE_TC_B_lossfree`，扫 u ×3）；未提交（本次新增）
 > 5. **当前任务 · 300K 门禁与四点组合**——对尚未判定的候选先执行 300K 门禁；已淘汰 `adepth_q0p2`、`expert_contra_param_cos` 和 `lossfree_u1e2_credit_control`，不再续训。四点组合只跑了 `H+R+O+P`，300K 门禁未通过（CFG 1.0 / 1.5 的 FID 为 31.19 / 10.07，fresh baseline 为 30.58 / 9.59）；其余 9 个从未启动的组合臂（H、H+R、H+O、H+P、H+O+P、H+R+O、H+R+P，以及 `HO_norm`、`HROP_norm`）已于 2026-09-14 连同配置、脚本、队列和只给它们用的模型开关一起删除，组合方式待重新设计。
+> 6. **当前任务 · EC 混合训练（2026-09-14）**——在 TC 训练中混入 Expert-Choice：系列一混合 TC/EC 路由对比损失，系列二把一定比例的 step 换成完整 EC step；共 11 个，每个 2 卡，按用户决定不设 300K 门禁、只在 500K 采样评测。见文末同名章节。
 >
 > 运行时 slot 按实验批次保存在对应的 `scripts/_run_times/<date>/` 目录；当前 `q0p1` 300K 门禁使用 0--3 号卡。
 > **四组共用约定**：均在 base `ProMoE_TC`（`models/models_ProMoE_TC.py`：两步路由 + 静态 `cluster_centers` + top-1 token-choice + shared expert + 路由 InfoNCE 对比损失）上做**自包含变体**（`models_ProMoE_TC_<variant>.py` + config 开关）；**uncond token 一律不受影响**；尽量 **step-0 与 base 前向逐比特一致**；默认各自**独立消融**、不叠加。运行时 slot 按实验批次保存在对应的 `scripts/_run_times/<date>/` 目录。
@@ -431,3 +432,25 @@ CFG1.0 略高，其余三个点都更低。再加上两组都使用了上面所�
 
 因此它属于“外部语义统计辅助 MoE 路由/负载均衡”的尝试，而不是“借 DINO 做
 表征对齐”。
+
+---
+
+# EC 混合训练：在 TC 训练中混入 Expert-Choice（2026-09-14）
+
+> **状态**：代码、配置和脚本已写好，由用户手动启动。模型 `models/models_ProMoE_TC_ecmix.py`，配置 `configs/004_ProMoE_B_ecmix_*.yaml`，运行脚本 `scripts/ecmix/`，启动脚本 `scripts/_run_times/2026_09_14/`。
+
+**动机**：TC 路由下各专家分到的 token 不均匀，可能拖累效果；EC 按构造均衡，但全程 EC 在本项目里比 TC 差（`B_ec_bc_hetero` 300K CFG 1.0 FID 32.66，对应的 TC 异构专家为 29.40）。所以只在训练时混入 EC，推理仍是纯 TC。
+
+| 系列 | 实验 | 做法 |
+|---|---|---|
+| 一：只改 loss | `loss_w0p05` / `w0p10` / `w0p25` / `w0p50` / `w1p00` | 每步 TC 路由；路由对比损失 = (1−w)·TC loss + w·EC loss |
+| 一 | `loss_cos0p50` | w 从 0.5 余弦退火，500K 降到 0（300K 时约 0.17） |
+| 二：整步替换 | `step_p0p05` / `p0p10` / `p0p25` / `p0p50` | 比例 p 的 step 是完整 EC step（EC-BC 路由 + EC 对比损失），其余是原版 TC step |
+| 二 | `step_cos0p50` | p 从 0.5 余弦退火，500K 降到 0 |
+
+- **不改会议版模型、少耦合**：只有 MoE block 继承会议版 `models_ProMoE_TC.SparseMoeBlock`（构造、TC 路由、TC 前向和 TC 对比损失原样复用），DiT、DiTBlock 在新文件里单独写出；比例为 0 时与会议版逐位一致（由 `models/test_models_ProMoE_TC_ecmix.py` 验证）。
+- **EC 的挑法**与 `models_ProMoE_EC_batch_choice.py` 相同：每张卡的 batch 内，每个专家挑 cos-sim 最高的 T/12 个 cond token；EC 对比损失是原型对 12 个专家均值的 InfoNCE。负样本是其他专家的均值，这是和 `proto_choice`（负样本是单个 token，历史结果明显变差）的关键区别。
+- **EC step 的位置**由 step 号确定：固定比例严格均匀（5% = 每 20 步 1 步），余弦退火按比例的积分均匀排开；所有卡和续训都一致。
+- **训练设置**对齐 `configs/004_ProMoE_B.yaml`（batch 256、lr 1e-4、501K 步），但每个实验 2 卡（每卡 128 张图），不能直接和 4 卡的 fresh baseline 比；2 卡 baseline 以后再定。
+- **评测**：按用户决定，这批实验不设 300K 门禁、不做 300K 评测，只在 500K 采样评测；300K checkpoint 保留。
+- **日志**：`ecmix_ratio`、`ecmix_ec_step`、按 TC 分配算的负载 CV / 最大份额 / 活跃专家数、两种对比损失。

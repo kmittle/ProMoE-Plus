@@ -1,0 +1,8 @@
+实验 / Experiment: 3.1-B_ecmix_step_p0p25
+model_name: ProMoE_TC_B_ecmix  |  config: configs/004_ProMoE_B_ecmix_step_p0p25.yaml
+基线 / Baseline: 基础 ProMoE-TC（conditional routing + 静态 `cluster_centers` 原型 cos-sim top-1 token-choice、shared expert、routing contrastive InfoNCE）；直接父变体 / Parent: 即基础 ProMoE-TC（会议版 `models_ProMoE_TC.py`；本模型只有 MoE block 继承其 `SparseMoeBlock`，`ratio: 0` 时逐位一致）
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 整步替换为 EC step（`ecmix_config.mode: step`, `schedule: constant`, `ratio: 0.25`）：每 4 个 training step 固定 1 个（第 3、7… 步，由 step 号确定）走完整 EC-BC step：每个专家从本卡 batch 的 cond token 中取 cos-sim 最高的 k = T/12 个，门控为 cos-sim 分数，同一 token 被多个专家选中时输出相加、未被任何专家选中的 token 只经过 shared expert，该步 routing contrastive loss 用 EC 版；其余 step 为官方 TC step（TC 路由 + TC loss）。
+2. 推理不变：eval / 采样恒为官方 TC。训练日志记录 `ecmix_ratio`、`ecmix_ec_step`，以及按 TC 分配算的负载 CV / 最大份额 / 活跃专家数（EC step 上也记录 TC 会怎么分）与两种对比损失。
+3. 训练设置对齐会议版 `configs/004_ProMoE_B.yaml`（global batch 256、lr 1e-4、501K 步、seed 0），但为 2 卡（每卡 128 张图，TC loss 与 EC 选择都在单卡 batch 内计算）；本批不设 300K 门禁、不做 300K 评测，只在 500K 采样评测（CFG 1.0 / 1.5）；中断后可用 `PROMOE_RESUME=1` 从本实验自己的 checkpoint 续跑。

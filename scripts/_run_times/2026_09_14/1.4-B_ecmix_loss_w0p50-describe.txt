@@ -1,0 +1,8 @@
+实验 / Experiment: 1.4-B_ecmix_loss_w0p50
+model_name: ProMoE_TC_B_ecmix  |  config: configs/004_ProMoE_B_ecmix_loss_w0p50.yaml
+基线 / Baseline: 基础 ProMoE-TC（conditional routing + 静态 `cluster_centers` 原型 cos-sim top-1 token-choice、shared expert、routing contrastive InfoNCE）；直接父变体 / Parent: 即基础 ProMoE-TC（会议版 `models_ProMoE_TC.py`；本模型只有 MoE block 继承其 `SparseMoeBlock`，`ratio: 0` 时逐位一致）
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 路由对比损失混入 EC 版（`ecmix_config.mode: loss`, `schedule: constant`, `ratio: 0.5`）：每步仍按 TC top-1 路由，routing contrastive loss = 0.50 × TC loss + 0.50 × EC loss。EC loss 与 `models_ProMoE_EC_batch_choice.py` 相同：每个原型在本卡 batch 的 cond token 中取 cos-sim 最高的 k = T/12 个求均值，再做原型 ↔ 12 个专家均值的 InfoNCE（temperature 0.07）。
+2. 前向与推理不变：专家处理哪些 token 仍由 TC 决定，eval / 采样恒为官方 TC；与 `proto_choice` 不同，EC loss 的负样本是其他专家的均值而非单个 token。训练日志记录 `ecmix_ratio`、按 TC 分配算的负载 CV / 最大份额 / 活跃专家数，以及 TC、EC 两种对比损失。
+3. 训练设置对齐会议版 `configs/004_ProMoE_B.yaml`（global batch 256、lr 1e-4、501K 步、seed 0），但为 2 卡（每卡 128 张图，TC loss 与 EC 选择都在单卡 batch 内计算）；本批不设 300K 门禁、不做 300K 评测，只在 500K 采样评测（CFG 1.0 / 1.5）；中断后可用 `PROMOE_RESUME=1` 从本实验自己的 checkpoint 续跑。

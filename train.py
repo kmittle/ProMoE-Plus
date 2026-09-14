@@ -79,6 +79,7 @@ from models.models_ProMoE_TC_dagfuse_sharedroute import DiT as ProMoE_TC_dagfuse
 from models.models_ProMoE_TC_dagfuse_region import DiT as ProMoE_TC_dagfuse_region
 from models.models_ProMoE_TC_denoising_regret import DiT as ProMoE_TC_denoising_regret
 from models.models_ProMoE_TC_dino_route import DiT as ProMoE_TC_dino_route
+from models.models_ProMoE_TC_ecmix import DiT as ProMoE_TC_ecmix
 
 model_dict = {
     "DiT_B": (DiT, "DiT_B_config"),
@@ -126,6 +127,7 @@ model_dict = {
     "ProMoE_TC_B_dagfuse_region": (ProMoE_TC_dagfuse_region, "DiT_B_config"),
     "ProMoE_TC_B_FDRR": (ProMoE_TC_denoising_regret, "DiT_B_config"),
     "ProMoE_TC_B_dino_route": (ProMoE_TC_dino_route, "DiT_B_config"),
+    "ProMoE_TC_B_ecmix": (ProMoE_TC_ecmix, "DiT_B_config"),
 }
 
 DENOISING_REGRET_MODELS = {"ProMoE_TC_B_FDRR"}
@@ -136,6 +138,16 @@ CAPACITY_COMBO_STAT_NAMES = (
     "moe_route_mean_diag_offset",
     "moe_expert_output_contrastive",
     "moe_expert_param_contrastive",
+)
+ECMIX_MODELS = {"ProMoE_TC_B_ecmix"}
+ECMIX_STAT_NAMES = (
+    "ecmix_ratio",
+    "ecmix_ec_step",
+    "ecmix_tc_load_cv",
+    "ecmix_tc_max_share",
+    "ecmix_tc_active_experts",
+    "ecmix_tc_contrastive",
+    "ecmix_ec_contrastive",
 )
 TRAINER_STATE_VERSION = 2
 LEGACY_TRAINER_STATE_VERSION = 1
@@ -906,6 +918,74 @@ def _reduce_capacity_combo_stats(loss_dict):
     dist.all_reduce(values, op=dist.ReduceOp.SUM)
     values.div_(dist.get_world_size())
     for name, value in zip(names, values):
+        loss_dict[name] = value
+
+
+def _collect_ecmix_stats(model):
+    """Collect fixed-shape diagnostics for the EC-mixing model only.
+
+    The TC load is what token choice assigns in this step, also on a complete
+    EC step, so the curves show whether TC routing itself becomes balanced.
+    Histograms are summed over ranks before the per-block CV and max share.
+    """
+    module = model.module if hasattr(model, "module") else model
+    if not getattr(module, "is_ecmix_model", False):
+        return {}
+
+    blocks = [block.mlp for block in module.blocks if block.use_moe]
+    num_experts = blocks[0].num_routed_experts
+    load = blocks[0].cluster_centers.detach().new_zeros(
+        len(blocks), num_experts, dtype=torch.float32
+    )
+    tc_losses = []
+    ec_losses = []
+    for index, block in enumerate(blocks):
+        if torch.is_tensor(block.last_tc_load_hist):
+            load[index] = block.last_tc_load_hist.detach().float().reshape(-1)[:num_experts]
+        if torch.is_tensor(block.last_tc_contrastive_loss):
+            tc_losses.append(block.last_tc_contrastive_loss.detach().float().reshape(()))
+        if torch.is_tensor(block.last_ec_contrastive_loss):
+            ec_losses.append(block.last_ec_contrastive_loss.detach().float().reshape(()))
+    if dist.is_available() and dist.is_initialized():
+        dist.all_reduce(load, op=dist.ReduceOp.SUM)
+
+    zero = load.new_zeros(())
+    counted = load[load.sum(dim=1) > 0]
+    if counted.numel() > 0:
+        mean = counted.mean(dim=1)
+        std = (counted - mean.unsqueeze(1)).square().mean(dim=1).sqrt()
+        load_cv = (std / mean.clamp_min(1e-6)).mean()
+        max_share = (counted.max(dim=1).values / counted.sum(dim=1)).mean()
+        active_experts = (counted > 0).float().sum(dim=1).mean()
+    else:
+        load_cv = max_share = active_experts = zero
+    state = module.ecmix_last_state
+    return {
+        "ecmix_ratio": zero + float(state["ratio"]),
+        "ecmix_ec_step": zero + float(state["ec_step"]),
+        "ecmix_tc_load_cv": load_cv,
+        "ecmix_tc_max_share": max_share,
+        "ecmix_tc_active_experts": active_experts,
+        "ecmix_tc_contrastive": torch.stack(tc_losses).mean() if tc_losses else zero.clone(),
+        "ecmix_ec_contrastive": torch.stack(ec_losses).mean() if ec_losses else zero.clone(),
+    }
+
+
+def _reduce_ecmix_stats(loss_dict):
+    """Average the fixed EC-mixing diagnostics over DDP ranks."""
+    if not dist.is_available() or not dist.is_initialized():
+        return
+    if not all(
+        name in loss_dict
+        and torch.is_tensor(loss_dict[name])
+        and loss_dict[name].numel() == 1
+        for name in ECMIX_STAT_NAMES
+    ):
+        return
+    values = torch.stack([loss_dict[name].detach().float() for name in ECMIX_STAT_NAMES])
+    dist.all_reduce(values, op=dist.ReduceOp.SUM)
+    values.div_(dist.get_world_size())
+    for name, value in zip(ECMIX_STAT_NAMES, values):
         loss_dict[name] = value
 
 
@@ -2595,6 +2675,8 @@ def worker(gpu, cfg):
         if cfg.model_name in DENOISING_REGRET_MODELS:
             arg_c['denoising_target'] = target
             arg_c['training_step'] = step
+        if cfg.model_name in ECMIX_MODELS:
+            arg_c['training_step'] = step
 
         with amp.autocast(dtype=cfg.param_dtype, enabled=use_amp):
             model_output = model(noised_z_in, t, **arg_c)
@@ -2605,6 +2687,9 @@ def worker(gpu, cfg):
             loss_dict[stat_name] = stat_value
         if cfg.model_name in CAPACITY_COMBO_MODELS:
             for stat_name, stat_value in _collect_capacity_combo_stats(model).items():
+                loss_dict[stat_name] = stat_value
+        if cfg.model_name in ECMIX_MODELS:
+            for stat_name, stat_value in _collect_ecmix_stats(model).items():
                 loss_dict[stat_name] = stat_value
         if cfg.model_name in DENOISING_REGRET_MODELS:
             if not isinstance(model_output, tuple) or len(model_output) != 2:
@@ -2676,6 +2761,8 @@ def worker(gpu, cfg):
         _reduce_dino_route_stats(logged_loss_dict)
         if cfg.model_name in CAPACITY_COMBO_MODELS:
             _reduce_capacity_combo_stats(logged_loss_dict)
+        if cfg.model_name in ECMIX_MODELS:
+            _reduce_ecmix_stats(logged_loss_dict)
         if step % cfg.log_interval == 0:
             logging.info(format_loss_log(epoch, step, logged_loss_dict))
         if cfg.rank == 0:
