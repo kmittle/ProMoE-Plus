@@ -91,7 +91,7 @@ Scripts under `scripts/` run train + sample + eval in one go. Organized by exper
 | `scripts/phase_metric/` | Phase-conditioned routing-metric arms: `base_s0` control, `phase_metric`, and a timestep-shuffled control |
 | `scripts/fdrr/` | Teacher-free Base-FDRR (`ProMoE_TC_B_FDRR`) plus its seed-0 control |
 | `scripts/ecmix/` | Expert-Choice mixed into TC training (`ProMoE_TC_B_ecmix`): series 1 blends the TC/EC routing-contrastive loss (`loss_w0p05` / `w0p10` / `w0p25` / `w0p50` / `w1p00`, `loss_cos0p50`), series 2 turns a share of training steps into complete EC-BC steps (`step_p0p05` / `p0p10` / `p0p25` / `p0p50`, `step_cos0p50`). 2 GPUs per arm, sampled and evaluated at 500K only; `PROMOE_RESUME=1` continues an interrupted run. Also holds `ecmix_eval_helpers.sh` |
-| `scripts/global_center/` | Global-batch routing-contrastive class centers (`ProMoE_TC_B_global_center`), an engineering ablation: each expert's token sum and count are all-reduced so every GPU contrasts the prototypes with the same class centers. 4 GPUs like the fresh baseline, evaluated at 300K and 500K without an automatic stop; `PROMOE_RESUME=1` continues an interrupted run. Also holds `global_center_eval_helpers.sh` |
+| `scripts/global_center/` | Global-batch routing-contrastive class centers (`ProMoE_TC_B_global_center`), an engineering ablation: each expert's token sum and count are all-reduced so every GPU contrasts the prototypes with the same class centers. 4 GPUs, evaluated at 300K and 500K without an automatic stop; `PROMOE_RESUME=1` continues an interrupted run. Also holds `global_center_eval_helpers.sh` |
 
 ```bash
 # Example: run a MoS experiment end-to-end
@@ -338,10 +338,20 @@ When extending one, preserve the lock — do not loosen a gate to make a result 
 The project enforces a scientific protocol in code, not just in docs. `doc/design-todo.md`
 is the live roadmap and states the current rules; the mechanisms below implement them.
 
+**The baseline is fixed (user rule, 2026-09-21).** Every comparison uses one ProMoE-TC B
+baseline, the one on the archived results page — 300K FID/IS `30.86 / 48.35` (CFG 1.0) and
+`9.73 / 121.25` (CFG 1.5); 500K `24.44 / 60.38` and `6.39 / 154.21`. The separately trained
+"fresh routing baseline" under `outputs/archived_outputs/2026-09-03/` (300K `30.58 / 9.59`)
+is **void**: never quote it, never gate on it, never call it the baseline. A baseline that
+moves between sessions makes every reported delta unreadable. Note also that three
+Base-equivalent runs (`param`, `param_b4`, `param_shared` — their regularizer is identically
+zero) scored 500K 25.51 and 23.80 and 300K 30.58 against this baseline, i.e. the measured
+run-to-run spread is ≈1.7 FID at 500K; a claimed gain smaller than that is not evidence.
+
 **The 300K dual-CFG FID gate.** Every candidate trains **from scratch (step 0, empty output
 dir)** to 300K, then samples 50K images at CFG 1.0 **and** 1.5 and scores them with the
-OpenAI evaluator. It must beat the *fresh* ProMoE-TC baseline's 300K FID at **both** CFG
-values; a candidate that fails is abandoned on the spot and never continued to 500K. Only a
+OpenAI evaluator. It must beat the canonical ProMoE-TC baseline's 300K FID (30.86 at CFG 1.0, 9.73 at
+CFG 1.5) at **both** CFG values; a candidate that fails is abandoned on the spot and never continued to 500K. Only a
 gate-passing arm earns 500K plus routing/expert-specialization analysis. Corollaries that
 matter when writing scripts:
 - A mid-training checkpoint continuation is **not** a substitute for an independent
@@ -352,10 +362,10 @@ matter when writing scripts:
   training length. Only the factor under test may differ.
 - The 2026-09-14 `ecmix` batch is exempt by the user's decision: it trains straight to 500K
   and is sampled and evaluated only there, because its annealed arms are still mid-schedule
-  at 300K. It runs on 2 GPUs per arm, so it is not comparable with the 4-GPU fresh baseline.
+  at 300K. It runs on 2 GPUs per arm, so it is not comparable with the 4-GPU baseline.
 - The 2026-09-14 `global_center` arm is evaluated at 300K and 500K and, by the user's decision, is
-  not stopped by its 300K result. It matches the fresh baseline's 4-GPU setup, so its 300K FIDs
-  compare directly with 30.58 / 9.59.
+  not stopped by its 300K result. It uses 4 GPUs like the baseline, so its 300K FIDs
+  compare directly with 30.86 / 9.73.
 
 **A run that starts from another experiment's weights is not an experiment.** Project rule,
 no exceptions: 接着别的实验的权重继续往下训练的实验一律不承认，因为因素混杂，这种实验根本不算是干净的

@@ -5,4 +5,4 @@ model_name: ProMoE_TC_B_global_center  |  config: configs/004_ProMoE_B_global_ce
 核心改动 / Core changes（相对基线，重点优先）:
 1. 路由对比损失的专家类中心改用整个 global batch 计算（工程改进）：前向时 all-reduce 每个专家的 token 之和与 token 个数，各卡用同一组全局类中心、算出同一个 InfoNCE 损失，空专家按全局个数判断；会议版是每张卡各自用本卡 token 求类中心。
 2. 梯度处理：其他卡的数值只作常数，不跨进程传梯度；本卡 token 那一侧的梯度乘以卡数（world size），使 DDP 平均后的更新等于在整个 global batch 上算一次损失；原型 `cluster_centers` 的梯度各卡相同、不乘。路由、前向、评测和采样不变。
-3. 训练设置与 fresh baseline 相同（会议版 `configs/004_ProMoE_B.yaml` 超参数、4 卡、seed 0、相同数据顺序），300K 可直接与 fresh baseline 的 30.58 / 9.59 比；300K 和 500K 都采样评测（CFG 1.0 / 1.5），300K 结果不触发停止；中断后可用 `PROMOE_RESUME=1` 从本实验自己的 checkpoint 续跑。
+3. 训练设置与基线相同（会议版 `configs/004_ProMoE_B.yaml` 超参数、4 卡、seed 0、相同数据顺序），300K 可直接与基线的 30.86 / 9.73 比；300K 和 500K 都采样评测（CFG 1.0 / 1.5），300K 结果不触发停止；中断后可用 `PROMOE_RESUME=1` 从本实验自己的 checkpoint 续跑。

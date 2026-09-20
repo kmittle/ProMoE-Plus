@@ -1,15 +1,17 @@
 # design-todo：ProMoE_TC 改进计划（MoE 主线）
 
-> **执行顺序（2026-09-06）**：所有候选先 training from scratch 到 300K，并完成 CFG 1.0/1.5 的 OpenAI evaluator。以 fresh ProMoE-TC baseline 的 300K FID 为门禁（FID 必须在两个 CFG 都更低）；未通过的方案立即停止并放弃，不再续训 500K。通过门禁的方案才做 500K 和路由/专家分工分析。不得用中途 checkpoint 代替独立实验，也不得在 300K 前凭主观判断停止。一次性的 200K 窗口交接不再复制到新实验。
+> **基线（固定，2026-09-21）**：所有对比一律使用结果页上的 ProMoE-TC B 基线——300K 为 FID/IS `30.86 / 48.35`（CFG 1.0）、`9.73 / 121.25`（CFG 1.5）；500K 为 `24.44 / 60.38`、`6.39 / 154.21`。Codex 另训的 fresh routing baseline（300K `30.58 / 9.59`）作废，不再引用、不作门禁。
+>
+> **执行顺序（2026-09-06）**：所有候选先 training from scratch 到 300K，并完成 CFG 1.0/1.5 的 OpenAI evaluator。以基线 ProMoE-TC 的 300K FID（CFG 1.0 为 30.86、CFG 1.5 为 9.73）为门禁（FID 必须在两个 CFG 都更低）；未通过的方案立即停止并放弃，不再续训 500K。通过门禁的方案才做 500K 和路由/专家分工分析。不得用中途 checkpoint 代替独立实验，也不得在 300K 前凭主观判断停止。一次性的 200K 窗口交接不再复制到新实验。
 
 > **目录 / Index**（历史独立改进组；当前优先做补测和组合消融）：
 > 1. **改进组一 · DAG-fuse**（shared↔conditional 单向融合）—— ✅ 已实现 + 验证 + **已 push**（`ProMoE_TC_B_dagfuse`，3 臂）
 > 2. **改进组二 · lbcontra**（路由对比损失负载均衡）—— ✅ 已实现 + 验证 + **已 push**（`ProMoE_TC_B_lbcontra`，13 run）
 > 3. **改进组三 · adaptive-depth**（token 自适应跳过 / 加深 FFN，MoD 式）—— ✅ 已实现 + 验证 + **已 push**（`ProMoE_TC_B_adepth`，fixed_q，扫 depth_q ×4）
 > 4. **改进组四 · lossfree**（无损路由负载均衡，DeepSeek arXiv 2408.15664）—— ✅ 已实现 + 验证（`ProMoE_TC_B_lossfree`，扫 u ×3）；未提交（本次新增）
-> 5. **当前任务 · 300K 门禁与四点组合**——对尚未判定的候选先执行 300K 门禁；已淘汰 `adepth_q0p2`、`expert_contra_param_cos` 和 `lossfree_u1e2_credit_control`，不再续训。四点组合只跑了 `H+R+O+P`，300K 门禁未通过（CFG 1.0 / 1.5 的 FID 为 31.19 / 10.07，fresh baseline 为 30.58 / 9.59）；其余 9 个从未启动的组合臂（H、H+R、H+O、H+P、H+O+P、H+R+O、H+R+P，以及 `HO_norm`、`HROP_norm`）已于 2026-09-14 连同配置、脚本、队列和只给它们用的模型开关一起删除，组合方式待重新设计。
+> 5. **当前任务 · 300K 门禁与四点组合**——对尚未判定的候选先执行 300K 门禁；已淘汰 `adepth_q0p2`、`expert_contra_param_cos` 和 `lossfree_u1e2_credit_control`，不再续训。四点组合只跑了 `H+R+O+P`，300K 门禁未通过（CFG 1.0 / 1.5 的 FID 为 31.19 / 10.07，基线为 30.86 / 9.73）；其余 9 个从未启动的组合臂（H、H+R、H+O、H+P、H+O+P、H+R+O、H+R+P，以及 `HO_norm`、`HROP_norm`）已于 2026-09-14 连同配置、脚本、队列和只给它们用的模型开关一起删除，组合方式待重新设计。
 > 6. **当前任务 · EC 混合训练（2026-09-14）**——在 TC 训练中混入 Expert-Choice：系列一混合 TC/EC 路由对比损失，系列二把一定比例的 step 换成完整 EC step；共 11 个，每个 2 卡，按用户决定不设 300K 门禁、只在 500K 采样评测。见文末同名章节。
-> 7. **工程改进 · 全局类中心（2026-09-14）**——路由对比损失的专家类中心改用整个 global batch 计算（各卡同步 token 之和与个数）；4 卡、与 fresh baseline 同设置，300K 和 500K 都评测、不自动停。见文末同名章节。
+> 7. **工程改进 · 全局类中心（2026-09-14）**——路由对比损失的专家类中心改用整个 global batch 计算（各卡同步 token 之和与个数）；4 卡、与基线同设置，300K 和 500K 都评测、不自动停。见文末同名章节。
 >
 > 运行时 slot 按实验批次保存在对应的 `scripts/_run_times/<date>/` 目录；当前 `q0p1` 300K 门禁使用 0--3 号卡。
 > **四组共用约定**：均在 base `ProMoE_TC`（`models/models_ProMoE_TC.py`：两步路由 + 静态 `cluster_centers` + top-1 token-choice + shared expert + 路由 InfoNCE 对比损失）上做**自包含变体**（`models_ProMoE_TC_<variant>.py` + config 开关）；**uncond token 一律不受影响**；尽量 **step-0 与 base 前向逐比特一致**；默认各自**独立消融**、不叠加。运行时 slot 按实验批次保存在对应的 `scripts/_run_times/<date>/` 目录。
@@ -302,7 +304,7 @@ return X[:,0], X[:,1]                                # C_new, S_new
 - **O**：六个 MoE block 上，专家输出池化向量两两做 `exp(-L2/0.5)` 排斥，系数 0.5。
 - **P**：第 4 个 block（索引 3）上，宽度无关的参数签名两两做 `exp(-L2/0.7)` 排斥，系数 0.5。
 
-300K 结果：CFG 1.0 / 1.5 的 FID 为 31.19 / 10.07，没有超过 fresh baseline 的 30.58 / 9.59，按门禁规则放弃，不续训 500K。
+300K 结果：CFG 1.0 / 1.5 的 FID 为 31.19 / 10.07，没有超过基线的 30.86 / 9.73，按门禁规则放弃，不续训 500K。
 
 
 # 2026-08-31 DINO 指导路由实验：技术说明
@@ -452,7 +454,7 @@ CFG1.0 略高，其余三个点都更低。再加上两组都使用了上面所�
 - **不改会议版模型、少耦合**：只有 MoE block 继承会议版 `models_ProMoE_TC.SparseMoeBlock`（构造、TC 路由、TC 前向和 TC 对比损失原样复用），DiT、DiTBlock 在新文件里单独写出；比例为 0 时与会议版逐位一致（由 `models/test_models_ProMoE_TC_ecmix.py` 验证）。
 - **EC 的挑法**与 `models_ProMoE_EC_batch_choice.py` 相同：每张卡的 batch 内，每个专家挑 cos-sim 最高的 T/12 个 cond token；EC 对比损失是原型对 12 个专家均值的 InfoNCE。负样本是其他专家的均值，这是和 `proto_choice`（负样本是单个 token，历史结果明显变差）的关键区别。
 - **EC step 的位置**由 step 号确定：固定比例严格均匀（5% = 每 20 步 1 步），余弦退火按比例的积分均匀排开；所有卡和续训都一致。
-- **训练设置**对齐 `configs/004_ProMoE_B.yaml`（batch 256、lr 1e-4、501K 步），但每个实验 2 卡（每卡 128 张图），不能直接和 4 卡的 fresh baseline 比；2 卡 baseline 以后再定。
+- **训练设置**对齐 `configs/004_ProMoE_B.yaml`（batch 256、lr 1e-4、501K 步），但每个实验 2 卡（每卡 128 张图），不能直接和 4 卡的基线比；2 卡 baseline 以后再定。
 - **评测**：按用户决定，这批实验不设 300K 门禁、不做 300K 评测，只在 500K 采样评测；300K checkpoint 保留。
 - **日志**：`ecmix_ratio`、`ecmix_ec_step`、按 TC 分配算的负载 CV / 最大份额 / 活跃专家数、两种对比损失。
 
@@ -471,4 +473,4 @@ CFG1.0 略高，其余三个点都更低。再加上两组都使用了上面所�
 - 路由、前向、评测和采样都不变；单卡时与会议版逐位一致。
 - `models/test_models_ProMoE_TC_global_center.py` 用 3 个 gloo 进程验证：各卡损失相同，按 DDP 平均后的 token 和原型梯度与整批直接计算一致。
 
-**实验**：4 卡、seed 0，数据顺序与 fresh baseline 相同，只差类中心的算法，300K 可直接与 fresh baseline 的 30.58 / 9.59 比；按用户决定 300K 和 500K 都评测，300K 结果不触发停止。
+**实验**：4 卡、seed 0，数据顺序固定 seed 0，只差类中心的算法，300K 可直接与基线的 30.86 / 9.73 比；按用户决定 300K 和 500K 都评测，300K 结果不触发停止。
