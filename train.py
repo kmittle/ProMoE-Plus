@@ -81,6 +81,7 @@ from models.models_ProMoE_TC_denoising_regret import DiT as ProMoE_TC_denoising_
 from models.models_ProMoE_TC_dino_route import DiT as ProMoE_TC_dino_route
 from models.models_ProMoE_TC_ecmix import DiT as ProMoE_TC_ecmix
 from models.models_ProMoE_TC_global_center import DiT as ProMoE_TC_global_center
+from models.models_ProMoE_TC_expert_cos import DiT as ProMoE_TC_expert_cos
 
 model_dict = {
     "DiT_B": (DiT, "DiT_B_config"),
@@ -130,6 +131,7 @@ model_dict = {
     "ProMoE_TC_B_dino_route": (ProMoE_TC_dino_route, "DiT_B_config"),
     "ProMoE_TC_B_ecmix": (ProMoE_TC_ecmix, "DiT_B_config"),
     "ProMoE_TC_B_global_center": (ProMoE_TC_global_center, "DiT_B_config"),
+    "ProMoE_TC_B_expert_cos": (ProMoE_TC_expert_cos, "DiT_B_config"),
 }
 
 DENOISING_REGRET_MODELS = {"ProMoE_TC_B_FDRR"}
@@ -150,6 +152,20 @@ ECMIX_STAT_NAMES = (
     "ecmix_tc_active_experts",
     "ecmix_tc_contrastive",
     "ecmix_ec_contrastive",
+)
+EXPERT_COS_MODELS = {"ProMoE_TC_B_expert_cos"}
+EXPERT_COS_NUM_LOGGED_BLOCKS = 6
+EXPERT_COS_STAT_NAMES = (
+    "expert_cos_lam",
+    "expert_cos_loss",
+    "expert_cos_raw_mean",
+    "expert_cos_centered_mean",
+    "expert_cos_max",
+    "expert_cos_active_experts",
+) + tuple(
+    f"expert_cos_{field}_b{index}"
+    for index in range(EXPERT_COS_NUM_LOGGED_BLOCKS)
+    for field in ("loss", "raw")
 )
 TRAINER_STATE_VERSION = 2
 LEGACY_TRAINER_STATE_VERSION = 1
@@ -988,6 +1004,82 @@ def _reduce_ecmix_stats(loss_dict):
     dist.all_reduce(values, op=dist.ReduceOp.SUM)
     values.div_(dist.get_world_size())
     for name, value in zip(ECMIX_STAT_NAMES, values):
+        loss_dict[name] = value
+
+
+def _collect_expert_cos_stats(model):
+    """Per-block diagnostics for the pooled-expert cosine regularizer.
+
+    Both the loss and the *raw* (uncentered) cosine are logged per block.  The
+    raw cosine is the tell-tale: the loss only constrains the centered
+    directions, and an expert can move its pooled mean with its output bias
+    alone, so a run where the loss falls while the raw cosine sits still is
+    satisfying the term without changing what the experts compute.  Blocks are
+    logged separately because a sum over six blocks can be dominated by one.
+    """
+    module = model.module if hasattr(model, "module") else model
+    if not getattr(module, "is_expert_cos_model", False):
+        return {}
+
+    blocks = module.moe_blocks()
+    device = blocks[0].cluster_centers.device if blocks else None
+    zero = torch.zeros((), device=device, dtype=torch.float32)
+    state = module.expert_cos_last_state
+    stats = {"expert_cos_lam": zero + float(state["lam"])}
+
+    collected = {"loss": [], "raw_mean": [], "centered_mean": [], "max": [], "active": []}
+    for index, block in enumerate(blocks):
+        values = {
+            "loss": block.last_expert_cos_loss,
+            "raw_mean": block.last_expert_cos_raw_mean,
+            "centered_mean": block.last_expert_cos_centered_mean,
+            "max": block.last_expert_cos_max,
+        }
+        for name, value in values.items():
+            if torch.is_tensor(value):
+                collected[name].append(value.detach().float().reshape(()))
+        active = block.last_expert_cos_active
+        if active is not None:
+            collected["active"].append(zero + float(active))
+        if index < EXPERT_COS_NUM_LOGGED_BLOCKS:
+            stats[f"expert_cos_loss_b{index}"] = (
+                values["loss"].detach().float().reshape(())
+                if torch.is_tensor(values["loss"]) else zero.clone()
+            )
+            stats[f"expert_cos_raw_b{index}"] = (
+                values["raw_mean"].detach().float().reshape(())
+                if torch.is_tensor(values["raw_mean"]) else zero.clone()
+            )
+    for index in range(len(blocks), EXPERT_COS_NUM_LOGGED_BLOCKS):
+        stats[f"expert_cos_loss_b{index}"] = zero.clone()
+        stats[f"expert_cos_raw_b{index}"] = zero.clone()
+
+    def _mean(values):
+        return torch.stack(values).mean() if values else zero.clone()
+
+    stats["expert_cos_loss"] = _mean(collected["loss"])
+    stats["expert_cos_raw_mean"] = _mean(collected["raw_mean"])
+    stats["expert_cos_centered_mean"] = _mean(collected["centered_mean"])
+    stats["expert_cos_max"] = _mean(collected["max"])
+    stats["expert_cos_active_experts"] = _mean(collected["active"])
+    return stats
+
+
+def _reduce_expert_cos_stats(loss_dict):
+    """Average the pooled-expert cosine diagnostics over DDP ranks."""
+    if not dist.is_available() or not dist.is_initialized():
+        return
+    if not all(
+        name in loss_dict
+        and torch.is_tensor(loss_dict[name])
+        and loss_dict[name].numel() == 1
+        for name in EXPERT_COS_STAT_NAMES
+    ):
+        return
+    values = torch.stack([loss_dict[name].detach().float() for name in EXPERT_COS_STAT_NAMES])
+    dist.all_reduce(values, op=dist.ReduceOp.SUM)
+    values.div_(dist.get_world_size())
+    for name, value in zip(EXPERT_COS_STAT_NAMES, values):
         loss_dict[name] = value
 
 
@@ -2679,6 +2771,8 @@ def worker(gpu, cfg):
             arg_c['training_step'] = step
         if cfg.model_name in ECMIX_MODELS:
             arg_c['training_step'] = step
+        if cfg.model_name in EXPERT_COS_MODELS:
+            arg_c['training_step'] = step
 
         with amp.autocast(dtype=cfg.param_dtype, enabled=use_amp):
             model_output = model(noised_z_in, t, **arg_c)
@@ -2692,6 +2786,9 @@ def worker(gpu, cfg):
                 loss_dict[stat_name] = stat_value
         if cfg.model_name in ECMIX_MODELS:
             for stat_name, stat_value in _collect_ecmix_stats(model).items():
+                loss_dict[stat_name] = stat_value
+        if cfg.model_name in EXPERT_COS_MODELS:
+            for stat_name, stat_value in _collect_expert_cos_stats(model).items():
                 loss_dict[stat_name] = stat_value
         if cfg.model_name in DENOISING_REGRET_MODELS:
             if not isinstance(model_output, tuple) or len(model_output) != 2:
@@ -2765,6 +2862,8 @@ def worker(gpu, cfg):
             _reduce_capacity_combo_stats(logged_loss_dict)
         if cfg.model_name in ECMIX_MODELS:
             _reduce_ecmix_stats(logged_loss_dict)
+        if cfg.model_name in EXPERT_COS_MODELS:
+            _reduce_expert_cos_stats(logged_loss_dict)
         if step % cfg.log_interval == 0:
             logging.info(format_loss_log(epoch, step, logged_loss_dict))
         if cfg.rank == 0:

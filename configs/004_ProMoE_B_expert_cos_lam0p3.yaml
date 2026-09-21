@@ -1,0 +1,70 @@
+model_name: "ProMoE_TC_B_expert_cos"
+
+gpu_ids: [2, 3]
+
+###### For train
+# Training settings follow the conference configs/004_ProMoE_B.yaml, but this
+# sweep runs on 2 GPUs (128 images per GPU; global batch stays 256), so it is
+# NOT directly comparable with the canonical 4-GPU baseline (300K 30.86 / 9.73,
+# 500K 24.44 / 6.39): the pooled expert representations and the contrastive
+# class centers are both per-rank, so world size shifts them.  Read the four
+# arms against each other -- the dose-response trend across lam is the
+# evidence; the baseline numbers are only a rough backdrop.  Only the latent
+# path, data workers, explicit seed and checkpoint interval are added.  This arm sets the
+# pooled-expert cosine weight to 0.3; every other field is shared by the four
+# arms of the sweep.
+image_size: 256
+total_train_batch_size: 256
+lr: 0.0001
+weight_decay: 0
+global_seed: 0
+img_num_workers: 16
+prefetch_factor: 2
+use_pre_latents: True
+use_encoded_latents: True
+latent_data_path: "/home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz"
+# The run script enables resume only when continuing this run.
+resume_checkpoint: False
+log_interval: 10
+num_steps: 501000
+save_ckpt_interval: 50000
+
+DiT_B_config:
+  qk_norm: False
+  # Cosine regularizer on the pooled expert representations: each routed
+  # expert's output is pooled over the tokens it received, the K pooled vectors
+  # are centered, and mean((cos - (-1/(K-1)))^2) pulls them towards a regular
+  # simplex.  See models/models_ProMoE_TC_expert_cos.py.  lam is the only field
+  # that differs between the four arms; the 10K-step warm-up is shared, because
+  # at step 0 this term puts 1.9x the MSE gradient on the routed experts
+  # against 1.05x at 300K.
+  MoE_config:
+    num_routed_experts: 12
+    moe_intermediate_size: 1536  # 768 // (1+1 shared) * mlp_ration (4)
+    shared_expert_intermediate_size: 1536  # 768 // (1+1 shared) * mlp_ration (4)
+    load_balance_loss_coef: 0
+    norm_topk_prob: False
+    seq_aux: False
+    use_shared_expert: True
+    interleave: True
+    init_MoeMLP: False
+    top_k: 1
+    router_weight_mode: identity
+    routing_contrastive_lam: 1
+    use_top_k_for_routing_contrastive: True
+    routing_contrastive_temperature: 0.07
+    expert_cos_lam: 0.3
+    expert_cos_center: True
+    expert_cos_margin: 0.0
+    expert_cos_warmup_steps: 10000
+
+###### For sample
+# Sampled and evaluated at 300K and 500K; the 300K result does not stop the run.
+step_list_for_sample: [300000, 500000]
+num_fid_samples: 50000
+sample_batch_size: 128
+sample_steps: 250
+sample_shift: 1.0
+guide_scale_list: [1.0, 1.5]
+save_img_num: 50000
+save_inception_features: False
