@@ -1,0 +1,12 @@
+实验 / Experiment: 1.1-B_dualreg_ls0p05_lam0p1
+model_name: ProMoE_TC_B_dualreg  |  config: configs/004_ProMoE_B_dualreg_ls0p05_lam0p1.yaml  |  GPU 0-1（2 卡）
+基线 / Baseline: 基础 ProMoE-TC（conditional routing + 静态 cluster_centers 原型 cos-sim top-1 token-choice、shared expert、routing contrastive InfoNCE）；直接父变体 / Parent: 会议版 models_ProMoE_TC.py，本模型只有 MoE block 继承其 SparseMoeBlock，两项正则都关时与之逐位一致
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 专家 pooling 表征正则（本实验 expert_reg_lam = 0.1）：每个 MoE block 内，每个 routed expert 对它实际收到的 token 的输出取均值（不加 router 权重）得到 pooled 表征，K 个向量先中心化，再用 mean((cos_ij - target)^2) 把两两余弦拉向 target = -1/(K-1)，即把 K 个方向推成正单纯形（最均匀分散），损失下界 0 可达。约 MSE 梯度的 10%，剂量曲线下锚点。
+   为什么用余弦而不是历史的 exp(-L2/tau)：2000 步探针实测 pooled 两两距离在训练中从约 20 涨到约 92，指数形式在任何可用的 tau 下都会在前 30 步内自行熄灭（tau=10 时 2000 步衰减 1278 倍；历史的 tau=0.5 在 step 0 就已是 1e-18）。余弦只看方向不看长度，不受距离增长影响。
+   梯度只到专家参数（及经 token 表征回流到更前层），不直接改路由。
+2. LS-Reg 对角偏移（本实验 ls_diag_strength = 0.05，叠加 LS-Reg）：在路由对比损失的相似度矩阵对角线上加一个 detach 的负载相关偏移（sign=+1，过载原型的自身目标被削弱），EMA 平滑系数 0.9。strength=0.05 与历史 B_lsreg_diag_idea1_s0p05 逐字一致（500K FID 24.00）；该项梯度流向 cluster_centers 和 token 表征，不直接作用于本 block 的专家参数——这正是它与第 1 项"正交"的含义。
+3. 训练设置：2 卡（每卡 128 张图，global batch 仍为 256）、seed 0、lr 1e-4、501K 步、会议版超参数；八个 arm 统一使用 10K 步的 expert_reg lam 线性 warmup（step 0 时该项是 MSE 梯度的 1.9 倍、300K 时才 1.05 倍，且探针显示路由负载在前 100 步就稳定，不应让正则主导这一段）。300K 和 500K 都采样评测（CFG 1.0 / 1.5），300K 不触发停止。
+   可比性：2 卡运行与 4 卡的 canonical baseline（300K 30.86 / 9.73、500K 24.44 / 6.39）不能直接比——pooled 表征和路由对比的类中心都是每卡各自统计的。判据是八个 arm 组成的 2x4 网格中随 lam 的剂量趋势，以及 ls0p05 与 lsoff 逐列相减得到的叠加效应。
+   中断后可用 PROMOE_RESUME=1 从本实验自己的 checkpoint 续跑。

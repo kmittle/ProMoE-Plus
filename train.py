@@ -82,6 +82,7 @@ from models.models_ProMoE_TC_dino_route import DiT as ProMoE_TC_dino_route
 from models.models_ProMoE_TC_ecmix import DiT as ProMoE_TC_ecmix
 from models.models_ProMoE_TC_global_center import DiT as ProMoE_TC_global_center
 from models.models_ProMoE_TC_expert_cos import DiT as ProMoE_TC_expert_cos
+from models.models_ProMoE_TC_dualreg import DiT as ProMoE_TC_dualreg
 
 model_dict = {
     "DiT_B": (DiT, "DiT_B_config"),
@@ -132,6 +133,7 @@ model_dict = {
     "ProMoE_TC_B_ecmix": (ProMoE_TC_ecmix, "DiT_B_config"),
     "ProMoE_TC_B_global_center": (ProMoE_TC_global_center, "DiT_B_config"),
     "ProMoE_TC_B_expert_cos": (ProMoE_TC_expert_cos, "DiT_B_config"),
+    "ProMoE_TC_B_dualreg": (ProMoE_TC_dualreg, "DiT_B_config"),
 }
 
 DENOISING_REGRET_MODELS = {"ProMoE_TC_B_FDRR"}
@@ -166,6 +168,22 @@ EXPERT_COS_STAT_NAMES = (
     f"expert_cos_{field}_b{index}"
     for index in range(EXPERT_COS_NUM_LOGGED_BLOCKS)
     for field in ("loss", "raw")
+)
+DUALREG_MODELS = {"ProMoE_TC_B_dualreg"}
+DUALREG_NUM_LOGGED_BLOCKS = 6
+DUALREG_STAT_NAMES = (
+    "dualreg_lam",
+    "dualreg_expert_loss",
+    "dualreg_raw_cos",
+    "dualreg_centered_cos",
+    "dualreg_max_cos",
+    "dualreg_min_dist",
+    "dualreg_active_experts",
+    "dualreg_ls_mean_offset",
+) + tuple(
+    f"dualreg_{field}_b{index}"
+    for index in range(DUALREG_NUM_LOGGED_BLOCKS)
+    for field in ("loss", "raw", "dist")
 )
 TRAINER_STATE_VERSION = 2
 LEGACY_TRAINER_STATE_VERSION = 1
@@ -1080,6 +1098,87 @@ def _reduce_expert_cos_stats(loss_dict):
     dist.all_reduce(values, op=dist.ReduceOp.SUM)
     values.div_(dist.get_world_size())
     for name, value in zip(EXPERT_COS_STAT_NAMES, values):
+        loss_dict[name] = value
+
+
+def _collect_dualreg_stats(model):
+    """Per-block diagnostics for the combined LS-Reg + expert regularizer model.
+
+    Three quantities decide whether the expert term is doing real work, and all
+    three are logged per block because a six-block sum can be dominated by one:
+
+    * ``loss`` -- a term that is identically zero is the failure this project
+      already paid for twice (expert_contra's exp(-L2/tau) at tau=0.5).
+    * ``raw`` -- the *uncentered* cosine.  The loss only constrains the centered
+      directions, and an expert can move its pooled mean with its output bias
+      alone, so a falling loss with a motionless raw cosine means the term is
+      being satisfied without changing what the experts compute.
+    * ``dist`` -- the smallest pooled pair distance.  It is what grew ~20 -> ~92
+      during training and killed the l2 form; the cosine form should be
+      indifferent to it.
+    """
+    module = model.module if hasattr(model, "module") else model
+    if not getattr(module, "is_dualreg_model", False):
+        return {}
+
+    blocks = module.moe_blocks()
+    device = blocks[0].cluster_centers.device if blocks else None
+    zero = torch.zeros((), device=device, dtype=torch.float32)
+    stats = {"dualreg_lam": zero + float(module.dualreg_last_state["lam"])}
+
+    collected = {"loss": [], "raw": [], "centered": [], "max": [], "dist": [], "eps": []}
+    for index, block in enumerate(blocks):
+        per_block = {
+            "loss": block.last_expert_reg_loss,
+            "raw": block.last_expert_reg_raw_mean,
+            "centered": block.last_expert_reg_centered_mean,
+            "max": block.last_expert_reg_max,
+            "dist": block.last_expert_reg_dist_min,
+            "eps": block.last_mean_eps,
+        }
+        for name, value in per_block.items():
+            if torch.is_tensor(value):
+                collected[name].append(value.detach().float().reshape(()))
+        if block.last_expert_reg_active is not None:
+            collected.setdefault("active", []).append(zero + float(block.last_expert_reg_active))
+        if index < DUALREG_NUM_LOGGED_BLOCKS:
+            for field in ("loss", "raw", "dist"):
+                value = per_block[field]
+                stats[f"dualreg_{field}_b{index}"] = (
+                    value.detach().float().reshape(()) if torch.is_tensor(value) else zero.clone()
+                )
+    for index in range(len(blocks), DUALREG_NUM_LOGGED_BLOCKS):
+        for field in ("loss", "raw", "dist"):
+            stats[f"dualreg_{field}_b{index}"] = zero.clone()
+
+    def _mean(values):
+        return torch.stack(values).mean() if values else zero.clone()
+
+    stats["dualreg_expert_loss"] = _mean(collected["loss"])
+    stats["dualreg_raw_cos"] = _mean(collected["raw"])
+    stats["dualreg_centered_cos"] = _mean(collected["centered"])
+    stats["dualreg_max_cos"] = _mean(collected["max"])
+    stats["dualreg_min_dist"] = _mean(collected["dist"])
+    stats["dualreg_active_experts"] = _mean(collected.get("active", []))
+    stats["dualreg_ls_mean_offset"] = _mean(collected["eps"])
+    return stats
+
+
+def _reduce_dualreg_stats(loss_dict):
+    """Average the combined-regularizer diagnostics over DDP ranks."""
+    if not dist.is_available() or not dist.is_initialized():
+        return
+    if not all(
+        name in loss_dict
+        and torch.is_tensor(loss_dict[name])
+        and loss_dict[name].numel() == 1
+        for name in DUALREG_STAT_NAMES
+    ):
+        return
+    values = torch.stack([loss_dict[name].detach().float() for name in DUALREG_STAT_NAMES])
+    dist.all_reduce(values, op=dist.ReduceOp.SUM)
+    values.div_(dist.get_world_size())
+    for name, value in zip(DUALREG_STAT_NAMES, values):
         loss_dict[name] = value
 
 
@@ -2773,6 +2872,8 @@ def worker(gpu, cfg):
             arg_c['training_step'] = step
         if cfg.model_name in EXPERT_COS_MODELS:
             arg_c['training_step'] = step
+        if cfg.model_name in DUALREG_MODELS:
+            arg_c['training_step'] = step
 
         with amp.autocast(dtype=cfg.param_dtype, enabled=use_amp):
             model_output = model(noised_z_in, t, **arg_c)
@@ -2789,6 +2890,9 @@ def worker(gpu, cfg):
                 loss_dict[stat_name] = stat_value
         if cfg.model_name in EXPERT_COS_MODELS:
             for stat_name, stat_value in _collect_expert_cos_stats(model).items():
+                loss_dict[stat_name] = stat_value
+        if cfg.model_name in DUALREG_MODELS:
+            for stat_name, stat_value in _collect_dualreg_stats(model).items():
                 loss_dict[stat_name] = stat_value
         if cfg.model_name in DENOISING_REGRET_MODELS:
             if not isinstance(model_output, tuple) or len(model_output) != 2:
@@ -2864,6 +2968,8 @@ def worker(gpu, cfg):
             _reduce_ecmix_stats(logged_loss_dict)
         if cfg.model_name in EXPERT_COS_MODELS:
             _reduce_expert_cos_stats(logged_loss_dict)
+        if cfg.model_name in DUALREG_MODELS:
+            _reduce_dualreg_stats(logged_loss_dict)
         if step % cfg.log_interval == 0:
             logging.info(format_loss_log(epoch, step, logged_loss_dict))
         if cfg.rank == 0:

@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 
-# Evaluate one checkpoint's generated images for the pooled-expert cosine sweep.  The
+# Evaluate one checkpoint's generated images for the dual-regularizer sweep.  The
 # config requests CFG 1.0 and CFG 1.5, so a finished step must expose exactly
 # one image directory for each setting and a complete evaluator record for both.
 if [[ -n "${REPO_ROOT:-}" && -f "${REPO_ROOT}/scripts/_eval_metric_helpers.sh" ]]; then
     source "${REPO_ROOT}/scripts/_eval_metric_helpers.sh"
 else
-    SCRIPT_DIR_EXPERT_COS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    source "${SCRIPT_DIR_EXPERT_COS}/../_eval_metric_helpers.sh"
-    unset SCRIPT_DIR_EXPERT_COS
+    SCRIPT_DIR_DUALREG="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    source "${SCRIPT_DIR_DUALREG}/../_eval_metric_helpers.sh"
+    unset SCRIPT_DIR_DUALREG
 fi
 
-expert_cos_eval_images() {
+dualreg_eval_images() {
     local sample_base=$1
     local step=$2
     local log=$3

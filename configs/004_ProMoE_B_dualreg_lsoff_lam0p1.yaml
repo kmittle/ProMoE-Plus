@@ -1,0 +1,74 @@
+model_name: "ProMoE_TC_B_dualreg"
+
+gpu_ids: [0, 1]
+
+###### For train
+# Training settings follow the conference configs/004_ProMoE_B.yaml, but this
+# batch runs on 2 GPUs (128 images per GPU; global batch stays 256), so it is
+# NOT directly comparable with the 4-GPU canonical baseline (300K 30.86 / 9.73,
+# 500K 24.44 / 6.39): the pooled expert representations and the contrastive
+# class centers are both per-rank.  The evidence is the dose-response trend
+# across the arms, not the distance to the baseline number.
+# This arm runs the expert regularizer alone (LS-Reg off), so the four arms
+# here and the four combination arms form a 2x4 grid over lam.
+image_size: 256
+total_train_batch_size: 256
+lr: 0.0001
+weight_decay: 0
+global_seed: 0
+img_num_workers: 16
+prefetch_factor: 2
+use_pre_latents: True
+use_encoded_latents: True
+latent_data_path: "/home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz"
+# The run script enables resume only when continuing this run.
+resume_checkpoint: False
+log_interval: 10
+num_steps: 501000
+save_ckpt_interval: 50000
+
+DiT_B_config:
+  qk_norm: False
+  # Two regularizers, see models/models_ProMoE_TC_dualreg.py:
+  #   * LS-Reg diagonal offset (ls_diag_*) -- idea-1, reproduces
+  #     B_lsreg_diag_idea1_s0p05 exactly when strength is 0.05.
+  #   * expert representation regularizer (expert_reg_*) -- pooled expert
+  #     outputs, centered, pulled towards a regular simplex.  The cosine form
+  #     is used because it is scale-free: a 2K-step probe measured the pooled
+  #     distances growing ~20 -> ~92, which switches the historical
+  #     exp(-L2/tau) form off within ~30 steps at any usable tau.
+  # lam is the only field that differs between the arms of a batch.
+  MoE_config:
+    num_routed_experts: 12
+    moe_intermediate_size: 1536  # 768 // (1+1 shared) * mlp_ration (4)
+    shared_expert_intermediate_size: 1536  # 768 // (1+1 shared) * mlp_ration (4)
+    load_balance_loss_coef: 0
+    norm_topk_prob: False
+    seq_aux: False
+    use_shared_expert: True
+    interleave: True
+    init_MoeMLP: False
+    top_k: 1
+    router_weight_mode: identity
+    routing_contrastive_lam: 1
+    use_top_k_for_routing_contrastive: True
+    routing_contrastive_temperature: 0.07
+    ls_diag_sign: 1.0
+    ls_diag_strength: 0.0
+    ls_ema_beta: 0.9
+    expert_reg_form: "cosine"
+    expert_reg_lam: 0.1
+    expert_reg_center: True
+    expert_reg_margin: 0.0
+    expert_reg_warmup_steps: 10000
+
+###### For sample
+# Sampled and evaluated at 300K and 500K; the 300K result does not stop the run.
+step_list_for_sample: [300000, 500000]
+num_fid_samples: 50000
+sample_batch_size: 128
+sample_steps: 250
+sample_shift: 1.0
+guide_scale_list: [1.0, 1.5]
+save_img_num: 50000
+save_inception_features: False

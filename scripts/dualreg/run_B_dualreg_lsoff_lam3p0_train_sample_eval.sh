@@ -1,12 +1,12 @@
 #!/bin/bash
 #
-# ProMoE-TC-B with a cosine regularizer on the pooled expert representations,
-# weight lam=0.3 (one arm of the 0.1 / 0.3 / 1.0 / 3.0 sweep).  Trains from
-# step 0 to 500K on 2 GPUs (128 images per GPU, global batch still 256).  A
-# 2-GPU run is not directly comparable with the 4-GPU canonical baseline, so
-# the evidence is the trend across the four lam values.  Samples and evaluates
-# at 300K and 500K; the 300K result does not stop the run.  An interrupted run
-# continues from its own checkpoints with PROMOE_RESUME=1.
+# ProMoE-TC-B with LS-Reg off and the pooled-expert cosine regularizer at
+# lam=3.0.  One arm of a 2x4 grid (LS-Reg on/off x four lam values).  Trains
+# from step 0 to 500K on 2 GPUs (128 images per GPU, global batch still 256);
+# a 2-GPU run is not directly comparable with the 4-GPU canonical baseline, so
+# the evidence is the trend across arms.  Samples and evaluates at 300K and
+# 500K; the 300K result does not stop the run.  An interrupted run continues
+# from its own checkpoints with PROMOE_RESUME=1.
 #
 
 set -euo pipefail
@@ -14,11 +14,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "$REPO_ROOT"
-source "${SCRIPT_DIR}/expert_cos_eval_helpers.sh"
+source "${SCRIPT_DIR}/dualreg_eval_helpers.sh"
 source "${REPO_ROOT}/scripts/_python_env.sh"
 
-CONFIG="configs/004_ProMoE_B_expert_cos_lam0p3.yaml"
-LOG="${REPO_ROOT}/logs/log_ProMoE_B_expert_cos_lam0p3_train_sample_eval.log"
+CONFIG="configs/004_ProMoE_B_dualreg_lsoff_lam3p0.yaml"
+LOG="${REPO_ROOT}/logs/log_ProMoE_B_dualreg_lsoff_lam3p0_train_sample_eval.log"
 mkdir -p "$(dirname "$LOG")"
 
 RESUME="${PROMOE_RESUME:-0}"
@@ -122,7 +122,7 @@ sample_and_eval_step() {
     CUDA_VISIBLE_DEVICES="${GPU_IDS}" "$PYTHON" sample.py \
         --config "${TEMP_CONFIG}" --step_list_for_sample "${step}" \
         >> "$LOG" 2>&1
-    expert_cos_eval_images "$SAMPLE_BASE" "$step" "$LOG" "$EVAL_GPU" \
+    dualreg_eval_images "$SAMPLE_BASE" "$step" "$LOG" "$EVAL_GPU" \
         "$PYTHON_EVAL" "$NUM_FID_SAMPLES"
     echo "[$(date '+%H:%M:%S')] Sample+eval step ${step} done" | tee -a "$LOG"
 }

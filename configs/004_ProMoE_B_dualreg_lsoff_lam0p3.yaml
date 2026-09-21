@@ -1,18 +1,16 @@
-model_name: "ProMoE_TC_B_expert_cos"
+model_name: "ProMoE_TC_B_dualreg"
 
-gpu_ids: [6, 7]
+gpu_ids: [2, 3]
 
 ###### For train
 # Training settings follow the conference configs/004_ProMoE_B.yaml, but this
-# sweep runs on 2 GPUs (128 images per GPU; global batch stays 256), so it is
-# NOT directly comparable with the canonical 4-GPU baseline (300K 30.86 / 9.73,
+# batch runs on 2 GPUs (128 images per GPU; global batch stays 256), so it is
+# NOT directly comparable with the 4-GPU canonical baseline (300K 30.86 / 9.73,
 # 500K 24.44 / 6.39): the pooled expert representations and the contrastive
-# class centers are both per-rank, so world size shifts them.  Read the four
-# arms against each other -- the dose-response trend across lam is the
-# evidence; the baseline numbers are only a rough backdrop.  Only the latent
-# path, data workers, explicit seed and checkpoint interval are added.  This arm sets the
-# pooled-expert cosine weight to 3.0; every other field is shared by the four
-# arms of the sweep.
+# class centers are both per-rank.  The evidence is the dose-response trend
+# across the arms, not the distance to the baseline number.
+# This arm runs the expert regularizer alone (LS-Reg off), so the four arms
+# here and the four combination arms form a 2x4 grid over lam.
 image_size: 256
 total_train_batch_size: 256
 lr: 0.0001
@@ -31,13 +29,15 @@ save_ckpt_interval: 50000
 
 DiT_B_config:
   qk_norm: False
-  # Cosine regularizer on the pooled expert representations: each routed
-  # expert's output is pooled over the tokens it received, the K pooled vectors
-  # are centered, and mean((cos - (-1/(K-1)))^2) pulls them towards a regular
-  # simplex.  See models/models_ProMoE_TC_expert_cos.py.  lam is the only field
-  # that differs between the four arms; the 10K-step warm-up is shared, because
-  # at step 0 this term puts 1.9x the MSE gradient on the routed experts
-  # against 1.05x at 300K.
+  # Two regularizers, see models/models_ProMoE_TC_dualreg.py:
+  #   * LS-Reg diagonal offset (ls_diag_*) -- idea-1, reproduces
+  #     B_lsreg_diag_idea1_s0p05 exactly when strength is 0.05.
+  #   * expert representation regularizer (expert_reg_*) -- pooled expert
+  #     outputs, centered, pulled towards a regular simplex.  The cosine form
+  #     is used because it is scale-free: a 2K-step probe measured the pooled
+  #     distances growing ~20 -> ~92, which switches the historical
+  #     exp(-L2/tau) form off within ~30 steps at any usable tau.
+  # lam is the only field that differs between the arms of a batch.
   MoE_config:
     num_routed_experts: 12
     moe_intermediate_size: 1536  # 768 // (1+1 shared) * mlp_ration (4)
@@ -53,10 +53,14 @@ DiT_B_config:
     routing_contrastive_lam: 1
     use_top_k_for_routing_contrastive: True
     routing_contrastive_temperature: 0.07
-    expert_cos_lam: 3.0
-    expert_cos_center: True
-    expert_cos_margin: 0.0
-    expert_cos_warmup_steps: 10000
+    ls_diag_sign: 1.0
+    ls_diag_strength: 0.0
+    ls_ema_beta: 0.9
+    expert_reg_form: "cosine"
+    expert_reg_lam: 0.3
+    expert_reg_center: True
+    expert_reg_margin: 0.0
+    expert_reg_warmup_steps: 10000
 
 ###### For sample
 # Sampled and evaluated at 300K and 500K; the 300K result does not stop the run.
