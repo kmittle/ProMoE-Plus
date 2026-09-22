@@ -1,6 +1,6 @@
 ---
 name: rerun-experiment
-description: Re-bucket an existing ProMoE experiment to a fresh _vN output directory before re-running it after a model-code change (e.g. a crash fix, init/normalization/architecture edit). Output dirs are outputs/{model_name}/{custom_cfg_name}; since model_name and the config filename usually don't change after a code fix, a naive re-run silently collides with — or resumes from — the previous (crashed/stale) run's checkpoints. This skill renames the experiment's config + semantic run script + run-time wrapper in lock-step to a _vN name (so the new run gets a clean bucket while the old run's data is preserved under the old name), updates every in-file reference, and validates the chain. Use when the user asks to re-run / 重跑 an experiment after fixing its code, to give an experiment a fresh output dir, or to de-conflict a "code changed but output path didn't" situation. Does NOT run training/sampling/eval, allocate a new GPU slot, commit, push, or amend.
+description: Re-bucket an existing ProMoE experiment to a fresh _vN output directory before re-running it after a model-code change (e.g. a crash fix, init/normalization/architecture edit). Output dirs are outputs/{model_name}/{custom_cfg_name}; since model_name and the config filename usually don't change after a code fix, a naive re-run silently collides with — or resumes from — the previous (crashed/stale) run's checkpoints. This skill renames the experiment's config + semantic run script + run-time wrapper in lock-step to a _vN name (so the new run gets a clean bucket while the old run's data is preserved under the old name), updates every in-file reference, and validates the chain. Use when the user asks to re-run / 重跑 an experiment after fixing its code, to give an experiment a fresh output dir, or to de-conflict a "code changed but output path didn't" situation. Does NOT run training/sampling/eval, change the experiment's GPU count, commit, push, or amend.
 ---
 
 # /rerun-experiment — Re-bucket an experiment to a fresh `_vN` output dir
@@ -19,7 +19,7 @@ so it is never done half-way (the classic failure: renaming the config but leavi
 `CONFIG=` pointing at the old name, or vice-versa).
 
 This skill **renames + validates only**. It never launches training/sampling/eval, never allocates a
-new GPU slot (the experiment keeps its existing slot/`gpu_ids`), and never commits.
+new run-time wrapper (the experiment keeps its existing GPU count), and never commits.
 
 ## Step 0 — Identify the experiment's full file set
 For each target experiment, resolve the complete chain (any one entry point reaches the rest):
@@ -27,7 +27,7 @@ For each target experiment, resolve the complete chain (any one entry point reac
 - **semantic run script** — the `scripts/<family>/run_<...>_train_sample_eval.sh` whose `CONFIG=`
   points at that config (reverse-lookup with `grep -rl 'CONFIG="configs/<name>.yaml"' scripts`,
   excluding `scripts/_run_times/`).
-- **run-time wrapper(s)** — the `scripts/_run_times/<date>/<slot>-<desc>.sh` whose `exec bash`
+- **run-time wrapper(s)** — the `scripts/_run_times/<date>/<desc>.sh` whose `exec bash`
   targets that semantic script (`grep -rl '<run script basename>' scripts/_run_times`).
 A target may be given as a config, a run script, a wrapper path, or a `model_name`+variant phrase —
 trace outward to the full {config, script, wrapper(s)} set before touching anything. Handle multiple
@@ -55,17 +55,17 @@ the old config still points at the colliding dir.) Insert `_vN` at the variant p
 fixed prefixes/suffixes:
 - `configs/004_..._<variant>.yaml` → `..._<variant>_vN.yaml`
 - `scripts/<fam>/run_<size>_<variant>_train_sample_eval.sh` → `..._<variant>_vN_train_sample_eval.sh`
-- `scripts/_run_times/<date>/<slot>-<desc>.sh` → `<slot>-<desc>_vN.sh` (**keep the `<slot>` prefix** —
+- `scripts/_run_times/<date>/<desc>.sh` → `<desc>_vN.sh` (**keep any existing `<slot>` prefix on pre-2026-09-23 wrappers** —
   same GPU assignment; only the desc gains `_vN`)
-- `scripts/_run_times/<date>/<slot>-<desc>-describe.txt` (the companion experiment description, if it
-  exists) → `<slot>-<desc>_vN-describe.txt` — `git mv` it too so it doesn't dangle under the old name
+- `scripts/_run_times/<date>/<desc>-describe.txt` (the companion experiment description, if it
+  exists) → `<desc>_vN-describe.txt` — `git mv` it too so it doesn't dangle under the old name
   (its content is regenerated in Step 5)
 
 Then update every **in-file reference** (this is the step that's easy to half-do):
 - semantic script: `CONFIG="configs/..._vN.yaml"` **and** `LOG="log_..._vN_..._train_sample_eval.log"`
 - wrapper: the `exec bash "${REPO_ROOT}/scripts/<fam>/..."` path → the `_vN` script
-- The wrapper's `gpu_ids` and the config's `gpu_ids` are **unchanged** — same slot, same GPUs. Do
-  **not** call `new_run.sh` (no new slot is allocated; this is the same experiment re-bucketed).
+- The wrapper's GPU count and the config's `gpu_ids` are **unchanged**. Do **not** call
+  `new_run.sh` (no new wrapper is created; this is the same experiment re-bucketed).
 
 ## Step 4 — Validate (no real runs)
 - `bash -n` every renamed semantic script and wrapper.
@@ -82,17 +82,17 @@ Then update every **in-file reference** (this is the step that's easy to half-do
 
 ## Step 5 — Regenerate the experiment description
 After the renames validate, invoke **`/describe-experiment`** on the `_vN` wrapper to (re)write
-`<slot>-<desc>_vN-describe.txt`. The change list is about the *variant*, so it matches the old name —
+`<desc>_vN-describe.txt`. The change list is about the *variant*, so it matches the old name —
 but regenerate it freshly (the model code changed, which is why the experiment was re-bucketed). If a
 `<old-stem>-describe.txt` was `git mv`'d in Step 3, this overwrites the moved file's contents; if none
 existed, it creates the description for the `_vN` stem. Read-only tracing + one `.txt` write.
 
 ## Step 6 — Report
 List, per experiment, the `git mv` renames (config / script / wrapper / `*-describe.txt`) and the in-file edits,
-the **unchanged** slot + `gpu_ids`, and the new output dir `outputs/{model_name}/{cfg}_vN/`. Give the
+the **unchanged** GPU count, and the new output dir `outputs/{model_name}/{cfg}_vN/`. Give the
 launch command but **do not run it**:
 ```
-tmux new-window -t "$(tmux display-message -p '#S')" -n <name> 'bash scripts/_run_times/<date>/<slot>-<desc>_vN.sh'
+tmux new-window -t "$(tmux display-message -p '#S')" -n <name> 'bash scripts/_run_times/<date>/<desc>_vN.sh'
 ```
 If the date dir has a `commands.md`, note it is now stale — offer to regenerate it with `/command-table`.
 
@@ -103,7 +103,7 @@ If the date dir has a `commands.md`, note it is now stale — offer to regenerat
 
 ## What this skill must NOT do
 - **No real training / sampling / evaluation runs** — rename + validate only.
-- **No new GPU-slot allocation** — the experiment keeps its existing slot; do not call `new_run.sh`.
+- **No new wrapper allocation** — the experiment keeps its GPU count; do not call `new_run.sh`.
 - **No git commits, push, force-push, or amend.** Leave the renames/edits dirty for the user to commit.
 - No edits to runtime artifact dirs (`outputs/`, `pretrained_ckpt/`, `training_logs/`, `tb_smoke_*/`,
   `collapse_smoking_test*/`) or the vendored `REPA/` (uppercase) subproject.

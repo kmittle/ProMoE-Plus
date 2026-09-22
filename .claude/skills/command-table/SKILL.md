@@ -1,6 +1,6 @@
 ---
 name: command-table
-description: Organize the run-time launch wrappers in a scripts/_run_times/<date>/ directory into a CSV command table (Notion/Excel-importable). Reads every <slot>-<desc>.sh wrapper in the date dir, traces each one (wrapper → semantic run script → config) to fill the columns, renders using command-tables/command-table-template.csv, and writes the result to commands.csv in that same date dir. Use when the user asks to turn/organize/summarize the run-time commands (the scripts under scripts/_run_times/<date>/) into a command table — including phrasings like "把 scripts/_run_times/<date> 中的指令整理为命令表格", "整理/生成命令表格", or "make a command table for the run-time scripts". Does NOT launch any run, and does NOT commit, push, or amend.
+description: Organize the run-time launch wrappers in a scripts/_run_times/<date>/ directory into a CSV command table (Notion/Excel-importable). Reads every <desc>.sh wrapper in the date dir, traces each one (wrapper → semantic run script → config) to fill the columns, renders using command-tables/command-table-template.csv, and writes the result to commands.csv in that same date dir. Use when the user asks to turn/organize/summarize the run-time commands (the scripts under scripts/_run_times/<date>/) into a command table — including phrasings like "把 scripts/_run_times/<date> 中的指令整理为命令表格", "整理/生成命令表格", or "make a command table for the run-time scripts". Does NOT launch any run, and does NOT commit, push, or amend.
 ---
 
 # /command-table — Build a run-time command table from a date directory
@@ -18,13 +18,13 @@ sampling, or evaluation, and never commits.
 - Otherwise default to **today's** date dir (`scripts/_run_times/$(date +%Y_%m_%d)/`); if that
   doesn't exist, use the most recent existing date dir under `scripts/_run_times/` and say which.
 - List the wrapper scripts in it: every `*.sh` file **except** `new_run.sh` and any helper. The
-  wrappers follow the `<slot>-<desc>.sh` name pattern (e.g. `1.1-B_ec_bc_proto_t_direct.sh`).
-- Sort wrappers by slot in natural order (`1.1`, `1.2`, `2.1`, `2.2`, … then full-server `3`).
+  wrappers written since 2026-09-23 are named `<desc>.sh` (e.g. `B_dualreg_lsoff_lam0p1.sh`); older date dirs still hold the retired `<slot>-<desc>.sh` form (e.g. `1.1-B_ec_bc_proto_t_direct.sh`), and both must be read.
+- Sort wrappers by file name; a pre-2026-09-23 date dir sorts by its slot prefix in natural order (`1.1`, `1.2`, `2.1`, … then full-server `3`).
 
 ## Step 1 — Trace each wrapper to fill the four columns
 For each wrapper file, gather:
-1. **Slot + GPUs** — from the wrapper's header comment line
-   `# Date group: <date>   Slot: <slot>   GPUs: <list>`.
+1. **GPU count** — from the wrapper's header comment line (a pre-2026-09-23 wrapper carries `Slot:` + `GPUs:` instead)
+   `# Date group: <date>   GPUs needed: <N>` (wrappers written before 2026-09-23 instead carry `Slot: <slot>   GPUs: <list>`).
 2. **Semantic script** — from the `exec bash "${REPO_ROOT}/<path>"` line (the script it delegates to).
 3. **Config** — read that semantic script's `^CONFIG=` line → `configs/<name>.yaml`.
 4. **model_name** — read `model_name:` from that config. `custom_cfg_name` = the config's basename
@@ -32,8 +32,8 @@ For each wrapper file, gather:
 5. **Output dir** — `outputs/{model_name}/{custom_cfg_name}/` (per CLAUDE.md "Configuration System").
 
 Then map to the template's columns:
-- **实验描述** — a human-readable label combining slot, GPU range, and the variant. Derive the
-  variant from the config/script name. Example: `Slot 1.1 · GPU 0-3 · ProMoE-B EC-BC proto_t (direct)`.
+- **实验描述** — a human-readable label combining the GPU count (and, for a pre-2026-09-23 wrapper, its slot and GPU range) with the variant. Derive the
+  variant from the config/script name. Example: `ProMoE-B EC-BC proto_t (direct)（4 卡）`; a pre-2026-09-23 wrapper keeps `Slot 1.1 · GPU 0-3 · ProMoE-B EC-BC proto_t (direct)`.
 - **git分支** — the current branch (`git rev-parse --abbrev-ref HEAD`) by default. If the user states
   a per-experiment branch, use that. Either way, the branch caveat (the column reflects the
   **current** checkout; verify if experiments target different branches) goes in the chat report
@@ -46,7 +46,7 @@ Then map to the template's columns:
 ## Step 2 — Render as CSV
 - Use `command-tables/command-table-template.csv` as the header skeleton — its single line is the
   CSV header row `实验描述,git分支,启动命令,输出位置`. Keep exactly those four columns, in that order.
-- One CSV record per wrapper, in sorted slot order, appended after the header.
+- One CSV record per wrapper, in the sorted order above, appended after the header.
 - **Plain-text cells — no Markdown.** Do NOT wrap any cell in backticks and do NOT use `|`
   separators (that was the old Markdown format). The 启动命令 and 输出位置 cells are raw text
   (`bash scripts/_run_times/<date>/<wrapper>`, `outputs/{model_name}/{custom_cfg_name}/`).
@@ -70,7 +70,7 @@ Then map to the template's columns:
   imports directly into Notion (`/table` → Import → CSV) or pastes into a spreadsheet.
 
 ## Edge cases
-- A wrapper that is **not** the auto-generated form (no `Slot:`/`exec bash` lines): fall back to
+- A wrapper that is **not** the auto-generated form (no `Date group:` header and no `exec bash` line): fall back to
   whatever launch command it does contain; leave columns you cannot resolve blank and flag them.
 - A semantic script with multiple config references: use the top-level `^CONFIG=` assignment.
 - A config missing `model_name`: leave 输出位置 blank for that row and flag it.

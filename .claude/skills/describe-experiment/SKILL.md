@@ -1,6 +1,6 @@
 ---
 name: describe-experiment
-description: Write a plain-text description of a ProMoE run-time experiment wrapper. Reads a scripts/_run_times/<date>/<slot>-<desc>.sh wrapper, traces it (wrapper → semantic run script → config → model file / CLAUDE.md variant table), and writes <wrapper-stem>-describe.txt next to the wrapper in the same date dir — a numbered 1/2/3 list of this experiment's core changes relative to the baseline, most-important change first, bilingual (中文为主 + English technical terms). "Baseline" is written against both the base ProMoE model and the immediate parent variant. Auto-fires right after a run-time wrapper is created or re-bucketed (it is invoked at the end of /new-experiment and /rerun-experiment), and on requests like "为 scripts/_run_times/<date>/<slot>-<desc>.sh 写实验描述" / "给这个实验写一段描述" / "describe this experiment". Does NOT launch any run, and does NOT commit, push, or amend.
+description: Write a plain-text description of a ProMoE run-time experiment wrapper. Reads a scripts/_run_times/<date>/<desc>.sh wrapper, traces it (wrapper → semantic run script → config → model file / CLAUDE.md variant table), and writes <wrapper-stem>-describe.txt next to the wrapper in the same date dir — a numbered 1/2/3 list of this experiment's core changes relative to the baseline, most-important change first, bilingual (中文为主 + English technical terms). "Baseline" is written against both the base ProMoE model and the immediate parent variant. Auto-fires right after a run-time wrapper is created or re-bucketed (it is invoked at the end of /new-experiment and /rerun-experiment), and on requests like "为 scripts/_run_times/<date>/<desc>.sh 写实验描述" / "给这个实验写一段描述" / "describe this experiment". Does NOT launch any run, and does NOT commit, push, or amend.
 ---
 
 # /describe-experiment — Write a `*-describe.txt` for a run-time wrapper
@@ -21,7 +21,7 @@ never launches training, sampling, or evaluation, and never commits.
 
 ## Step 0 — Resolve the target wrapper(s)
 - A single wrapper path → that one wrapper.
-- A date dir (e.g. `scripts/_run_times/2026_06_21/`) or "这批/all" → every `<slot>-<desc>.sh` wrapper
+- A date dir (e.g. `scripts/_run_times/2026_06_21/`) or "这批/all" → every `<desc>.sh` wrapper
   in it (every `*.sh` **except** `new_run.sh` / helpers; skip `commands.md`).
 - No target given → default to **today's** date dir; if it doesn't exist, use the most recent date
   dir under `scripts/_run_times/` and say which.
@@ -30,7 +30,7 @@ never launches training, sampling, or evaluation, and never commits.
 For each wrapper, follow the same chain `/command-table` uses, then go one level deeper into the
 model so the description is grounded in what the code actually does:
 1. **Wrapper** → the `exec bash "${REPO_ROOT}/<path>"` line gives the **semantic run script**. (Also
-   note `Slot:` / `GPUs:` from the header comment — context only, not part of the change list.)
+   note `GPUs needed:` from the header comment, or `Slot:` / `GPUs:` on a pre-2026-09-23 wrapper — context only, not part of the change list.)
 2. **Semantic script** → its `^CONFIG=` line gives `configs/<name>.yaml`.
 3. **Config** → read `model_name` and the full `MoE_config` / `repa_config` blocks, **including
    inline comments** (proto_t / anchor / proto_choice configs carry comments that state the exact

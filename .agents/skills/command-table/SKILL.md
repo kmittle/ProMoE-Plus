@@ -20,13 +20,13 @@ Create one `scripts/_run_times/<date>/commands.csv` from the launch wrappers in 
 - Otherwise use today's `scripts/_run_times/$(date +%Y_%m_%d)/` directory.
 - If today's directory does not exist, use the most recent existing date directory and report that choice.
 - Select every `*.sh` launch wrapper except `new_run.sh` and helpers.
-- Sort wrapper names by slot in natural order: `1.1`, `1.2`, `2.1`, `2.2`, then full-server slots such as `3`. Preserve historical slot forms such as `X.3` and `X.4` when present.
+- Sort wrapper names by file name; in a pre-2026-09-23 date dir that means the slot prefix in natural order (`1.1`, `1.2`, `2.1`, then full-server slots such as `3`, preserving historical forms such as `X.3` and `X.4`).
 
 ## Trace Each Wrapper
 
 For every wrapper, resolve these values from repository files rather than inferring them from names alone:
 
-1. Read the header `# Date group: <date>   Slot: <slot>   GPUs: <list>` for the slot and GPU list.
+1. Read the header `# Date group: <date>   GPUs needed: <N>` for the GPU count (pre-2026-09-23 wrappers instead carry `Slot: <slot>   GPUs: <list>`).
 2. Read the `exec bash "${REPO_ROOT}/<path>"` line for the semantic run script.
 3. Read the semantic script's top-level `CONFIG=` assignment for the YAML path.
 4. Read the config's top-level `model_name:`. Set `custom_cfg_name` to the config basename without `.yaml`.
@@ -34,7 +34,7 @@ For every wrapper, resolve these values from repository files rather than inferr
 
 Map those values to exactly four columns:
 
-- `实验描述`: a concise human-readable label containing slot, GPU range, and variant, for example `Slot 1.1 · GPU 0-3 · ProMoE-B EC-BC proto_t (direct)`.
+- `实验描述`: a concise human-readable label containing the GPU count and variant, for example `ProMoE-B EC-BC proto_t (direct)（4 卡）`; a pre-2026-09-23 wrapper keeps its slot and GPU range, e.g. `Slot 1.1 · GPU 0-3 · ProMoE-B EC-BC proto_t (direct)`.
 - `git分支`: the current branch from `git rev-parse --abbrev-ref HEAD`, unless the user specifies a per-experiment branch.
 - `启动命令`: `bash scripts/_run_times/<date>/<wrapper>`.
 - `输出位置`: the derived output directory.
@@ -42,7 +42,7 @@ Map those values to exactly four columns:
 ## Render the CSV
 
 - Read `command-tables/command-table-template.csv` and preserve its exact header and column order: `实验描述,git分支,启动命令,输出位置`.
-- Write one record per wrapper in sorted slot order.
+- Write one record per wrapper in the sorted order above.
 - Use plain-text cells. Do not add Markdown backticks or pipe separators.
 - Apply RFC 4180 quoting mechanically: quote cells containing commas, double quotes, or newlines, and double every internal double quote.
 - Make the header the first line. Add no title, prose, notes, or trailing explanatory block to the file.
@@ -50,7 +50,7 @@ Map those values to exactly four columns:
 
 ## Handle Irregular Inputs
 
-- For a non-generated wrapper without `Slot:` or `exec bash`, trace its actual launch command. Leave unresolvable columns empty and report them.
+- For a non-generated wrapper without a `Date group:` header or `exec bash` line, trace its actual launch command. Leave unresolvable columns empty and report them.
 - If a semantic script references multiple configs, use its top-level `CONFIG=` assignment.
 - If the config lacks `model_name`, leave `输出位置` empty and report the row.
 - If a legacy `commands.md` exists, report that it may be stale. Do not delete it.

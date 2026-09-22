@@ -98,7 +98,7 @@ Include these rules in Track A's brief and carry confirmed false positives into 
 - Root `model.py` is a non-imported reference; active models live under `models/`.
 - Absolute promoe/fid_eval interpreter paths, shared ImageNet paths, and optional local teacher/VAE paths are documented deployment choices.
 - Existing legacy split REPA scripts may remain, although new experiment wrappers must follow `scripts/template.sh` as one train+sample+eval script.
-- `scripts/_run_times/2026_08_05/` is a historical manually packed 2-GPU exception; the current allocator accepts only 4 or 8 GPUs.
+- `scripts/_run_times/2026_08_05/` packs 2-GPU runs by hand into the retired slot scheme; since 2026-09-23 wrappers take any GPU count and claim idle GPUs at launch.
 - `resume_checkpoint: True` with no matching checkpoint logging an error and starting at step 0 is existing behavior.
 - Labeled design plans and `doc/implementation-plan.md` are reference-only or future work unless the document states otherwise.
 - `custom_cfg_name` is intentionally injected from the YAML basename, and output paths follow `outputs/<model_name>/<custom_cfg_name>/`.

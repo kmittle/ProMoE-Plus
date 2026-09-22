@@ -18,7 +18,7 @@ Create a concise `*-describe.txt` beside each target run-time wrapper. Ground ev
 ## Resolve Targets
 
 - For one wrapper path, describe that wrapper.
-- For a date directory or a request covering the whole batch, select every `<slot>-<desc>.sh` wrapper except `new_run.sh` and helpers.
+- For a date directory or a request covering the whole batch, select every `<desc>.sh` wrapper except `new_run.sh` and helpers.
 - With no explicit target, use today's date directory. If it does not exist, use the most recent existing date directory and report the choice.
 - When composed by `$new-experiment` or `$rerun-experiment`, describe only wrappers newly created, renamed, or explicitly resolved and reused as targets by that workflow.
 
@@ -26,7 +26,7 @@ Create a concise `*-describe.txt` beside each target run-time wrapper. Ground ev
 
 For each wrapper, resolve the full chain:
 
-1. Read the wrapper's `exec bash "${REPO_ROOT}/<path>"` target and optional `Slot:` / `GPUs:` header.
+1. Read the wrapper's `exec bash "${REPO_ROOT}/<path>"` target and its `GPUs needed:` header (`Slot:` / `GPUs:` on a pre-2026-09-23 wrapper).
 2. Read the semantic script's top-level `CONFIG=` assignment.
 3. Read the config's top-level `model_name` and complete model configuration, including `MoE_config`, both levels of `repa_config` where applicable, and explanatory inline comments.
 4. Locate the exact registry entry in the appropriate training entrypoint and identify the registered class plus config key.

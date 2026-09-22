@@ -1,6 +1,6 @@
 ---
 name: new-experiment
-description: Scaffold and schedule a complete ProMoE experiment without launching it. Create a model implementation and registry entry when needed, or a config-only ablation when existing code supports it; create the numeric-prefixed YAML and template-based train-sample-eval wrapper; validate the chain; preview and allocate a dated 4- or 8-GPU run-time slot with scripts/_run_times/new_run.sh; then generate the companion experiment description. Use for explicit $new-experiment requests or when the user asks to add a ProMoE model variant, ablation, experiment config, or all-in-one experiment wrapper. Never run training, sampling, evaluation, or Git commits.
+description: Scaffold and schedule a complete ProMoE experiment without launching it. Create a model implementation and registry entry when needed, or a config-only ablation when existing code supports it; create the numeric-prefixed YAML and template-based train-sample-eval wrapper; validate the chain; preview and create a dated run-time wrapper with scripts/_run_times/new_run.sh; then generate the companion experiment description. Use for explicit $new-experiment requests or when the user asks to add a ProMoE model variant, ablation, experiment config, or all-in-one experiment wrapper. Never run training, sampling, evaluation, or Git commits.
 ---
 
 # Create a ProMoE Experiment
@@ -24,7 +24,7 @@ Infer these values from the request and repository. Ask only when a reasonable c
 - training entrypoint: `train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, or `train_with_mae.py`;
 - model size: `B`, `L`, or `XL`;
 - exact `MoE_config` and `repa_config` overrides;
-- GPU count: default to 4, except XL defaults to 8; accept only 4 or 8 unless the allocator changes in the same task;
+- GPU count: any positive integer, default 4, except XL defaults to 8; every arm of one comparison must share the same count;
 - date in `YYYY_MM_DD`: default to today's date.
 
 Classify the request before editing. Choose exactly one path; an explicit handoff takes precedence and must not fall through to another classification:
@@ -33,17 +33,17 @@ Classify the request before editing. Choose exactly one path; an explicit handof
 - **Config-driven ablation:** keep `model_name` unchanged and create the new config plus wrappers.
 - **Independent parallel run:** when `$rerun-experiment` explicitly hands off a parallel seed or equivalent independent copy, keep the old files unchanged. Create or resume a fresh config basename and semantic-script copy with a distinguishing user-provided or agreed suffix, apply only the requested runtime-consumed override, and ensure it has a distinct run-time wrapper and output bucket. If the requested seed or override has no established config consumer, ask instead of inventing a key.
 - **Already defined experiment:** preserve existing model/config and create only missing wrappers. Use this only to complete a missing launch definition, never for a requested independent run or seed.
-- **Preserve-old rerun handoff:** when `$rerun-experiment` explicitly hands off because the user requires both old and new launchers, keep the old files unchanged. Create or resume fresh `_vN` copies of the resolved config and semantic script, update only their versioned references, and ensure they have a new run-time wrapper with a distinct slot whose `gpu_ids` match the allocator assignment. Never copy the old run-time wrapper.
-- **Missing-runtime rerun handoff:** when `$rerun-experiment` finds no dated run-time wrapper and the user accepts that no old slot can be preserved, keep the original definition unchanged, create or resume a fresh `_vN` config plus a semantic wrapper, and ensure they have their first run-time wrapper using the handed-off date and supported GPU count.
-- **Previously launched experiment after model-code changes:** except for the explicit handoff classifications above, read [`../rerun-experiment/SKILL.md`](../rerun-experiment/SKILL.md) completely and follow `$rerun-experiment` so the output bucket is versioned without duplicating a slot.
+- **Preserve-old rerun handoff:** when `$rerun-experiment` explicitly hands off because the user requires both old and new launchers, keep the old files unchanged. Create or resume fresh `_vN` copies of the resolved config and semantic script, update only their versioned references, and ensure they have their own run-time wrapper with its own name. Never copy the old run-time wrapper.
+- **Missing-runtime rerun handoff:** when `$rerun-experiment` finds no dated run-time wrapper, keep the original definition unchanged, create or resume a fresh `_vN` config plus a semantic wrapper, and ensure they have their first run-time wrapper using the handed-off date and GPU count.
+- **Previously launched experiment after model-code changes:** except for the explicit handoff classifications above, read [`../rerun-experiment/SKILL.md`](../rerun-experiment/SKILL.md) completely and follow `$rerun-experiment` so the output bucket is versioned without duplicating a wrapper.
 
 ## Resume Compatible Partial Work
 
 Before choosing a suffix or writing any file, inventory the requested definition and any partial prior attempt:
 
 1. Resolve the source config and semantic script when present, then enumerate candidate config, semantic-script, and run-time-wrapper paths independently. Record adjacent descriptions as generated sidecars, not as execution-chain identity. Include expected `_vN` and requested distinguishing suffixes even when only one execution artifact currently exists.
-2. Validate each present execution artifact on its own: a config must match the requested model and settings apart from the planned suffix and explicit override; a semantic script must preserve the source or required template orchestration while naming the expected config and aligned log; a run-time wrapper must target the expected semantic script and carry a consistent slot header. A missing neighboring execution artifact makes the chain partial, not incompatible.
-3. Classify each compatible execution chain by state. For an unlaunched partial chain, adopt it and create only its missing execution artifacts. For a complete chain, an idempotent repeat of the same generation must validate and report it without changing names or slots, even when its output exists. If the request explicitly starts another generation after a later code/config change, retain the completed chain and choose a new suffix. When launch or generation provenance is uncertain, ask rather than risk reusing or superseding its output. An already-defined maintenance request may fill a missing launcher for an existing output only when the user explicitly intends that behavior. A missing or stale description never changes this state: regenerate it in place after the target wrapper validates, regardless of launch/output state.
+2. Validate each present execution artifact on its own: a config must match the requested model and settings apart from the planned suffix and explicit override; a semantic script must preserve the source or required template orchestration while naming the expected config and aligned log; a run-time wrapper must target the expected semantic script and carry a consistent header. A missing neighboring execution artifact makes the chain partial, not incompatible.
+3. Classify each compatible execution chain by state. For an unlaunched partial chain, adopt it and create only its missing execution artifacts. For a complete chain, an idempotent repeat of the same generation must validate and report it without changing names, even when its output exists. If the request explicitly starts another generation after a later code/config change, retain the completed chain and choose a new suffix. When launch or generation provenance is uncertain, ask rather than risk reusing or superseding its output. An already-defined maintenance request may fill a missing launcher for an existing output only when the user explicitly intends that behavior. A missing or stale description never changes this state: regenerate it in place after the target wrapper validates, regardless of launch/output state.
 4. If multiple compatible execution chains exist, report every artifact and require an explicit target. If an execution-artifact path exists with incompatible contents, never overwrite it; choose a different suffix or ask when intent is ambiguous. A conflicting description is generated state and is overwritten only through `$describe-experiment` after its execution chain is selected.
 5. Only when no compatible chain exists, or the request explicitly requires a new generation, may a fresh handoff choose a new name and create copies. Apply the same state classification to a repeated direct invocation whose requested config or semantic script already exists.
 
@@ -67,7 +67,7 @@ For each experiment config, create it only when missing; when a compatible confi
 
 For a preserve-old or missing-runtime rerun handoff with no compatible partial candidate, use `python scripts/check_output_dir.py --suggest-version <old-config>` to choose the fresh `_vN` name and copy the resolved old config with `apply_patch`. A preserve-old handoff also copies its semantic script. A missing-runtime handoff copies the semantic script when one exists; otherwise the semantic-wrapper step below creates it from the current template. Preserve all experiment settings and update copied scripts' `CONFIG=` and `LOG=` references. Do not edit the model, registry, old config, old semantic script, or old run-time wrapper. For preserve-old handoffs, warn that the retained launcher still targets the old output and requires code compatible with its checkpoints.
 
-For an independent-parallel-run handoff with no compatible partial candidate, copy the resolved config and semantic script with `apply_patch`, preserve the originals, and give both copies the same distinguishing suffix. Apply the requested seed or other supported override only after locating its runtime consumer. Update the copied script's `CONFIG=` and `LOG=` references, then let the normal output guard and allocator create a fresh output bucket and distinct slot. Never copy or reuse the old run-time wrapper.
+For an independent-parallel-run handoff with no compatible partial candidate, copy the resolved config and semantic script with `apply_patch`, preserve the originals, and give both copies the same distinguishing suffix. Apply the requested seed or other supported override only after locating its runtime consumer. Update the copied script's `CONFIG=` and `LOG=` references, then let the normal output guard and allocator create a fresh output bucket and its own wrapper. Never copy or reuse the old run-time wrapper.
 
 Do not modify root `model.py`; active implementations live under `models/`. Do not edit uppercase `REPA/`.
 
@@ -111,9 +111,9 @@ For a path that requires a fresh output, resolve every conflicting config match,
 
 Do not start a training, sampling, evaluation, preprocessing, or GPU smoke run.
 
-## Resolve the Run-Time Slot
+## Resolve the Run-Time Wrapper
 
-Use the resolved definition and run-time match sets collected during validation. Reuse and report exact semantic matches and verified-equivalent config matches; validate their syntax, slot header, `gpu_ids`, config, output, and target instead of allocating a duplicate. A non-equivalent config match or output-only match blocks allocation until the conflict is resolved. If multiple wrappers match, report the duplicate launch definitions and do not select, alter, or describe one without an explicit target.
+Use the resolved definition and run-time match sets collected during validation. Reuse and report exact semantic matches and verified-equivalent config matches; validate their syntax, header, `gpu_ids`, config, output, and target instead of allocating a duplicate. A non-equivalent config match or output-only match blocks allocation until the conflict is resolved. If multiple wrappers match, report the duplicate launch definitions and do not select, alter, or describe one without an explicit target.
 
 Allocation is required only when the resolved compatible definition has no run-time wrapper and no unresolved config or output collision remains. This rule applies to every classification: if a fresh handoff's new semantic script or config already has a matching wrapper, treat it as partially completed work and reuse it.
 
@@ -123,13 +123,15 @@ When allocation is required, always preview the allocator before letting it writ
 scripts/_run_times/new_run.sh \
   --script scripts/<family>/run_<...>_train_sample_eval.sh \
   --date <YYYY_MM_DD> \
-  --gpus <2|4|8> \
+  --gpus <N> \
   --dry-run
 ```
 
-Inspect and report the preview's date directory, slot, `gpu_ids`, semantic script, config, and wrapper path. If they match the request, rerun the exact command without `--dry-run`.
+Inspect and report the preview's date directory, GPU count, placeholder `gpu_ids`, semantic script, config, and wrapper path. If they match the request, rerun the exact command without `--dry-run`.
 
-Let `new_run.sh` patch the top-level YAML `gpu_ids` and create the thin run-time wrapper. Do not reproduce slot math or hand-edit `gpu_ids`. After allocation, run `bash -n` on the generated wrapper and confirm its `exec` target and config exist.
+Let `new_run.sh` patch the top-level YAML `gpu_ids` and create the thin run-time wrapper. Do not reproduce GPU selection or hand-edit `gpu_ids`. After allocation, run `bash -n` on the generated wrapper and confirm its `exec` target and config exist.
+
+`--gpus N` is how many GPUs the experiment uses for DDP; any positive integer is allowed, and every arm of one comparison must share the same count, because per-rank quantities (routing-contrastive class centers, pooled expert representations, EC-BC selection) change with the world size. No GPU ids are bound when the wrapper is written: the YAML `gpu_ids` is only a placeholder fixing the world size, and at launch the wrapper sources `scripts/_run_times/claim_gpus.sh` to claim N idle GPUs in id order, passing them on through `PROMOE_GPU_IDS_OVERRIDE`. That is what lets one wrapper run on a 4-GPU and an 8-GPU machine alike. A GPU counts as idle when its used memory is under `PROMOE_GPU_IDLE_MAX_MIB` (default 100, ignoring driver residue) and no live claim holds it; too few idle GPUs is a hard failure, not a queue.
 
 Never allocate a second run-time wrapper for the same semantic script and output bucket merely because the skill was invoked again. A second launcher requires an explicit fresh handoff that first creates a distinct config basename, semantic script, and output bucket.
 
@@ -141,11 +143,11 @@ If this workflow created a run-time wrapper and the target date directory alread
 
 ## Report
 
-List every created, modified, or explicitly reused model, registry, config, semantic wrapper, run-time wrapper, and description. Include the assigned or reused slot, final `gpu_ids`, derived output directory, validation results, and the launch command, but do not execute it:
+List every created, modified, or explicitly reused model, registry, config, semantic wrapper, run-time wrapper, and description. Include the GPU count, placeholder `gpu_ids`, derived output directory, validation results, and the launch command, but do not execute it:
 
 ```bash
 tmux new-window -t "$(tmux display-message -p '#S')" -n <name> \
-  'bash scripts/_run_times/<date>/<slot>-<desc>.sh'
+  'bash scripts/_run_times/<date>/<desc>.sh'
 ```
 
 Remind the user that a long-lived launch requires an attached tmux session.

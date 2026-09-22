@@ -111,7 +111,7 @@ Include these rules in Track A's brief and carry confirmed false positives into 
 - Root `model.py` is a non-imported reference; active models live under `models/`.
 - Documented absolute promoe/fid_eval interpreters, shared ImageNet paths, and optional local teacher/VAE paths are intentional.
 - Existing legacy split REPA scripts may remain; new experiments use template-based all-in-one wrappers.
-- `scripts/_run_times/2026_08_05/` is a historical 2-GPU packing exception; the current allocator accepts only 4 or 8 GPUs.
+- `scripts/_run_times/2026_08_05/` packs 2-GPU runs by hand into the retired slot scheme; since 2026-09-23 wrappers take any GPU count and claim idle GPUs at launch.
 - `resume_checkpoint: True` with no checkpoint starting from step 0 is existing behavior.
 - Labeled design plans are reference-only or future work unless stated otherwise.
 - `custom_cfg_name` and `outputs/<model_name>/<custom_cfg_name>/` are intentional naming contracts.
