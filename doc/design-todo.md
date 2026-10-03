@@ -12,6 +12,7 @@
 > 5. **当前任务 · 300K 门禁与四点组合**——对尚未判定的候选先执行 300K 门禁；已淘汰 `adepth_q0p2`、`expert_contra_param_cos` 和 `lossfree_u1e2_credit_control`，不再续训。四点组合只跑了 `H+R+O+P`，300K 门禁未通过（CFG 1.0 / 1.5 的 FID 为 31.19 / 10.07，基线为 30.86 / 9.73）；其余 9 个从未启动的组合臂（H、H+R、H+O、H+P、H+O+P、H+R+O、H+R+P，以及 `HO_norm`、`HROP_norm`）已于 2026-09-14 连同配置、脚本、队列和只给它们用的模型开关一起删除，组合方式待重新设计。
 > 6. **当前任务 · EC 混合训练（2026-09-14）**——在 TC 训练中混入 Expert-Choice：系列一混合 TC/EC 路由对比损失，系列二把一定比例的 step 换成完整 EC step；共 11 个，每个 2 卡，按用户决定不设 300K 门禁、只在 500K 采样评测。见文末同名章节。
 > 7. **工程改进 · 全局类中心（2026-09-14）**——路由对比损失的专家类中心改用整个 global batch 计算（各卡同步 token 之和与个数）；4 卡、与基线同设置，300K 和 500K 都评测、不自动停。见文末同名章节。
+> 8. **当前任务 · 正则组合消融（2026-10-03）**——按用户新方案重做组合：每个组合臂默认开 global center，异构专家放最后；先做两两组合：LS-Reg + 专家参数正则、LS-Reg + 专家输出正则，各 4 臂（锚点 + 3 个 τ 扫描），每臂 2 卡；另有 LS-Reg 全局计数（2 卡）和专家输出正则全局 pooling（4 卡）两个独立研究。300K 和 500K 都评测、不设门禁。见文末同名章节。
 >
 > 运行时 slot 按实验批次保存在对应的 `scripts/_run_times/<date>/` 目录；当前 `q0p1` 300K 门禁使用 0--3 号卡。
 > **四组共用约定**：均在 base `ProMoE_TC`（`models/models_ProMoE_TC.py`：两步路由 + 静态 `cluster_centers` + top-1 token-choice + shared expert + 路由 InfoNCE 对比损失）上做**自包含变体**（`models_ProMoE_TC_<variant>.py` + config 开关）；**uncond token 一律不受影响**；尽量 **step-0 与 base 前向逐比特一致**；默认各自**独立消融**、不叠加。运行时 slot 按实验批次保存在对应的 `scripts/_run_times/<date>/` 目录。
@@ -474,3 +475,26 @@ CFG1.0 略高，其余三个点都更低。再加上两组都使用了上面所�
 - `models/test_models_ProMoE_TC_global_center.py` 用 3 个 gloo 进程验证：各卡损失相同，按 DDP 平均后的 token 和原型梯度与整批直接计算一致。
 
 **实验**：4 卡、seed 0，数据顺序固定 seed 0，只差类中心的算法，300K 可直接与基线的 30.86 / 9.73 比；按用户决定 300K 和 500K 都评测，300K 结果不触发停止。
+
+---
+
+# 正则组合消融（2026-10-03）
+
+> **状态**：代码、测试、配置和脚本已写好，未启动。模型 `models/models_ProMoE_TC_regcombo.py`（测试 `models/test_models_ProMoE_TC_regcombo.py`），配置 `configs/004_ProMoE_B_regcombo_*.yaml`，运行脚本 `scripts/regcombo/`，启动脚本与命令表在 `scripts/_run_times/2026_10_03/`。
+
+**用户决定的方案**：五个候选改进是 global center、LS-Reg、专家参数正则、专家输出正则、异构专家。global center 最通用、动机清楚，组合臂一律默认开；异构专家创新性弱、难与参数正则共用、也不利于加速，放在最后；其余三项按 LS-Reg > 参数正则 > 输出正则的优先级，先两两组合再逐步加码（吸取 HROP 一次全开、失败后无法归因的教训）。
+
+**模型**：只有 MoE block 继承会议版 `SparseMoeBlock`。三个开关各自逐行照搬单模块实现——global center（同 `_global_center.py`）、LS-Reg 对角偏移（同 `_lsreg.py` 的 diag 分支）、专家排斥 `mean(exp(-L2/τ))`（同 `_expert_contra.py` 的 param/output 模式）；全关时与 `ProMoE_TC_B` 逐位一致，各开关单开时与对应单模块模型逐位一致（单元测试逐项验证）。新增两种全局机制：`ls_count_scope: global`（计数在 EMA 前 all-reduce，计数无梯度、无需补偿）和 `expert_output_scope: global`（每个专家的输出和与 token 数 all-reduce，本卡 token 侧梯度乘卡数）。组合臂中 LS-Reg 用本卡计数，与 global center 同用时乘卡数的梯度换算是近似的，用户已接受。
+
+| 组 | 实验（`004_ProMoE_B_regcombo_*`） | 卡数 | 变化 |
+|---|---|---|---|
+| 参数正则组 | `gc_ls0p05_param_b4_tau0p7`（锚点）/ `tau20` / `tau50` / `tau100` | 2 | 专家参数 L2 排斥，只在 DiT block 索引 3（第 2 个 MoE block），λ=0.5，只改 τ |
+| 输出正则组 | `gc_ls0p05_output_tau0p5`（锚点）/ `tau1` / `tau2` / `tau5` | 2 | 专家输出 L2 排斥，6 个 MoE block，λ=0.5，只改 τ |
+| 全局计数 | `ls0p05_global` | 2 | 只开 LS-Reg（0.05），计数改为全卡汇总；对照 `lsreg_diag_idea1_s0p05`（2 卡） |
+| 全局 pooling | `output_tau0p5_global` | 4 | 只开输出排斥（τ=0.5，λ=0.5），pooled 向量改为全卡汇总；对照 `expert_contra_output`（4 卡） |
+
+- **锚点**：系数与单模块实验一致（`param_b4`：τ=0.7、λ=0.5、block 索引 3；`expert_contra_output`：τ=0.5、λ=0.5、6 个 block；LS-Reg 0.05、EMA 0.9），按用户决定照原计划保留。
+- **τ 的选取**：按 `global_center` 实验 checkpoint 实测的距离尺度（专家参数 L2：初始化 64 → 300K 132 → 500K 164；专家 pooled 输出 L2 中位数：50K 7.0 → 300K 10.2 → 500K 11.2，每卡 128 张）。
+- **训练与评测**：seed 0、global batch 256、lr 1e-4、501K 步、`img_num_workers: 16`、`save_ckpt_interval: 50000`；300K 和 500K 都采样评测（CFG 1.0/1.5、50K 张），300K 结果不触发停止；不做多 seed。8 个组合臂的数据路径按 template 默认，两个全局研究用 `/home/dev/imagenet-1k/...` latent，在本机等卡空出后启动。
+- **诊断**：train.py 按 block 记录 `regcombo_*`（LS 偏移、专家正则 loss 及其 log10、两两距离、向量范数）和 `regcombo/grad_norm_preclip`，用于判断各档 τ 的正则项是否在起作用、是否靠放大权重或输出来满足。
+

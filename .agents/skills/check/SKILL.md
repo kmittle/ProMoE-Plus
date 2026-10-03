@@ -93,7 +93,7 @@ Allow `blocker`, `error`, and `warning`. Require the final line `ALL_CLEAN` when
 - Keep top-level and nested `repa_config` responsibilities separate. Verify teacher depth/type, zero-indexed `align_blocks`, and human-readable wrapper block ranges.
 - For data/preprocessing changes, verify JPEG versus encoded-latent paths, `LatentFolder`, 8-channel latent parameters, numeric label directories, cache behavior, and the documented train-safe path replacement constraint.
 - Treat `total_train_batch_size` as global; changing GPU count must preserve valid world-size divisibility.
-- For changed experiment wrappers, verify `CONFIG`, `LOG`, model family entrypoint, and exact compliance with `scripts/template.sh`, including fixed promoe/fid_eval Python paths and sequential train-stop-sample/eval-resume behavior.
+- For changed experiment wrappers, verify `CONFIG`, `LOG`, model family entrypoint, and exact compliance with `scripts/template.sh`, including the fixed promoe/fid_eval interpreters from `scripts/_python_env.sh`, `PROMOE_GPU_IDS_OVERRIDE` / `PROMOE_RESUME` handling, and sequential train-stop-sample/eval-resume behavior.
 - For changed run-time schedules, verify allocation through `scripts/_run_times/new_run.sh`, a prior dry run, and YAML-owned `gpu_ids`. Treat `2026_08_05` as the documented historical 2-GPU packing exception; current allocator inputs remain 4 or 8.
 - Verify output paths, `custom_cfg_name`, checkpoint/sample lists, and fresh `_vN` naming for reruns after model-code changes.
 - A changed/new analysis entrypoint must have a same-basename Markdown guide and keep reusable logic in an analysis subpackage.

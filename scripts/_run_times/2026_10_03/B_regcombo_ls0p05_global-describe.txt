@@ -1,0 +1,8 @@
+实验 / Experiment: B_regcombo_ls0p05_global
+model_name: ProMoE_TC_B_regcombo  |  config: configs/004_ProMoE_B_regcombo_ls0p05_global.yaml  |  2 卡
+基线 / Baseline: 基础 ProMoE-TC（conditional routing + 静态 `cluster_centers` 原型 cos-sim top-1 token-choice、shared expert、routing contrastive InfoNCE）；直接父变体 / Parent: 单模块 `lsreg_diag_idea1_s0p05`（LS-Reg diag，本卡计数，2 卡）；本实验只把计数改成全局
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. LS-Reg 全局计数（`ls_count_scope: global`）：每个 MoE block 的 per-prototype token 计数在 EMA 之前 all-reduce（全卡求和），所有卡用同一组对角偏移；类中心和对比损失仍按本卡 token 计算（未开 global center）。计数没有梯度、偏移是 detach 的，所以不需要梯度补偿。
+2. LS-Reg 系数与父变体相同：δ_i = 0.05·rel_i（`ls_diag_sign: 1.0`、`ls_ema_beta: 0.9`），rel_i 是 EMA 计数相对均值的偏离并截断到 [-1, 1]；不加专家正则。
+3. 训练设置：2 卡（每卡 128 张，global batch 256）、`global_seed: 0`、lr 1e-4、501K 步、`save_ckpt_interval: 50000`；300K 与 500K 都采样评测（CFG 1.0/1.5，50K 张），300K 结果不触发停止；数据：`use_encoded_latents: True` + `/home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz`。

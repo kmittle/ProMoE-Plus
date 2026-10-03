@@ -83,6 +83,7 @@ from models.models_ProMoE_TC_ecmix import DiT as ProMoE_TC_ecmix
 from models.models_ProMoE_TC_global_center import DiT as ProMoE_TC_global_center
 from models.models_ProMoE_TC_expert_cos import DiT as ProMoE_TC_expert_cos
 from models.models_ProMoE_TC_dualreg import DiT as ProMoE_TC_dualreg
+from models.models_ProMoE_TC_regcombo import DiT as ProMoE_TC_regcombo
 
 model_dict = {
     "DiT_B": (DiT, "DiT_B_config"),
@@ -134,6 +135,7 @@ model_dict = {
     "ProMoE_TC_B_global_center": (ProMoE_TC_global_center, "DiT_B_config"),
     "ProMoE_TC_B_expert_cos": (ProMoE_TC_expert_cos, "DiT_B_config"),
     "ProMoE_TC_B_dualreg": (ProMoE_TC_dualreg, "DiT_B_config"),
+    "ProMoE_TC_B_regcombo": (ProMoE_TC_regcombo, "DiT_B_config"),
 }
 
 DENOISING_REGRET_MODELS = {"ProMoE_TC_B_FDRR"}
@@ -184,6 +186,21 @@ DUALREG_STAT_NAMES = (
     f"dualreg_{field}_b{index}"
     for index in range(DUALREG_NUM_LOGGED_BLOCKS)
     for field in ("loss", "raw", "dist")
+)
+REGCOMBO_MODELS = {"ProMoE_TC_B_regcombo"}
+REGCOMBO_NUM_LOGGED_BLOCKS = 6
+REGCOMBO_STAT_NAMES = (
+    "regcombo_ls_offset",
+    "regcombo_expert_loss",
+    "regcombo_expert_loss_log10",
+    "regcombo_expert_dist_min",
+    "regcombo_expert_dist_mean",
+    "regcombo_expert_norm",
+    "regcombo_expert_active",
+) + tuple(
+    f"regcombo_{field}_b{index}"
+    for index in range(REGCOMBO_NUM_LOGGED_BLOCKS)
+    for field in ("loss_log10", "dist_min")
 )
 TRAINER_STATE_VERSION = 2
 LEGACY_TRAINER_STATE_VERSION = 1
@@ -1179,6 +1196,86 @@ def _reduce_dualreg_stats(loss_dict):
     dist.all_reduce(values, op=dist.ReduceOp.SUM)
     values.div_(dist.get_world_size())
     for name, value in zip(DUALREG_STAT_NAMES, values):
+        loss_dict[name] = value
+
+
+def _collect_regcombo_stats(model):
+    """Per-block diagnostics for the regularizer-combination model.
+
+    The expert repulsion is exp(-L2/tau), whose value can sit anywhere from
+    ~1e-90 to ~1 depending on tau, so the loss is also logged as log10: the
+    text log keeps four decimals, which would print every small value as 0.
+    ``dist`` is the pair distance the exponent acts on and ``norm`` the mean
+    vector norm, which shows the term being met by inflating weights or
+    outputs.  Blocks without the term report zeros (log10 of 1e-30 for the
+    loss), so a fixed set of names reaches the cross-rank reduction.
+    """
+    module = model.module if hasattr(model, "module") else model
+    if not getattr(module, "is_regcombo_model", False):
+        return {}
+
+    blocks = module.moe_blocks()
+    device = blocks[0].cluster_centers.device if blocks else None
+    zero = torch.zeros((), device=device, dtype=torch.float32)
+    floor = 1e-30
+
+    def _scalar(value):
+        return value.detach().float().reshape(()) if torch.is_tensor(value) else None
+
+    collected = {"eps": [], "loss": [], "dist_min": [], "dist_mean": [], "norm": [], "active": []}
+    stats = {}
+    for index, block in enumerate(blocks):
+        per_block = {
+            "eps": _scalar(block.last_mean_eps),
+            "loss": _scalar(block.last_expert_loss),
+            "dist_min": _scalar(block.last_expert_dist_min),
+            "dist_mean": _scalar(block.last_expert_dist_mean),
+            "norm": _scalar(block.last_expert_norm_mean),
+        }
+        for name, value in per_block.items():
+            if value is not None:
+                collected[name].append(value)
+        if block.compute_expert_contrastive and block.last_expert_active is not None:
+            collected["active"].append(zero + float(block.last_expert_active))
+        if index < REGCOMBO_NUM_LOGGED_BLOCKS:
+            loss = per_block["loss"]
+            stats[f"regcombo_loss_log10_b{index}"] = (
+                torch.log10(loss.clamp_min(floor)) if loss is not None else zero + math.log10(floor)
+            )
+            dist_min = per_block["dist_min"]
+            stats[f"regcombo_dist_min_b{index}"] = dist_min if dist_min is not None else zero.clone()
+    for index in range(len(blocks), REGCOMBO_NUM_LOGGED_BLOCKS):
+        stats[f"regcombo_loss_log10_b{index}"] = zero + math.log10(floor)
+        stats[f"regcombo_dist_min_b{index}"] = zero.clone()
+
+    def _mean(values):
+        return torch.stack(values).mean() if values else zero.clone()
+
+    stats["regcombo_ls_offset"] = _mean(collected["eps"])
+    stats["regcombo_expert_loss"] = _mean(collected["loss"])
+    stats["regcombo_expert_loss_log10"] = torch.log10(stats["regcombo_expert_loss"].clamp_min(floor))
+    stats["regcombo_expert_dist_min"] = _mean(collected["dist_min"])
+    stats["regcombo_expert_dist_mean"] = _mean(collected["dist_mean"])
+    stats["regcombo_expert_norm"] = _mean(collected["norm"])
+    stats["regcombo_expert_active"] = _mean(collected["active"])
+    return stats
+
+
+def _reduce_regcombo_stats(loss_dict):
+    """Average the regularizer-combination diagnostics over DDP ranks."""
+    if not dist.is_available() or not dist.is_initialized():
+        return
+    if not all(
+        name in loss_dict
+        and torch.is_tensor(loss_dict[name])
+        and loss_dict[name].numel() == 1
+        for name in REGCOMBO_STAT_NAMES
+    ):
+        return
+    values = torch.stack([loss_dict[name].detach().float() for name in REGCOMBO_STAT_NAMES])
+    dist.all_reduce(values, op=dist.ReduceOp.SUM)
+    values.div_(dist.get_world_size())
+    for name, value in zip(REGCOMBO_STAT_NAMES, values):
         loss_dict[name] = value
 
 
@@ -2894,6 +2991,9 @@ def worker(gpu, cfg):
         if cfg.model_name in DUALREG_MODELS:
             for stat_name, stat_value in _collect_dualreg_stats(model).items():
                 loss_dict[stat_name] = stat_value
+        if cfg.model_name in REGCOMBO_MODELS:
+            for stat_name, stat_value in _collect_regcombo_stats(model).items():
+                loss_dict[stat_name] = stat_value
         if cfg.model_name in DENOISING_REGRET_MODELS:
             if not isinstance(model_output, tuple) or len(model_output) != 2:
                 raise ValueError(
@@ -2970,6 +3070,8 @@ def worker(gpu, cfg):
             _reduce_expert_cos_stats(logged_loss_dict)
         if cfg.model_name in DUALREG_MODELS:
             _reduce_dualreg_stats(logged_loss_dict)
+        if cfg.model_name in REGCOMBO_MODELS:
+            _reduce_regcombo_stats(logged_loss_dict)
         if step % cfg.log_interval == 0:
             logging.info(format_loss_log(epoch, step, logged_loss_dict))
         if cfg.rank == 0:
@@ -2983,7 +3085,12 @@ def worker(gpu, cfg):
                     writer.add_scalar('lsreg/mean_eps', float(torch.stack(_ls_eps).mean()), step)
 
         scaler.unscale_(optimizer)
-        clip_grad_norm_(model.parameters(), cfg.max_grad_norm)
+        grad_norm = clip_grad_norm_(model.parameters(), cfg.max_grad_norm)
+        if (cfg.model_name in REGCOMBO_MODELS and cfg.rank == 0
+                and step % cfg.log_interval == 0):
+            # The norm before clipping: an expert term that dominates the
+            # update shows here before it shows in the loss.
+            writer.add_scalar('regcombo/grad_norm_preclip', float(grad_norm), step)
         scaler.step(optimizer)
         scaler.update()
         # Update noise expert as EMA of shared expert (if model supports it)

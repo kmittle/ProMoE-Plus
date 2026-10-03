@@ -1,0 +1,12 @@
+| 实验描述 | git分支 | 启动命令 | 输出位置 |
+|---|---|---|---|
+| 组合消融·输出正则组锚点：global center + LS-Reg 0.05 + 专家输出 L2 排斥 τ=0.5（2 卡） | repa | bash scripts/_run_times/2026_10_03/B_regcombo_gc_ls0p05_output_tau0p5.sh | outputs/ProMoE_TC_B_regcombo/004_ProMoE_B_regcombo_gc_ls0p05_output_tau0p5/ |
+| 组合消融·输出正则组：global center + LS-Reg 0.05 + 专家输出 L2 排斥 τ=1（2 卡） | repa | bash scripts/_run_times/2026_10_03/B_regcombo_gc_ls0p05_output_tau1.sh | outputs/ProMoE_TC_B_regcombo/004_ProMoE_B_regcombo_gc_ls0p05_output_tau1/ |
+| 组合消融·输出正则组：global center + LS-Reg 0.05 + 专家输出 L2 排斥 τ=2（2 卡） | repa | bash scripts/_run_times/2026_10_03/B_regcombo_gc_ls0p05_output_tau2.sh | outputs/ProMoE_TC_B_regcombo/004_ProMoE_B_regcombo_gc_ls0p05_output_tau2/ |
+| 组合消融·输出正则组：global center + LS-Reg 0.05 + 专家输出 L2 排斥 τ=5（2 卡） | repa | bash scripts/_run_times/2026_10_03/B_regcombo_gc_ls0p05_output_tau5.sh | outputs/ProMoE_TC_B_regcombo/004_ProMoE_B_regcombo_gc_ls0p05_output_tau5/ |
+| 组合消融·参数正则组锚点：global center + LS-Reg 0.05 + 专家参数 L2 排斥（第 2 个 MoE block）τ=0.7（2 卡） | repa | bash scripts/_run_times/2026_10_03/B_regcombo_gc_ls0p05_param_b4_tau0p7.sh | outputs/ProMoE_TC_B_regcombo/004_ProMoE_B_regcombo_gc_ls0p05_param_b4_tau0p7/ |
+| 组合消融·参数正则组：global center + LS-Reg 0.05 + 专家参数 L2 排斥（第 2 个 MoE block）τ=100（2 卡） | repa | bash scripts/_run_times/2026_10_03/B_regcombo_gc_ls0p05_param_b4_tau100.sh | outputs/ProMoE_TC_B_regcombo/004_ProMoE_B_regcombo_gc_ls0p05_param_b4_tau100/ |
+| 组合消融·参数正则组：global center + LS-Reg 0.05 + 专家参数 L2 排斥（第 2 个 MoE block）τ=20（2 卡） | repa | bash scripts/_run_times/2026_10_03/B_regcombo_gc_ls0p05_param_b4_tau20.sh | outputs/ProMoE_TC_B_regcombo/004_ProMoE_B_regcombo_gc_ls0p05_param_b4_tau20/ |
+| 组合消融·参数正则组：global center + LS-Reg 0.05 + 专家参数 L2 排斥（第 2 个 MoE block）τ=50（2 卡） | repa | bash scripts/_run_times/2026_10_03/B_regcombo_gc_ls0p05_param_b4_tau50.sh | outputs/ProMoE_TC_B_regcombo/004_ProMoE_B_regcombo_gc_ls0p05_param_b4_tau50/ |
+| LS-Reg 全局计数：LS-Reg 0.05 的计数改为全卡汇总，对照 lsreg_diag_idea1_s0p05（2 卡） | repa | PROMOE_ALLOW_LOCAL_FALLBACK=1 bash scripts/_run_times/2026_10_03/B_regcombo_ls0p05_global.sh | outputs/ProMoE_TC_B_regcombo/004_ProMoE_B_regcombo_ls0p05_global/ |
+| 专家输出正则全局 pooling：输出 L2 排斥 τ=0.5 的 pooled 向量改为全卡汇总，对照 expert_contra_output（4 卡） | repa | PROMOE_ALLOW_LOCAL_FALLBACK=1 bash scripts/_run_times/2026_10_03/B_regcombo_output_tau0p5_global.sh | outputs/ProMoE_TC_B_regcombo/004_ProMoE_B_regcombo_output_tau0p5_global/ |

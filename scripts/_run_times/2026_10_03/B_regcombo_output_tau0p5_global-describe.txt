@@ -1,0 +1,8 @@
+实验 / Experiment: B_regcombo_output_tau0p5_global
+model_name: ProMoE_TC_B_regcombo  |  config: configs/004_ProMoE_B_regcombo_output_tau0p5_global.yaml  |  4 卡
+基线 / Baseline: 基础 ProMoE-TC（conditional routing + 静态 `cluster_centers` 原型 cos-sim top-1 token-choice、shared expert、routing contrastive InfoNCE）；直接父变体 / Parent: 单模块 `expert_contra_output`（输出 L2 排斥，τ=0.5，λ=0.5，6 个 MoE block，4 卡）；本实验只把 pooled 输出改成全局
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 专家输出排斥的全局 pooling（`expert_output_scope: global`）：每个 routed expert 的输出和（fp32）与 token 数在全卡 all-reduce，pooled 向量取全局均值，所有卡算同一个 loss；本卡 token 侧梯度乘以卡数，抵消 DDP 的平均（与 global center 同一种补偿）。
+2. 系数与父变体相同：`expert_contrastive_lam: 0.5`、`expert_contrastive_temperature: 0.5`、6 个 MoE block；不开 global center，不加 LS-Reg。
+3. 训练设置：4 卡（每卡 64 张，global batch 256）、`global_seed: 0`、lr 1e-4、501K 步、`save_ckpt_interval: 50000`；300K 与 500K 都采样评测（CFG 1.0/1.5，50K 张），300K 结果不触发停止；数据：`use_encoded_latents: True` + `/home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz`。

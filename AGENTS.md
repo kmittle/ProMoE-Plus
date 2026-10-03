@@ -6,7 +6,7 @@ ProMoE-Plus implements ProMoE, a Mixture-of-Experts framework for scaling Diffus
 ## Project Structure & Module Organization
 Core entrypoints are at repository root:
 
-- `train.py`: baseline and non-REPA training (DiT, TCDiT, ECDiT, DiffMoE, ProMoE, hierarchical, expert-choice/batch-choice, structured-batch, proto-t, anchor, proto-choice, load-balance-contrastive, DAG-fuse, shared-expert DAG-fuse, adaptive-depth, loss-free, first-order denoising-regret routing, label-smoothing regularization, noise-expert, and expert-contrastive variants).
+- `train.py`: baseline and non-REPA training (DiT, TCDiT, ECDiT, DiffMoE, ProMoE, hierarchical, expert-choice/batch-choice, structured-batch, proto-t, anchor, proto-choice, load-balance-contrastive, DAG-fuse, shared-expert DAG-fuse, adaptive-depth, loss-free, first-order denoising-regret routing, label-smoothing regularization, noise-expert, and expert-contrastive, and regularizer-combination (`regcombo`) variants).
 - `train_with_repa.py`: REPA-enabled training (REPA / REPA-Shared / REPA-Cond / REPA-DYNA / REPA-DYNA-SELECT / REPA-DYNA-SCALE / REPA-DYNA-ONLY / REPA-Router / REPA-Router-Contra / REPA-Routed / REPA-Double-Share / heterogeneous-expert REPA-DYNA), including teacher-feature alignment loss.
 - `train_with_MoS_repa.py`: MoS-REPA, MoS-Naive / Naive-Choice, separate-projector / per-block / blockwise / fused / multi-align, Teacher-Affinity Routing, shared-routed spectral responsibility, teacher-conditioned expert geometry, first-order denoising-regret routing, and both standard-REPA + MoS cross-alignment training with teacher-block routing and per-block REPA projectors.
 - `train_with_mae.py`: MAE/group-alignment training for `group_align` and `group_align_proj` variants.
@@ -54,6 +54,7 @@ Main code layout:
 - `scripts/dino_route/`: DINO-assisted load-aware routing experiments and shuffled controls.
 - `scripts/phase_metric/`: phase-conditioned routing-metric experiments and controls.
 - `scripts/fdrr/`: teacher-free first-order denoising-regret routing and its control.
+- `scripts/regcombo/`: the 2026-10-03 regularizer-combination study (`ProMoE_TC_B_regcombo`): global center + LS-Reg + expert parameter or output repulsion arms, LS-Reg with global counts, and output repulsion with global pooling.
 - `scripts/_run_times/`: timestamped launch indirection for scheduled experiment batches; date directories may also contain generated `commands.md`/`commands.csv` launch tables and `*-describe.txt` experiment notes.
 - `command-tables/`: CSV template assets for run-time command tables.
 - `collapse_smoking_test/`, `collapse_smoking_test_10k/`: crash-diagnosis smoke configs, logs, summaries, and rerun helpers for cross-alignment stability work.
@@ -107,6 +108,22 @@ within this matrix unless the user explicitly reopens another direction. REPA
 and DINO are not the current main line; DINO may only return as a router/load/
 specialization signal, never as direct feature alignment.
 
+**Redesigned combination study (2026-10-03, user decision).** The user reopened
+the combination work with a new design that replaces the H/R/O/P matrix:
+global routing-contrastive class centers are on in every combination arm, the
+heterogeneous experts (`H`) are deferred to the end, and the remaining modules
+are combined in pairs before stacking more, in the priority LS-Reg > expert
+parameter regularization > expert output regularization. The first batch
+(`scripts/_run_times/2026_10_03/`, model `ProMoE_TC_B_regcombo`) has two
+four-arm groups on 2 GPUs each -- LS-Reg + parameter repulsion and LS-Reg +
+output repulsion -- where each group holds one anchor with its single-module
+coefficients and three arms sweeping the L2 temperature only; plus two separate
+studies of the global mechanism, LS-Reg with global counts (2 GPUs, like
+`lsreg_diag_idea1_s0p05`) and output repulsion with global pooling (4 GPUs, like
+`expert_contra_output`). By the user's decision every run of this batch is
+evaluated at 300K and 500K without a 300K stop, the 2-GPU arms are compared with
+each other rather than with the 4-GPU baseline, and no multi-seed repeat is run.
+
 As of 2026-09-14, only the `HROP` combination was actually launched. Its 300K
 CFG 1.0/1.5 FIDs were `31.19`/`10.07`, both worse than the fresh Base gate
 (`30.58`/`9.59`), so it was abandoned before 500K. The other nine planned
@@ -124,7 +141,9 @@ applied; do not stop it early from an intermediate loss or checkpoint.
 
 Every active combination experiment must be training-from-scratch with
 `global_seed: 0`, global batch `256`, learning rate `1e-4`, and
-`img_num_workers: 16`, using four GPUs. It must evaluate 300K at CFG 1.0 and
+`img_num_workers: 16`, using four GPUs (the 2026-10-03 `regcombo` batch above is
+the user-approved exception: 2 GPUs for its combination arms and the LS-Reg
+global-count run, and 300K + 500K evaluation without a gate). It must evaluate 300K at CFG 1.0 and
 1.5 with 50K samples. Only a candidate whose two 300K FIDs are both strictly
 better than the fresh Base gate may continue to 500K. Do not infer success or
 failure from 50K/200K checkpoints, training loss, or an auxiliary loss alone.
@@ -449,8 +468,8 @@ No dedicated `tests/` directory. Use smoke checks aligned to your change surface
 - End-to-end REPA-DYNA smoke check: run one wrapper in `scripts/dynamic_repa/` and verify train/sample/eval logs are produced.
 - End-to-end MoS-REPA smoke check: run `bash scripts/MoS_repa/run_B_repa_mos_train_sample_eval.sh` and verify train/sample/eval logs are produced.
 - Cross-alignment / monitoring changes: run `bash tb_smoke_200/run_all.sh` or `bash tb_smoke_500/run_all.sh` and verify `monitor/` TensorBoard scalars are emitted.
-- One-click experimental wrappers should keep the hard-coded interpreter launch style from `scripts/template.sh`: `/mnt/workspace/yujie/.conda/envs/promoe/bin/python` for training/sampling and `/mnt/workspace/yujie/.conda/envs/fid_eval/bin/python` for evaluation.
-- When writing a new training + sampling + evaluation three-in-one shell script, start from `scripts/template.sh`, preserve its interpreter-launch pattern, swap the training entrypoint as needed (`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, or `train_with_mae.py`), and do not replace it with `conda activate`; otherwise the script may fail on the experiment server.
+- One-click experimental wrappers take their interpreters the way `scripts/template.sh` does: `source scripts/_python_env.sh`, which pins `/mnt/workspace/yujie/.conda/envs/promoe/bin/python` for training/sampling and `/mnt/workspace/yujie/.conda/envs/fid_eval/bin/python` for evaluation and fails before any output bucket is touched when they are missing. Do not re-hardcode the paths.
+- When writing a new training + sampling + evaluation three-in-one shell script, start from `scripts/template.sh`, preserve its interpreter-launch pattern and its `PROMOE_GPU_IDS_OVERRIDE` / `PROMOE_RESUME` handling, swap the training entrypoint as needed (`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, or `train_with_mae.py`), and do not replace it with `conda activate`; otherwise the script may fail on the experiment server.
 - For new analysis entrypoints, add a matching `analyses/<basename>.md` usage guide and keep shared logic in a subpackage under `analyses/` rather than embedding everything in the root script.
 
 If you touch dataset traversal, latent mapping, or preprocessing logic, clear/regenerate `preprocess/image_paths_cache.txt` before re-running checks.

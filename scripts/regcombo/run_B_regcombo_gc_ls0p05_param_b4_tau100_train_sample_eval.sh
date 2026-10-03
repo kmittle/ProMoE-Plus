@@ -34,8 +34,8 @@ cd "$REPO_ROOT"
 source "${REPO_ROOT}/scripts/_python_env.sh"
 source "${REPO_ROOT}/scripts/_eval_metric_helpers.sh"
 
-CONFIG="configs/004_ProMoE_B_repa_dyna_only.yaml"
-LOG="${REPO_ROOT}/logs/log_ProMoE_B_repa_dyna_only_train_sample_eval.log"
+CONFIG="configs/004_ProMoE_B_regcombo_gc_ls0p05_param_b4_tau100.yaml"
+LOG="${REPO_ROOT}/logs/log_ProMoE_B_regcombo_gc_ls0p05_param_b4_tau100_train_sample_eval.log"
 mkdir -p "$(dirname "$LOG")"
 
 RESUME="${PROMOE_RESUME:-0}"
@@ -264,7 +264,7 @@ PY
     echo "============================================================" | tee -a "$LOG"
 
     set +e
-    CUDA_VISIBLE_DEVICES="${GPU_IDS}" "$PYTHON" train_with_repa.py \
+    CUDA_VISIBLE_DEVICES="${GPU_IDS}" "$PYTHON" train.py \
         --config "${TEMP_CONFIG}" \
         >> "$LOG" 2>&1
     TRAIN_RC=$?

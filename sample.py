@@ -320,7 +320,12 @@ def worker(gpu, cfg):
             logging.info(f"unexpected key: {unexpected_key}")
 
             model = model.to(gpu)
-            model = DistributedDataParallel(model, device_ids=[gpu])
+            # Every rank loads the same checkpoint and no model changes its
+            # buffers in eval, so the buffers already agree; broadcast_buffers=False
+            # makes DDP sync none (neither at construction nor per forward).  The
+            # per-forward broadcast would otherwise hang: a rank whose images all
+            # exist runs no forward and never joins that collective.
+            model = DistributedDataParallel(model, device_ids=[gpu], broadcast_buffers=False)
 
             model_size = sum([p.numel() for p in model.parameters()]) / (1024 ** 2)
             logging.info(f'Created models with {model_size:.3f} M parameters')

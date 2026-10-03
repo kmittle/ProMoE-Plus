@@ -1,0 +1,9 @@
+实验 / Experiment: B_regcombo_gc_ls0p05_output_tau0p5
+model_name: ProMoE_TC_B_regcombo  |  config: configs/004_ProMoE_B_regcombo_gc_ls0p05_output_tau0p5.yaml  |  2 卡
+基线 / Baseline: 基础 ProMoE-TC（conditional routing + 静态 `cluster_centers` 原型 cos-sim top-1 token-choice、shared expert、routing contrastive InfoNCE）；直接父变体 / Parent: 单模块 `expert_contra_output`（输出 L2 排斥，τ=0.5，λ=0.5，6 个 MoE block）；本实验在其上叠加 global center 与 LS-Reg，组内只改 τ
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 专家输出排斥 / expert output repulsion（`expert_contrastive_mode: "output"`、`expert_output_scope: local`）：6 个 MoE block 中，每个 routed expert 对本卡分到的 token 的输出取均值（不乘 router 权重）得到 pooled 向量，loss = λ·mean(exp(-L2/τ))，`expert_contrastive_lam: 0.5`；τ=0.5 是锚点，与单模块 `expert_contra_output` 的系数完全一致。
+2. global center（`global_center: True`）：路由对比损失的专家类中心改用 all-reduce 后的全局 token 和与个数计算，所有卡用同一组类中心、算同一个 InfoNCE；本卡 token 侧梯度乘以卡数，使 DDP 平均后等于在整个 global batch 上算一次损失（同 `global_center` 实验）。
+3. LS-Reg 对角偏移（`ls_diag_strength: 0.05`、`ls_diag_sign: 1.0`、`ls_ema_beta: 0.9`、`ls_count_scope: local`）：与 `lsreg_diag_idea1_s0p05` 相同，给路由对比相似度矩阵对角线加 detach 的负载偏移 δ_i = 0.05·rel_i（过载原型削弱、欠载原型加强）；计数用本卡的，与 global center 同用时各卡偏移略有不同，乘卡数的梯度换算因此是近似的（已接受）。
+4. 训练设置：2 卡（每卡 128 张，global batch 256）、`global_seed: 0`、lr 1e-4、501K 步、`save_ckpt_interval: 50000`；300K 与 500K 都采样评测（CFG 1.0/1.5，50K 张），300K 结果不触发停止；数据：按 template 默认（`use_pre_latents: True`，`config.py` 的 `data_path`）。

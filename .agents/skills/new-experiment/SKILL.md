@@ -85,7 +85,7 @@ Unless the experiment genuinely requires extra orchestration, change only:
 - `LOG=`;
 - the training entrypoint.
 
-Preserve `set -euo pipefail`, `SCRIPT_DIR` / `REPO_ROOT`, inline Python YAML parsing, the sequential train-stop-sample/eval-resume loop, `find ... -name images | sort -V`, and the fixed interpreters:
+Preserve `set -euo pipefail`, `SCRIPT_DIR` / `REPO_ROOT`, inline Python YAML parsing, the sequential train-stop-sample/eval-resume loop, `find ... -name images | sort -V`, the `PROMOE_GPU_IDS_OVERRIDE` / `PROMOE_RESUME` handling, and the fixed interpreters, which the template takes from `source scripts/_python_env.sh` (do not re-hardcode them):
 
 - `/mnt/workspace/yujie/.conda/envs/promoe/bin/python` for training and sampling;
 - `/mnt/workspace/yujie/.conda/envs/fid_eval/bin/python` for evaluation.

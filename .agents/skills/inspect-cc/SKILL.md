@@ -127,7 +127,7 @@ Include these rules in Track A's brief and carry confirmed false positives into 
 - Keep top-level training-loop and nested model-level `repa_config` responsibilities separate; verify teacher type/depth and block indexing.
 - Verify JPEG/encoded-latent selection, `LatentFolder`, latent shape, numeric labels, cache behavior, and the documented train-safe path derivation.
 - Treat `total_train_batch_size` as global and check world-size divisibility after GPU changes.
-- Require new all-in-one wrappers to follow `scripts/template.sh`, including fixed interpreters, sequential checkpoint loop, repo-root discovery, YAML parsing, and version-sorted evaluation traversal.
+- Require new all-in-one wrappers to follow `scripts/template.sh`, including fixed interpreters from `scripts/_python_env.sh`, `PROMOE_GPU_IDS_OVERRIDE` / `PROMOE_RESUME` handling, sequential checkpoint loop, repo-root discovery, YAML parsing, and version-sorted evaluation traversal.
 - Require runtime allocation via `scripts/_run_times/new_run.sh --dry-run`, with GPU IDs stored in YAML. Verify output collisions and fresh `_vN` rerun names.
 - Require same-basename Markdown for new analysis entrypoints and reusable analysis logic in subpackages.
 
