@@ -3,6 +3,7 @@ import os
 import re
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 from PIL import Image
@@ -16,6 +17,10 @@ except ImportError:
 
 EVALUATION_DIR = os.path.dirname(os.path.abspath(__file__))
 IMAGENET_NUM_CLASSES = 1000
+# Each PNG is opened, read and closed on its own.  On network storage that round trip, not
+# decoding, dominates (CubeFS, 2026-10-14: 65 ms to read vs 3 ms to decode a 256px PNG, so
+# 50K images took an hour in one thread); this many concurrent reads hide the latency.
+PNG_READ_THREADS = 32
 
 
 def _format_evaluator_log(command, return_code, stdout, stderr):
@@ -155,14 +160,19 @@ def create_npz_from_images(
         dtype=np.uint8,
     )
     labels_array = np.zeros((expected_count,), dtype=np.int64)
-    for index, (file_name, label) in enumerate(
-        tqdm(labeled_files, desc="Processing images")
-    ):
-        image_path = os.path.join(image_folder, file_name)
-        with Image.open(image_path) as image:
-            image = image.convert("RGB").resize(img_size, Image.LANCZOS)
-            images_array[index] = np.asarray(image)
-        labels_array[index] = label
+
+    def load_image(file_name):
+        with Image.open(os.path.join(image_folder, file_name)) as image:
+            return np.asarray(image.convert("RGB").resize(img_size, Image.LANCZOS))
+
+    # map() yields results in input order, so the arrays match a sequential read.
+    with ThreadPoolExecutor(max_workers=PNG_READ_THREADS) as pool:
+        images = pool.map(load_image, [file_name for file_name, _ in labeled_files])
+        for index, (image, (_, label)) in enumerate(
+            tqdm(zip(images, labeled_files), total=expected_count, desc="Processing images")
+        ):
+            images_array[index] = image
+            labels_array[index] = label
 
     print(f"\nSaving {expected_count} images to: {output_path}")
     np.savez_compressed(output_path, arr_0=images_array, arr_1=labels_array)
