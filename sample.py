@@ -337,6 +337,16 @@ def worker(gpu, cfg):
             pbar = tqdm(pbar) if cfg.rank == 0 else pbar
             save_executor = ThreadPoolExecutor(max_workers=8)
 
+            # Which images already exist, read with one directory listing.  A glob per batch
+            # re-read the whole directory (up to 50K entries) while the GPU waited: about 5 s
+            # per batch on CubeFS (2026-10-14).  No batch writes another batch's indices, so
+            # this listing answers what the per-batch glob did.
+            existing_image_indices = set()
+            if not cfg.save_inception_features:
+                for file_name in os.listdir(cfg.sample_images_folder_dir):
+                    if file_name.startswith('img') and file_name.endswith('.png') and '_class' in file_name:
+                        existing_image_indices.add(file_name[len('img'):file_name.index('_class')])
+
             for i in pbar:
                 noise = torch.randn(n, *latent_shape, device=gpu)
                 y = torch.randint(0, cfg.num_classes, (n,), device=gpu)
@@ -351,14 +361,11 @@ def worker(gpu, cfg):
                             logging.info(f"Skipping batch with global_index {global_index} because inception feature file exists.")
                         continue
                 else:
-                    batch_complete = True
-                    for img_idx in range(n):
-                        image_pattern = os.path.join(cfg.sample_images_folder_dir, f"img{global_index * n + img_idx:06d}_class*.png")
-                        matching_files = glob.glob(image_pattern)
-                        if not matching_files:
-                            batch_complete = False
-                            break
-                    
+                    batch_complete = all(
+                        f"{global_index * n + img_idx:06d}" in existing_image_indices
+                        for img_idx in range(n)
+                    )
+
                     if batch_complete:
                         if cfg.rank == 0:
                             logging.info(f"Skipping batch with global_index {global_index} because all image files exist.")
