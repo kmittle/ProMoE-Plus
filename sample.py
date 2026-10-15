@@ -33,8 +33,6 @@ from utils import (
     str_to_int_list,
 )
 
-os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-
 
 def _load_project_checkpoint(path_or_file, map_location='cpu'):
     """Load a project checkpoint across PyTorch checkpoint-loading APIs."""
