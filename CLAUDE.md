@@ -283,6 +283,7 @@ Constraints to know:
 - Loss = MSE reconstruction + auxiliary losses (routing contrastive for ProMoE, capacity prediction for DiffMoE, expert contrastive for expert_contra)
 - After each optimizer step, `train.py` calls `model.module.update_noise_expert_ema()` if the model exposes it (noise_expert_ema models). Noise expert parameters are excluded from the optimizer (`requires_grad=False`).
 - Checkpoints saved every `save_ckpt_interval` steps to `outputs/{model_name}/{custom_cfg_name}/checkpoints/`
+- Rank 0 writes about ten TensorBoard scalars every step (`write_loss_dict_to_tensorboard`, not gated by `log_interval`) through `KeepOpenSummaryWriter`, which holds the event file open behind a 1 MiB buffer. The stock `SummaryWriter` without TensorFlow opens, appends and closes the file once per record; on a network mount (CubeFS, ~35–60 ms per round trip) that stalled rank 0 at 0.86 s/step against 0.25 s/step (2026-10-14). `train_with_repa.py`, `train_with_MoS_repa.py` and `train_with_mae.py` still use the stock writer.
 
 ### Sampling Pipeline (`sample.py`)
 - FlowMatchEulerDiscreteScheduler from diffusers

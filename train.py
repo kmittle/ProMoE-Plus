@@ -32,8 +32,14 @@ import platform
 import subprocess
 import sys
 import uuid
+import socket
+import time
 from pathlib import Path
 from torch.utils.tensorboard import SummaryWriter
+from torch.utils.tensorboard.writer import FileWriter
+from tensorboard.compat.proto import event_pb2
+from tensorboard.summary.writer.event_file_writer import EventFileWriter, _AsyncWriter, _global_uid
+from tensorboard.summary.writer.record_writer import RecordWriter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from torch.nn.parallel import DistributedDataParallel
 from collections import OrderedDict
@@ -834,6 +840,62 @@ def format_loss_log(epoch, step, loss_dict):
     if "total_loss" in loss_dict and torch.is_tensor(loss_dict["total_loss"]):
         parts.append(f"total_loss: {loss_dict['total_loss'].item():.4f}")
     return " ".join(parts)
+
+
+class _KeepOpenEventFileWriter(EventFileWriter):
+    """TensorBoard event file written through one open, buffered handle.
+
+    The stock writer opens its file through tf.io.gfile.  Without TensorFlow installed that
+    is TensorBoard's fallback, which opens, appends to and closes the file for every record.
+    On the CubeFS mount each of those round trips takes about 60 ms and the training loop
+    logs about ten scalars per step, so the writer thread fell behind, its queue filled and
+    rank 0 trained at 0.86 s/step instead of 0.25 (measured 2026-10-14).  Here records go
+    into a 1 MiB buffer that reaches the file when it fills and on every flush, which the
+    base class's background thread still issues at least every `flush_secs`.  Only opening
+    the file differs from the base class.
+    """
+
+    def __init__(self, logdir, max_queue_size=10, flush_secs=120, filename_suffix=""):
+        self._logdir = logdir
+        os.makedirs(logdir, exist_ok=True)
+        self._file_name = osp.join(
+            logdir,
+            "events.out.tfevents.%010d.%s.%s.%s"
+            % (time.time(), socket.gethostname(), os.getpid(), _global_uid.get()),
+        ) + filename_suffix
+        self._general_file_writer = open(self._file_name, "wb", buffering=1 << 20)
+        self._async_writer = _AsyncWriter(
+            RecordWriter(self._general_file_writer), max_queue_size, flush_secs
+        )
+        self.add_event(event_pb2.Event(
+            wall_time=time.time(),
+            file_version="brain.Event:2",
+            source_metadata=event_pb2.SourceMetadata(
+                writer="tensorboard.summary.writer.event_file_writer"
+            ),
+        ))
+        self.flush()
+
+
+class _KeepOpenFileWriter(FileWriter):
+    def __init__(self, log_dir, max_queue=10, flush_secs=120, filename_suffix=""):
+        self.event_writer = _KeepOpenEventFileWriter(
+            str(log_dir), max_queue, flush_secs, filename_suffix
+        )
+
+
+class KeepOpenSummaryWriter(SummaryWriter):
+    """SummaryWriter whose event file stays open; see _KeepOpenEventFileWriter."""
+
+    def _get_file_writer(self):
+        if self.all_writers is None or self.file_writer is None:
+            if self.purge_step is not None:
+                raise ValueError("KeepOpenSummaryWriter does not support purge_step")
+            self.file_writer = _KeepOpenFileWriter(
+                self.log_dir, self.max_queue, self.flush_secs, self.filename_suffix
+            )
+            self.all_writers = {self.file_writer.get_logdir(): self.file_writer}
+        return self.file_writer
 
 
 def write_loss_dict_to_tensorboard(writer, loss_dict, step):
@@ -2632,7 +2694,10 @@ def worker(gpu, cfg):
         use_amp = False
 
     if cfg.rank == 0:
-        writer = SummaryWriter(log_dir=osp.join(cfg.output_dir, "tensorboard"))
+        # A deep queue absorbs the occasional slow buffer flush to network storage.
+        writer = KeepOpenSummaryWriter(
+            log_dir=osp.join(cfg.output_dir, "tensorboard"), max_queue=1000
+        )
     
     cfg.train_img_num = getattr(cfg, 'train_img_num', None)
     cfg.grad_mix = max(int(getattr(cfg, 'grad_mix', 1)), 1)
