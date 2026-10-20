@@ -219,11 +219,11 @@ def _all_router_weights(moe_layer, hidden_states, timestep=None):
                 "timestep must contain one value per router batch row; got "
                 f"{phase_timesteps.numel()} for batch size {batch_size}"
             )
-        if (
-            getattr(moe_layer, "phase_metric_shuffle_timestep", False)
-            and batch_size > 1
-        ):
-            phase_timesteps = torch.roll(phase_timesteps, shifts=1, dims=0)
+        if getattr(moe_layer, "phase_metric_shuffle_timestep", False):
+            raise ValueError(
+                "The shuffled-phase control draws a fresh random phase on "
+                "every router call, so its scores cannot be reconstructed"
+            )
         token_timesteps = phase_timesteps.repeat_interleave(token_count)
         with torch.no_grad():
             phase_residual = phase_metric(

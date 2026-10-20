@@ -140,11 +140,14 @@ class SparseMoeBlock(nn.Module):
                     'timestep must contain one value per batch sample; got '
                     f'{phase_timesteps.numel()} for batch size {batch_size}'
                 )
-            if self.phase_metric_shuffle_timestep and batch_size > 1:
-                # This is a matched control: retain the observed phase
-                # histogram while breaking token-to-phase correspondence.
-                phase_timesteps = torch.roll(
-                    phase_timesteps, shifts=1, dims=0
+            if self.phase_metric_shuffle_timestep:
+                # Control arm: route every image with the phase of an
+                # unrelated timestep drawn from the training distribution
+                # (config.py's logit-normal(0, 1) at shift 1). A within-batch
+                # roll broke the pairing only in training: all images in a
+                # sampling batch share one timestep, so it changed nothing.
+                phase_timesteps = self.phase_metric.num_train_timesteps * (
+                    torch.sigmoid(torch.randn(batch_size, device=device))
                 )
 
         if self.use_uncond_expert and flat_labels is not None:

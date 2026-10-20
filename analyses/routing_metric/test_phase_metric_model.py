@@ -41,7 +41,7 @@ class _LegacyTwoArgumentRouter:
         return weights, indices, None
 
 
-def _model_kwargs(metric_enabled):
+def _model_kwargs(metric_enabled, shuffle_timestep=False):
     return {
         'input_size': 8,
         'patch_size': 2,
@@ -74,7 +74,7 @@ def _model_kwargs(metric_enabled):
                 'num_fourier_bands': 2,
                 'num_train_timesteps': 1000,
                 'scale': 0.25,
-                'shuffle_timestep': False,
+                'shuffle_timestep': shuffle_timestep,
                 'init_seed': 1729,
             },
         ),
@@ -418,6 +418,69 @@ class PhaseMetricModelTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, 'requires timestep'):
             _all_router_weights(moe_layer, hidden_states)
+
+    def test_shuffled_control_routes_with_an_unrelated_phase(self):
+        torch.manual_seed(17)
+        native = DiT(**_model_kwargs(metric_enabled=True)).eval()
+        torch.manual_seed(17)
+        control = DiT(
+            **_model_kwargs(metric_enabled=True, shuffle_timestep=True)
+        ).eval()
+        native_layer = native.blocks[1].mlp
+        control_layer = control.blocks[1].mlp
+        with torch.no_grad():
+            for layer in (native_layer, control_layer):
+                layer.phase_metric.phase_to_rank[0, 0] = 1.0
+                layer.phase_metric.phase_to_rank[1, 1] = -0.5
+        generator = torch.Generator().manual_seed(71)
+        hidden_states = torch.randn(4, 16, 32, generator=generator)
+        labels = torch.tensor([2, 7, 11, 13])
+        # Every image in a sampling batch shares one timestep.
+        sampling_timesteps = torch.full((4,), 900.0)
+
+        for training in (False, True):
+            control.train(training)
+            torch.manual_seed(5)
+            control_weights, control_indices, _ = control_layer.compute_router(
+                hidden_states, labels, sampling_timesteps
+            )
+            torch.manual_seed(5)
+            unrelated_timesteps = 1000.0 * torch.sigmoid(torch.randn(4))
+            native_weights, native_indices, _ = native_layer.compute_router(
+                hidden_states, labels, unrelated_timesteps
+            )
+            torch.testing.assert_close(
+                control_weights, native_weights, rtol=0, atol=0
+            )
+            torch.testing.assert_close(
+                control_indices, native_indices, rtol=0, atol=0
+            )
+            # The true timestep no longer reaches the control's router.
+            torch.manual_seed(5)
+            other_weights, _, _ = control_layer.compute_router(
+                hidden_states, labels, torch.full((4,), 100.0)
+            )
+            torch.testing.assert_close(
+                other_weights, control_weights, rtol=0, atol=0
+            )
+
+        true_phase_weights, _, _ = native_layer.compute_router(
+            hidden_states, labels, sampling_timesteps
+        )
+        self.assertFalse(torch.equal(control_weights, true_phase_weights))
+
+    def test_all_router_scores_refuse_the_shuffled_control(self):
+        torch.manual_seed(17)
+        control = DiT(
+            **_model_kwargs(metric_enabled=True, shuffle_timestep=True)
+        ).eval()
+        hidden_states = torch.zeros(2, 16, 32)
+        with self.assertRaisesRegex(ValueError, 'cannot be reconstructed'):
+            _all_router_weights(
+                control.blocks[1].mlp,
+                hidden_states,
+                torch.tensor([100.0, 900.0]),
+            )
 
     def test_router_adapter_preserves_legacy_two_argument_overrides(self):
         router = _LegacyTwoArgumentRouter()
