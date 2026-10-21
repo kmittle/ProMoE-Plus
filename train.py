@@ -92,6 +92,8 @@ from models.models_ProMoE_TC_global_center import DiT as ProMoE_TC_global_center
 from models.models_ProMoE_TC_expert_cos import DiT as ProMoE_TC_expert_cos
 from models.models_ProMoE_TC_dualreg import DiT as ProMoE_TC_dualreg
 from models.models_ProMoE_TC_regcombo import DiT as ProMoE_TC_regcombo
+from models.models_ProMoE_TC_clean_route import DiT as ProMoE_TC_clean_route
+from models.models_ProMoE_TC_clean_route import NUM_SIGMA_BINS as CLEAN_ROUTE_NUM_SIGMA_BINS
 
 model_dict = {
     "DiT_B": (DiT, "DiT_B_config"),
@@ -146,6 +148,7 @@ model_dict = {
     "ProMoE_TC_B_expert_cos": (ProMoE_TC_expert_cos, "DiT_B_config"),
     "ProMoE_TC_B_dualreg": (ProMoE_TC_dualreg, "DiT_B_config"),
     "ProMoE_TC_B_regcombo": (ProMoE_TC_regcombo, "DiT_B_config"),
+    "ProMoE_TC_B_clean_route": (ProMoE_TC_clean_route, "DiT_B_config"),
 }
 
 DENOISING_REGRET_MODELS = {"ProMoE_TC_B_FDRR"}
@@ -211,6 +214,27 @@ REGCOMBO_STAT_NAMES = (
     f"regcombo_{field}_b{index}"
     for index in range(REGCOMBO_NUM_LOGGED_BLOCKS)
     for field in ("loss_log10", "dist_min")
+)
+CLEAN_ROUTE_MODELS = {"ProMoE_TC_B_clean_route"}
+CLEAN_ROUTE_NUM_LOGGED_BLOCKS = 6
+CLEAN_ROUTE_STAT_NAMES = (
+    "clean_route_align_loss",
+    "clean_route_contrastive_loss",
+    "clean_route_kl",
+    "clean_route_agreement",
+    "clean_route_student_entropy",
+    "clean_route_teacher_entropy",
+    "clean_route_gate_mean",
+    "clean_route_student_max_share",
+    "clean_route_teacher_max_share",
+    "clean_route_student_image_dominance",
+    "clean_route_teacher_image_dominance",
+) + tuple(
+    f"clean_route_{field}_s{index}"
+    for index in range(CLEAN_ROUTE_NUM_SIGMA_BINS)
+    for field in ("kl", "agree")
+) + tuple(
+    f"clean_route_kl_b{index}" for index in range(CLEAN_ROUTE_NUM_LOGGED_BLOCKS)
 )
 TRAINER_STATE_VERSION = 2
 LEGACY_TRAINER_STATE_VERSION = 1
@@ -1325,6 +1349,93 @@ def _collect_regcombo_stats(model):
     stats["regcombo_expert_norm"] = _mean(collected["norm"])
     stats["regcombo_expert_active"] = _mean(collected["active"])
     return stats
+
+
+def _collect_clean_route_stats(model):
+    """Diagnostics of the clean-route routing distillation.
+
+    ``align_loss`` and ``contrastive_loss`` are summed over the MoE blocks,
+    because every block injects its own term into the total loss; the other
+    scalars are means over the blocks.  Expert loads and the sigma-bin sums are
+    reduced over ranks here, so the max shares and the bin means describe the
+    global batch; the per-rank scalars are averaged over ranks in
+    _reduce_clean_route_stats.  The bins split the student's sigma into equal
+    widths on [0, 1]; a bin without tokens reports 0.
+    """
+    module = model.module if hasattr(model, "module") else model
+    if not getattr(module, "is_clean_route_model", False):
+        return {}
+
+    blocks = module.moe_blocks()
+    zero = torch.zeros((), device=blocks[0].cluster_centers.device, dtype=torch.float32)
+
+    def _per_block(name):
+        values = [getattr(block, name) for block in blocks]
+        if any(value is None for value in values):
+            raise RuntimeError(f"clean_route block has no {name}: the student pass did not run")
+        return torch.stack([value.detach().float() for value in values])
+
+    student_load = _per_block("last_student_load")
+    teacher_load = _per_block("last_teacher_load")
+    sigma_bins = _per_block("last_sigma_bins").sum(dim=0)
+    if dist.is_available() and dist.is_initialized():
+        packed = torch.cat([student_load.reshape(-1), teacher_load.reshape(-1), sigma_bins.reshape(-1)])
+        dist.all_reduce(packed, op=dist.ReduceOp.SUM)
+        student_part, teacher_part, bins_part = packed.split(
+            [student_load.numel(), teacher_load.numel(), sigma_bins.numel()]
+        )
+        student_load = student_part.view_as(student_load)
+        teacher_load = teacher_part.view_as(teacher_load)
+        sigma_bins = bins_part.view_as(sigma_bins)
+
+    def _max_share(load):
+        totals = load.sum(dim=1)
+        counted = totals > 0
+        if not bool(counted.any()):
+            return zero.clone()
+        return (load[counted].max(dim=1).values / totals[counted]).mean()
+
+    kl = _per_block("last_kl")
+    stats = {
+        "clean_route_align_loss": _per_block("last_align_loss").sum(),
+        "clean_route_contrastive_loss": _per_block("last_contrastive_loss").sum(),
+        "clean_route_kl": kl.mean(),
+        "clean_route_agreement": _per_block("last_agreement").mean(),
+        "clean_route_student_entropy": _per_block("last_student_entropy").mean(),
+        "clean_route_teacher_entropy": _per_block("last_teacher_entropy").mean(),
+        "clean_route_gate_mean": _per_block("last_gate_mean").mean(),
+        "clean_route_student_max_share": _max_share(student_load),
+        "clean_route_teacher_max_share": _max_share(teacher_load),
+        "clean_route_student_image_dominance": _per_block("last_student_image_dominance").mean(),
+        "clean_route_teacher_image_dominance": _per_block("last_teacher_image_dominance").mean(),
+    }
+    counts = sigma_bins[2]
+    for index in range(CLEAN_ROUTE_NUM_SIGMA_BINS):
+        has_tokens = counts[index] > 0
+        denominator = counts[index].clamp_min(1.0)
+        stats[f"clean_route_kl_s{index}"] = torch.where(has_tokens, sigma_bins[0, index] / denominator, zero)
+        stats[f"clean_route_agree_s{index}"] = torch.where(has_tokens, sigma_bins[1, index] / denominator, zero)
+    for index in range(CLEAN_ROUTE_NUM_LOGGED_BLOCKS):
+        stats[f"clean_route_kl_b{index}"] = kl[index] if index < len(blocks) else zero.clone()
+    return stats
+
+
+def _reduce_clean_route_stats(loss_dict):
+    """Average the clean-route diagnostics over DDP ranks."""
+    if not dist.is_available() or not dist.is_initialized():
+        return
+    if not all(
+        name in loss_dict
+        and torch.is_tensor(loss_dict[name])
+        and loss_dict[name].numel() == 1
+        for name in CLEAN_ROUTE_STAT_NAMES
+    ):
+        return
+    values = torch.stack([loss_dict[name].detach().float() for name in CLEAN_ROUTE_STAT_NAMES])
+    dist.all_reduce(values, op=dist.ReduceOp.SUM)
+    values.div_(dist.get_world_size())
+    for name, value in zip(CLEAN_ROUTE_STAT_NAMES, values):
+        loss_dict[name] = value
 
 
 def _reduce_regcombo_stats(loss_dict):
@@ -3040,6 +3151,11 @@ def worker(gpu, cfg):
             arg_c['training_step'] = step
         if cfg.model_name in DUALREG_MODELS:
             arg_c['training_step'] = step
+        if cfg.model_name in CLEAN_ROUTE_MODELS:
+            # The model builds its teacher input from the same latents and noise.
+            arg_c['clean_route_z'] = z
+            arg_c['clean_route_noise'] = noise
+            arg_c['clean_route_sigma'] = sigmas
 
         with amp.autocast(dtype=cfg.param_dtype, enabled=use_amp):
             model_output = model(noised_z_in, t, **arg_c)
@@ -3062,6 +3178,9 @@ def worker(gpu, cfg):
                 loss_dict[stat_name] = stat_value
         if cfg.model_name in REGCOMBO_MODELS:
             for stat_name, stat_value in _collect_regcombo_stats(model).items():
+                loss_dict[stat_name] = stat_value
+        if cfg.model_name in CLEAN_ROUTE_MODELS:
+            for stat_name, stat_value in _collect_clean_route_stats(model).items():
                 loss_dict[stat_name] = stat_value
         if cfg.model_name in DENOISING_REGRET_MODELS:
             if not isinstance(model_output, tuple) or len(model_output) != 2:
@@ -3141,6 +3260,8 @@ def worker(gpu, cfg):
             _reduce_dualreg_stats(logged_loss_dict)
         if cfg.model_name in REGCOMBO_MODELS:
             _reduce_regcombo_stats(logged_loss_dict)
+        if cfg.model_name in CLEAN_ROUTE_MODELS:
+            _reduce_clean_route_stats(logged_loss_dict)
         if step % cfg.log_interval == 0:
             logging.info(format_loss_log(epoch, step, logged_loss_dict))
         if cfg.rank == 0:
