@@ -5,13 +5,13 @@ description: Scaffold and schedule a complete ProMoE experiment without launchin
 
 # Create a ProMoE Experiment
 
-Build the full experiment definition and allocate its launch wrapper while preserving repository conventions and existing work. Stop before launching any real run.
+Build the full experiment definition and allocate its launch wrapper while preserving repository conventions and existing work. Stop before launching any real run. If the user limits the request to one stage (Python only, YAML only, or wrappers only), complete only that stage; do not create later artifacts automatically.
 
 ## Establish Context
 
 1. Work from the repository root.
 2. Read root `AGENTS.md` completely before acting. It defines current model families, config rules, template requirements, GPU allocation, output naming, validation, and protected paths.
-3. Read relevant sections of `CLAUDE.md` only as supplemental model-family documentation. Prefer `AGENTS.md`, executable code, and current configs when they differ.
+3. Read `CLAUDE.md`'s "Shell Script Convention" and relevant model-family sections. Use the shared shell contract in `AGENTS.md` and the current executable template/allocator; preserve Codex-specific tool mechanics from this skill.
 4. Read `scripts/template.sh`, `scripts/_run_times/new_run.sh`, the target training registry, and the closest existing model/config/wrapper before editing.
 5. Inspect `git status --short` and relevant diffs. Preserve unrelated user changes and work with overlapping edits rather than replacing them.
 6. Use `rg` for searches when available and fall back to `grep` or `find`.
@@ -82,13 +82,17 @@ For an independent-parallel-run handoff, likewise use the suffixed semantic-scri
 Unless the experiment genuinely requires extra orchestration, change only:
 
 - `CONFIG=`;
-- `LOG=`;
+- `LOG="${REPO_ROOT}/logs/log_<name>.log"`;
 - the training entrypoint.
 
 Preserve `set -euo pipefail`, `SCRIPT_DIR` / `REPO_ROOT`, inline Python YAML parsing, the sequential train-stop-sample/eval-resume loop, `find ... -name images | sort -V`, the `PROMOE_GPU_IDS_OVERRIDE` / `PROMOE_RESUME` handling, and the fixed interpreters, which the template takes from `source scripts/_python_env.sh` (do not re-hardcode them):
 
 - `/mnt/workspace/yujie/.conda/envs/promoe/bin/python` for training and sampling;
 - `/mnt/workspace/yujie/.conda/envs/fid_eval/bin/python` for evaluation.
+
+Preserve the complete shell contract in `AGENTS.md`'s "Shell Script Convention": create the log parent, keep file logs free of ANSI colours, retain strict metric helpers and `log_code_version`, preserve the parsed-field count check, and keep the temporary config's basename. Every phase sets `resume_checkpoint: True`; intermediate phases use `step + 1`, and the final phase uses the original `num_steps`. Fresh launches require an empty bucket; `PROMOE_RESUME=1` requires this run's own checkpoints and skips only completed work with valid metrics. GPU overrides must reach the temporary training config, sampling, and evaluation without changing world size.
+
+The template does not enforce a 300K FID gate. When the experiment requires one, preserve or add explicit gate logic using the canonical thresholds and strict metric helpers before permitting 500K. Honor documented user-approved exceptions.
 
 When the config has a top-level `output_dir`, the template's literal `outputs/` sample path is insufficient. Extend its inline YAML parser to emit `os.path.join(output_root, model_name, custom_cfg_name, "sample")`, resolve a relative result under `REPO_ROOT` while preserving an absolute result, and use that value for `SAMPLE_BASE`. Validate it against the same effective directory reported by `scripts/check_output_dir.py`.
 
@@ -129,21 +133,23 @@ scripts/_run_times/new_run.sh \
 
 Inspect and report the preview's date directory, GPU count, placeholder `gpu_ids`, semantic script, config, and wrapper path. If they match the request, rerun the exact command without `--dry-run`.
 
-Let `new_run.sh` patch the top-level YAML `gpu_ids` and create the thin run-time wrapper. Do not reproduce GPU selection or hand-edit `gpu_ids`. After allocation, run `bash -n` on the generated wrapper and confirm its `exec` target and config exist.
+Let `new_run.sh` patch the top-level YAML `gpu_ids` and create the thin run-time wrapper. Do not reproduce GPU selection or hand-edit `gpu_ids`. After allocation, run `bash -n` on the generated wrapper and confirm its `exec` target and config exist. Verify it calls `promoe_claim_gpus N` directly, never through command substitution, and preserves a caller-supplied `PROMOE_GPU_IDS_OVERRIDE`.
 
-`--gpus N` is how many GPUs the experiment uses for DDP; any positive integer is allowed, and every arm of one comparison must share the same count, because per-rank quantities (routing-contrastive class centers, pooled expert representations, EC-BC selection) change with the world size. No GPU ids are bound when the wrapper is written: the YAML `gpu_ids` is only a placeholder fixing the world size, and at launch the wrapper sources `scripts/_run_times/claim_gpus.sh` to claim N idle GPUs in id order, passing them on through `PROMOE_GPU_IDS_OVERRIDE`. That is what lets one wrapper run on a 4-GPU and an 8-GPU machine alike. A GPU counts as idle when its used memory is under `PROMOE_GPU_IDLE_MAX_MIB` (default 100, ignoring driver residue) and no live claim holds it; too few idle GPUs is a hard failure, not a queue.
+`--gpus N` is how many GPUs the experiment uses for DDP; any positive integer is allowed, and every arm of one comparison must share the same count, because per-rank quantities (routing-contrastive class centers, pooled expert representations, EC-BC selection) change with the world size. No GPU ids are bound when the wrapper is written: the YAML `gpu_ids` is only a placeholder fixing the world size, and at launch the wrapper sources `scripts/_run_times/claim_gpus.sh` to claim N idle GPUs in id order, passing them on through `PROMOE_GPU_IDS_OVERRIDE`. A GPU counts as idle when its used memory is at or below `PROMOE_GPU_IDLE_MAX_MIB` (default 100 MiB, ignoring driver residue) and no live claim holds it; too few idle GPUs is a hard failure, not a queue. Date directories only group files; new wrapper names are `<desc>.sh`, without legacy slot prefixes.
 
 Never allocate a second run-time wrapper for the same semantic script and output bucket merely because the skill was invoked again. A second launcher requires an explicit fresh handoff that first creates a distinct config basename, semantic script, and output bucket.
 
-## Compose the Experiment Description
+## Compose the Experiment Description and Launch Table
 
 After each newly created or explicitly resolved/reused target wrapper validates, read [`../describe-experiment/SKILL.md`](../describe-experiment/SKILL.md) completely and follow it for that wrapper. This is the Codex composition step corresponding to `$describe-experiment`; it must create the adjacent `*-describe.txt` without launching anything.
 
-If this workflow created a run-time wrapper and the target date directory already has `commands.csv` or a legacy `commands.md`, report each one as stale because the wrapper set changed. Do not rewrite or delete either file unless the user also requests `$command-table`. When requested, read [`../command-table/SKILL.md`](../command-table/SKILL.md) completely and follow it for the target date directory; that workflow regenerates `commands.csv` and only reports legacy `commands.md`.
+Create or refresh the affected date directory's `commands.md` after adding, renaming, or removing a wrapper; also repair a missing table for an explicitly reused target. Follow `AGENTS.md`'s "Run-Time Command Tables and Descriptions": table only, exact columns `实验描述 | git分支 | 启动命令 | 输出位置`, plain-text cells without wrapping quotes/backticks, one row per launch wrapper, no helpers or surrounding prose. Trace all rows to their configs and verify commands exist and output paths agree. This is part of wrapper creation; `new_run.sh` does not generate the table.
+
+An existing `commands.csv` is a separate optional export. Report it as stale if affected, and regenerate it only when the user also requests `$command-table`; then read [`../command-table/SKILL.md`](../command-table/SKILL.md) completely and follow it. CSV export does not replace `commands.md`.
 
 ## Report
 
-List every created, modified, or explicitly reused model, registry, config, semantic wrapper, run-time wrapper, and description. Include the GPU count, placeholder `gpu_ids`, derived output directory, validation results, and the launch command, but do not execute it:
+List every created, modified, or explicitly reused model, registry, config, semantic wrapper, run-time wrapper, description, and `commands.md`. Include the GPU count, placeholder `gpu_ids`, derived output directory, validation results, and the launch command, but do not execute it:
 
 ```bash
 tmux new-window -t "$(tmux display-message -p '#S')" -n <name> \

@@ -141,7 +141,8 @@ Include these rules in Track A's brief and carry confirmed false positives into 
 - For data changes, verify JPEG/encoded-latent mode, `LatentFolder`, latent shape, numeric labels, caches, and train-safe path derivation.
 - Treat `total_train_batch_size` as global and check world-size divisibility when GPU count changes.
 - For changed wrappers, verify `CONFIG`, `LOG`, owning training entrypoint, fixed interpreters from `scripts/_python_env.sh`, `PROMOE_GPU_IDS_OVERRIDE` / `PROMOE_RESUME` handling, and `scripts/template.sh` behavior.
-- For changed schedules, verify `new_run.sh --dry-run`, YAML-owned GPU IDs, current 4/8-GPU allocator semantics, and the documented historical exception.
+- For changed schedules, verify `new_run.sh --dry-run`, any positive GPU count, placeholder YAML `gpu_ids` fixing world size, and `<desc>.sh` names without slot prefixes. Require a direct `promoe_claim_gpus N` call and `PROMOE_GPU_IDS_OVERRIDE` propagation at launch, retaining manual overrides; legacy fixed-slot wrappers remain valid.
+- Verify the shared shell contract in `AGENTS.md`: combined logs under `logs/`, code-version hashes, same-basename temporary configs, fresh/resume guards, and strict evaluator predicates. Wrapper changes require an updated table-only `commands.md` and adjacent descriptions; `commands.csv` is a separate optional export.
 - Verify output collision handling and `_vN` reruns. Require a same-basename Markdown guide for each new analysis entrypoint and reusable analysis logic in an analysis subpackage.
 
 ### C4: Documentation Consistency

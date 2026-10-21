@@ -128,7 +128,8 @@ Include these rules in Track A's brief and carry confirmed false positives into 
 - Verify JPEG/encoded-latent selection, `LatentFolder`, latent shape, numeric labels, cache behavior, and the documented train-safe path derivation.
 - Treat `total_train_batch_size` as global and check world-size divisibility after GPU changes.
 - Require new all-in-one wrappers to follow `scripts/template.sh`, including fixed interpreters from `scripts/_python_env.sh`, `PROMOE_GPU_IDS_OVERRIDE` / `PROMOE_RESUME` handling, sequential checkpoint loop, repo-root discovery, YAML parsing, and version-sorted evaluation traversal.
-- Require runtime allocation via `scripts/_run_times/new_run.sh --dry-run`, with GPU IDs stored in YAML. Verify output collisions and fresh `_vN` rerun names.
+- Require wrapper creation via `scripts/_run_times/new_run.sh` with `--dry-run` first: any positive GPU count, placeholder YAML `gpu_ids` fixing world size, and `<desc>.sh` names without slot prefixes. Actual IDs come from a direct `promoe_claim_gpus N` call and `PROMOE_GPU_IDS_OVERRIDE` at launch; retain manual overrides and legacy fixed-slot wrappers. Verify output collisions and fresh `_vN` rerun names.
+- Verify the shared shell contract in `AGENTS.md`: combined logs under `logs/`, code-version hashes, same-basename temporary configs, fresh/resume guards, and strict evaluator predicates. Wrapper changes require an updated table-only `commands.md` and adjacent descriptions; `commands.csv` is a separate optional export.
 - Require same-basename Markdown for new analysis entrypoints and reusable analysis logic in subpackages.
 
 ### C4: Documentation Synchronization

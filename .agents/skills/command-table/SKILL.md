@@ -5,7 +5,7 @@ description: Organize ProMoE run-time launch wrappers from a dated scripts/_run_
 
 # Build a Run-Time Command Table
 
-Create one `scripts/_run_times/<date>/commands.csv` from the launch wrappers in that date directory. Read experiment definitions only; write or replace only that CSV.
+Create one `scripts/_run_times/<date>/commands.csv` from the launch wrappers in that date directory. Read experiment definitions only; write or replace only that CSV. This export is separate from the required `commands.md` launch index, which wrapper-creation/rename/removal workflows maintain automatically under `AGENTS.md`'s "Run-Time Command Tables and Descriptions". Do not replace or retire that Markdown table.
 
 ## Establish Context
 
@@ -53,7 +53,7 @@ Map those values to exactly four columns:
 - For a non-generated wrapper without a `Date group:` header or `exec bash` line, trace its actual launch command. Leave unresolvable columns empty and report them.
 - If a semantic script references multiple configs, use its top-level `CONFIG=` assignment.
 - If the config lacks `model_name`, leave `输出位置` empty and report the row.
-- If a legacy `commands.md` exists, report that it may be stale. Do not delete it.
+- Leave `commands.md` intact. If tracing reveals a missing table or an actual stale wrapper reference, report the discrepancy in chat; its existence alone is not a stale-file finding and it must not be described as obsolete.
 
 ## Verify and Report
 

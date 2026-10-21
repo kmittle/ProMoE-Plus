@@ -10,7 +10,7 @@ Move an already-defined experiment to a fresh versioned config basename so a run
 ## Establish Context
 
 1. Work from the repository root.
-2. Read root `AGENTS.md` completely before acting. Read relevant `CLAUDE.md` sections only as supplemental model documentation.
+2. Read root `AGENTS.md` completely before acting, plus `CLAUDE.md`'s "Shell Script Convention" and relevant model documentation. Preserve the current shared template contract when renaming launch definitions.
 3. Read `scripts/check_output_dir.py`, the target config, semantic wrapper, run-time wrapper, model registry entry, and implementation.
 4. Inspect `git status --short` plus relevant staged and unstaged diffs. Preserve unrelated changes; incorporate overlapping user edits into the renamed files.
 5. Use `rg` for searches when available and fall back to `grep` or `find`.
@@ -79,10 +79,10 @@ Do not use `git mv`, because it updates the Git index. Use `apply_patch` to add 
 Update every internal reference with `apply_patch`:
 
 - semantic script `CONFIG=` to the `_vN.yaml` path;
-- semantic script `LOG=` to an aligned `_vN` log name;
+- semantic script `LOG=` to an aligned `_vN` log name under `${REPO_ROOT}/logs/`, retaining the parent-directory creation;
 - each run-time wrapper `exec bash` target to the `_vN` semantic script.
 
-Keep the wrapper header and the top-level config `gpu_ids` unchanged. Do not call `scripts/_run_times/new_run.sh` and do not create another wrapper.
+Keep the wrapper's GPU-count header, claim logic, and top-level config `gpu_ids` unchanged; preserve the fixed assignment on a legacy wrapper. Retain the template's GPU override, fresh/resume guards, strict metric checks, code-version logging, and sequential pipeline. Do not call `scripts/_run_times/new_run.sh` and do not create another wrapper.
 
 ## Validate Without Launching
 
@@ -90,7 +90,7 @@ Keep the wrapper header and the top-level config `gpu_ids` unchanged. Do not cal
 2. Verify each wrapper target exists, its `CONFIG=` target exists, and the registry/model family still matches.
 3. Derive the new output directory with the same rule as `scripts/check_output_dir.py`, treating any top-level `output_dir` as the root before appending `model_name` and the new config basename. Normalize it and require it to differ from the old output directory, then run `python scripts/check_output_dir.py --config <new-config>`. Require `RESULT: OK`; if occupied, advance the config suffix and repeat the coordinated rename.
 4. Derive the expected sample directory as `{output_root}/{model_name}/{new_config_basename}/sample` and verify every renamed semantic wrapper uses it. With a top-level `output_dir`, require inline parsing equivalent to `os.path.join(output_root, model_name, custom_cfg_name, "sample")`, resolving relative results under `REPO_ROOT` while preserving absolute results; repair stale literal `outputs/` logic with `apply_patch` and rerun `bash -n`.
-5. Search all live repository text for exact old basenames and paths, excluding Git history and the generated `commands.csv` / legacy `commands.md` files handled below. Require no stale reference in executable files, configs, or maintained documentation. Update maintained docs that enumerate current launchable commands or paths; preserve historical records that intentionally describe the old run, but report those matches. Avoid naive substring checks that also match `_vN` names.
+5. Search all live repository text for exact old basenames and paths, excluding Git history and the generated `commands.csv` / `commands.md` files handled below. Require no stale reference in executable files, configs, or maintained documentation. Update maintained docs that enumerate current launchable commands or paths; preserve historical records that intentionally describe the old run, but report those matches. Avoid naive substring checks that also match `_vN` names.
 6. Confirm the old output directory was neither modified nor deleted.
 7. Re-run `git status --short` and confirm this workflow did not alter the index. Preserve and report any staged state that existed before the workflow.
 
@@ -100,7 +100,9 @@ Do not run training, sampling, evaluation, preprocessing, or any GPU command.
 
 After each renamed, resumed, or idempotently resolved target wrapper validates, read [`../describe-experiment/SKILL.md`](../describe-experiment/SKILL.md) completely and follow it for that wrapper. This is the Codex composition step corresponding to `$describe-experiment`; create a missing description or overwrite a moved/stale one with text grounded in current code without changing the suffix or wrapper.
 
-If an affected date directory has `commands.csv` or a legacy `commands.md`, report each one as stale because wrapper paths changed. Do not rewrite or delete either file unless the user also requests `$command-table`. When requested, read [`../command-table/SKILL.md`](../command-table/SKILL.md) completely and follow it for each affected date directory; that workflow regenerates `commands.csv` and only reports legacy `commands.md`.
+Create or refresh `commands.md` in every affected date directory after wrapper paths change; repair a missing table for an explicitly resolved target as well. Follow `AGENTS.md`'s "Run-Time Command Tables and Descriptions": table only, exact four columns, plain-text cells without wrapping quotes/backticks, one row per launch wrapper, no helpers or surrounding prose. Re-trace rows to the new configs and confirm no renamed-away launch path remains in the table. Keep current GPU counts and legacy slot labels accurate.
+
+Report an existing `commands.csv` as stale only when affected. Regenerate it only if the user also requests `$command-table`; then read [`../command-table/SKILL.md`](../command-table/SKILL.md) completely and follow it for each affected date directory. CSV export is separate from the required Markdown table.
 
 ## Report
 
@@ -111,6 +113,7 @@ For each experiment, report:
 - the reason for re-bucketing;
 - unchanged GPU count and `gpu_ids`;
 - new output directory;
+- regenerated descriptions and `commands.md` tables;
 - validation results;
 - the new launch command, without executing it.
 

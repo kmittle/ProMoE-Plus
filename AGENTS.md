@@ -55,7 +55,7 @@ Main code layout:
 - `scripts/phase_metric/`: phase-conditioned routing-metric experiments and controls.
 - `scripts/fdrr/`: teacher-free first-order denoising-regret routing and its control.
 - `scripts/regcombo/`: the 2026-10-03 regularizer-combination study (`ProMoE_TC_B_regcombo`): global center + LS-Reg + expert parameter or output repulsion arms, LS-Reg with global counts, and output repulsion with global pooling.
-- `scripts/_run_times/`: timestamped launch indirection for scheduled experiment batches; date directories may also contain generated `commands.md`/`commands.csv` launch tables and `*-describe.txt` experiment notes.
+- `scripts/_run_times/`: dated launch wrappers; each date directory carries a maintained `commands.md` launch table and adjacent `*-describe.txt` experiment notes. `commands.csv` is a separate optional export.
 - `command-tables/`: CSV template assets for run-time command tables.
 - `collapse_smoking_test/`, `collapse_smoking_test_10k/`: crash-diagnosis smoke configs, logs, summaries, and rerun helpers for cross-alignment stability work.
 - `tb_smoke_200/`, `tb_smoke_500/`: TensorBoard/`TrainingMonitor` smoke harnesses for selected cross-alignment configs.
@@ -125,8 +125,8 @@ evaluated at 300K and 500K without a 300K stop, the 2-GPU arms are compared with
 each other rather than with the 4-GPU baseline, and no multi-seed repeat is run.
 
 As of 2026-09-14, only the `HROP` combination was actually launched. Its 300K
-CFG 1.0/1.5 FIDs were `31.19`/`10.07`, both worse than the fresh Base gate
-(`30.58`/`9.59`), so it was abandoned before 500K. The other nine planned
+CFG 1.0/1.5 FIDs were `31.19`/`10.07`; it was abandoned before 500K. These
+also fail the canonical Base gate (`30.86`/`9.73`). The other nine planned
 combination arms were never launched and their configs, wrappers, descriptions,
 and queue supervisor were deleted pending a redesigned study. Do not recreate
 or schedule those arms from the historical design notes without an explicit
@@ -134,10 +134,16 @@ redesign decision.
 
 Adaptive-depth (`scripts/adepth/`) is a separate historical exploration, not
 part of the H/R/O/P factorial study. Its repeated application of the same
-MLP is not evidence of meaningful additional reasoning. Do not launch new
-adaptive-depth variants. An already-running adaptive-depth job must still
-reach its declared 300K evaluation boundary before the 300K FID gate is
+MLP is not evidence of meaningful additional reasoning. New adaptive-depth
+variants require the user to reopen this direction explicitly. An already-running
+adaptive-depth job must still reach its declared 300K evaluation boundary before the 300K FID gate is
 applied; do not stop it early from an intermediate loss or checkpoint.
+
+The canonical ProMoE-TC B baseline is fixed (user rule, 2026-09-21): at 300K,
+FID/IS are `30.86 / 48.35` for CFG 1.0 and `9.73 / 121.25` for CFG 1.5;
+at 500K, they are `24.44 / 60.38` and `6.39 / 154.21`, respectively. The
+separately trained "fresh routing baseline" is void and must not be used for
+comparisons or gates.
 
 Every active combination experiment must be training-from-scratch with
 `global_seed: 0`, global batch `256`, learning rate `1e-4`, and
@@ -145,8 +151,9 @@ Every active combination experiment must be training-from-scratch with
 the user-approved exception: 2 GPUs for its combination arms and the LS-Reg
 global-count run, and 300K + 500K evaluation without a gate). It must evaluate 300K at CFG 1.0 and
 1.5 with 50K samples. Only a candidate whose two 300K FIDs are both strictly
-better than the fresh Base gate may continue to 500K. Do not infer success or
-failure from 50K/200K checkpoints, training loss, or an auxiliary loss alone.
+better than the canonical Base gate (`30.86`/`9.73`) may continue to 500K.
+Do not infer success or failure from 50K/200K checkpoints, training loss, or
+an auxiliary loss alone.
 
 The output bucket must be a real directory under `outputs/`; do not use
 soft-links for experiment results. `/home/dev` must not contain any
@@ -359,26 +366,50 @@ bash tb_smoke_500/run_all.sh
 bash scripts/run_all_infer_eval_500K.sh
 ```
 
-When adding any new train + sample + eval all-in-one `.sh` wrapper, follow the structure and execution pattern of `scripts/template.sh` rather than inventing a new style; this is required for compatibility with another experiment server. All such experimental `.sh` wrappers must use the pinned absolute interpreters: either the template paths (`/mnt/workspace/yujie/.conda/envs/promoe/bin/python` and `/mnt/workspace/yujie/.conda/envs/fid_eval/bin/python`) or the validated paths supplied by `scripts/_python_env.sh`. Do not rely on `conda activate` at runtime.
+### Shell Script Convention
+
+When adding any new train + sample + eval all-in-one `.sh` wrapper, start from the current `scripts/template.sh`; this is required for compatibility with the experiment server. Read `CLAUDE.md`'s "Shell Script Convention" alongside this section. Source `scripts/_python_env.sh` for the pinned absolute interpreters (`/mnt/workspace/yujie/.conda/envs/promoe/bin/python` and `/mnt/workspace/yujie/.conda/envs/fid_eval/bin/python`). Do not re-hardcode them or rely on `conda activate` at runtime.
 
 Template-specific requirements:
 
 - `scripts/template.sh` uses a sequential train-stop-sample/eval-resume loop. For each `step_list_for_sample` item, it trains to that checkpoint, exits, frees GPUs for sample/eval, then resumes training for the next step.
 - New scripts should only change `CONFIG`, `LOG`, and the training entrypoint (`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, or `train_with_mae.py`) unless the experiment genuinely needs extra logic.
 - Preserve `set -euo pipefail`, repo-root discovery via `SCRIPT_DIR` / `REPO_ROOT`, inline Python YAML parsing, absolute Python interpreter paths, and `find ... -name images | sort -V` evaluation traversal.
+- Keep the temporary YAML's basename identical to the original config so `custom_cfg_name` does not change. Every phase sets `resume_checkpoint: True`; intermediate phases use `num_steps = step + 1`, and the final phase uses the original `num_steps`. The fresh-output check, not a per-phase resume flag, ensures a fresh launch starts at step 0.
+- Preserve `PROMOE_GPU_IDS_OVERRIDE` validation and propagation: it must contain distinct GPU IDs and the same count as YAML `gpu_ids`. Write the actual IDs into the temporary training YAML, use them for sampling, and use the first one for evaluation. Preserve the parsed-field count check so a failed inline Python process substitution cannot silently continue.
+- Default `PROMOE_RESUME=0` requires an empty, real output directory. `PROMOE_RESUME=1` requires this run's own checkpoint; if the phase checkpoint exists, skip training, and skip the whole phase only when every requested CFG has valid evaluator metrics. Do not substitute another experiment's checkpoint.
+- Write combined logs to `LOG="${REPO_ROOT}/logs/log_<name>.log"` and create the parent with `mkdir -p "$(dirname "$LOG")"`. Keep per-experiment `training.log` / `sample.log` under its output directory. Logs must not contain ANSI colour codes; retired logs belong under `logs/archived/<date>/` (see `logs/README.md`).
+- Preserve `log_code_version`: each executed phase records the Git commit, modified tracked-file count, root Python and config hashes, and combined `models/*.py` / `repa/*.py` hashes in the combined log.
 - Legacy split scripts such as `scripts/repa/train_repa_B.sh` and `scripts/repa/sample_and_eval_repa_B.sh` predate the template; do not introduce new split-purpose experiment scripts.
-- Prefer `scripts/_python_env.sh` for newer wrappers: it provides the pinned training and evaluation interpreters and fails before touching an output bucket when they are unavailable. Local interpreter fallback requires explicit `PROMOE_ALLOW_LOCAL_FALLBACK=1`.
+- Keep `scripts/_python_env.sh`'s fail-fast behavior before touching an output bucket when pinned interpreters are unavailable. Local interpreter fallback requires explicit `PROMOE_ALLOW_LOCAL_FALLBACK=1`.
 - Reuse the strict evaluator predicates in `scripts/_eval_metric_helpers.sh` (for example `promoe_eval_file_metrics_valid` and `promoe_eval_file_fid`) for gate decisions; do not parse evaluator output with an ad-hoc command that can turn malformed values into zero.
+- The template executes the configured checkpoints; it does not implement the 300K FID gate itself. Preserve or add the required experiment/supervisor gate explicitly before allowing 500K, except for a documented user-approved no-gate study.
 
-Runtime GPU-slot grouping:
+### Run-Time GPU Allocation
 
-- After creating a semantic experiment wrapper under `scripts/<family>/`, allocate its launch wrapper with `scripts/_run_times/new_run.sh --script scripts/<family>/run_<...>.sh [--date YYYY_MM_DD] [--gpus 4|8] [--dry-run]` rather than hand-editing `gpu_ids`.
-- `scripts/_run_times/new_run.sh` patches the experiment YAML `gpu_ids` and writes `scripts/_run_times/<date>/<slot>-<desc>.sh`; GPU assignment lives in YAML, not the wrapper.
-- Slot names map to one physical 8-GPU server: `X.1` means GPUs `0-3`, `X.2` means GPUs `4-7`, and full-slot `X` means GPUs `0-7`.
-- The allocator currently accepts only `--gpus 4` and `--gpus 8`; do not pass `--gpus 2` unless the allocator is changed at the same time. The checked-in `scripts/_run_times/2026_08_05/` batch is a historical, manually repacked exception: `X.1`/`X.2`/`X.3`/`X.4` use `[0,1]`/`[2,3]`/`[4,5]`/`[6,7]` (four 2-GPU jobs per 8-GPU server), while older date directories retain the 4-GPU layout.
-- Allocation is scoped to one date directory only. Do not run jobs from different date directories on the same physical GPUs unless you have checked the assignments manually.
-- Use `--dry-run` first when scheduling a new run-time wrapper so the slot and YAML patch are visible before writing.
+- After creating a semantic script under `scripts/<family>/`, create its launch wrapper with `scripts/_run_times/new_run.sh --script scripts/<family>/run_<...>.sh --gpus N [--date YYYY_MM_DD] [--desc <name>] [--dry-run]`. Use `--dry-run` first, inspect the plan, then write. The allocator accepts any positive integer; experiment defaults are 4 GPUs, or 8 for XL.
+- `new_run.sh` writes placeholder YAML `gpu_ids: [0, ..., N-1]` to fix DDP world size, and creates `scripts/_run_times/<date>/<desc>.sh` with no slot prefix. `--date` only groups files; `--desc` defaults to the distinguishing semantic-script name. It refuses to overwrite an existing wrapper.
+- At launch, the wrapper sources `scripts/_run_times/claim_gpus.sh`, calls `promoe_claim_gpus N` directly (never through command substitution), and exports `PROMOE_GPU_IDS_OVERRIDE` before `exec bash` of the semantic script. A manual override takes precedence; the semantic script still validates its count.
+- Idle GPUs have memory use at or below `PROMOE_GPU_IDLE_MAX_MIB` (default 100 MiB) and no live PID claim. Selection uses a shared `flock` and claims under `/tmp/promoe_gpu_claims`; stale claims are reusable. Too few idle GPUs is a hard failure, not a queue. Do not reimplement this logic in experiment scripts.
+- All arms of one comparison must use the same GPU count and valid global-batch divisibility: per-rank routing statistics change with world size. A 2-GPU arm is not directly comparable with the 4-GPU canonical baseline.
+- Pre-2026-09-23 wrappers retain their legacy slot prefixes and fixed GPU assignments. The `2026_08_05` batch's `.1`/`.2`/`.3`/`.4` prefixes represent historical manual 2-GPU packing; neither legacy layout governs new wrappers.
 - Queue or supervisor scripts that chain experiments must run inside an attached tmux session, hold a repository-local `flock`, and advance only after the preceding wrapper exits. They must not use shell backgrounding (`&`, `nohup`, or detached execution).
+
+### Run-Time Command Tables and Descriptions
+
+Every affected `scripts/_run_times/<date>/` directory must carry `commands.md`. Create or refresh it whenever a wrapper is added, renamed, or removed; `new_run.sh` does not generate it, so the calling workflow must. The file contains only a Markdown table with this exact header, a separator row, and one row per launch wrapper:
+
+```text
+| 实验描述 | git分支 | 启动命令 | 输出位置 |
+|---|---|---|---|
+| <中文实验描述>（N 卡） | <branch> | bash scripts/_run_times/<date>/<desc>.sh | outputs/<model_name>/<custom_cfg_name>/ |
+```
+
+Use plain-text cells with no wrapping quotes or backticks, no title, introduction, or notes. Sort current wrapper filenames; sort legacy slot prefixes naturally, preserving their `Slot X.Y · GPU a-b ·` description prefix. Resolve each row through wrapper → semantic script → YAML, use the current branch unless a per-experiment branch is specified, and derive output paths from the effective output root. Exclude helpers. Put unresolved-row notes in chat.
+
+After creating or re-bucketing a wrapper, generate its adjacent `<wrapper-stem>-describe.txt` with `describe-experiment`. The Markdown table is the maintained launch index; the `command-table` skill separately exports RFC 4180 `commands.csv` for Notion/Excel and does not replace or retire `commands.md`. Report an existing CSV as stale when its wrapper set changes, unless CSV regeneration was also requested.
+
+### Evaluation Environment
 
 Create evaluation env (TensorFlow-based):
 
@@ -410,7 +441,7 @@ python run_eval.py /path/to/generated/images --count 50000 --no-eval
 - Add overrides in YAML and rely on `deep_update` to only replace intended keys.
 
 ## Adding or Rerunning Experiments
-For config-only ablations, create a new YAML and a template-based shell wrapper while keeping `model_name` unchanged. Add config flags with defaults that preserve existing behavior, and allocate a run-time slot through `scripts/_run_times/new_run.sh`.
+For config-only ablations, create a new YAML and a template-based shell wrapper while keeping `model_name` unchanged. Add config flags with defaults that preserve existing behavior, and create a run-time wrapper through `scripts/_run_times/new_run.sh`. If the user asks for only one stage (for example Python only or YAML only), complete that stage without creating later artifacts or launching anything.
 
 For new model variants:
 
@@ -419,7 +450,8 @@ For new model variants:
 3. Add `configs/004_ProMoE_<size>_<variant>.yaml`, keeping `model_name`, config filename, and wrapper name aligned.
 4. Create a `scripts/<family>/run_<size>_<variant>_train_sample_eval.sh` wrapper from `scripts/template.sh`.
 5. Validate with `python -m py_compile <modified_python_files>` and `python scripts/check_output_dir.py --config <config>`.
-6. Allocate the launch wrapper with `scripts/_run_times/new_run.sh --script <wrapper> [--gpus 4|8]`.
+6. Preview and create the launch wrapper with `scripts/_run_times/new_run.sh --script <wrapper> --gpus N`, first with `--dry-run`.
+7. Generate the adjacent `*-describe.txt` and update the date directory's `commands.md`.
 
 Before rerunning an experiment after model-code changes, do not reuse the old config name if an output directory already exists. Use `python scripts/check_output_dir.py --suggest-version <config>` and move the config, semantic script, and run-time wrapper together to a fresh `_vN` name so the new run writes to a clean `outputs/<model_name>/<custom_cfg_name>/` directory.
 
@@ -432,30 +464,30 @@ Use the matching `.agents/skills/<name>/SKILL.md` for the four workflows below. 
 - Use for a new model variant, config-only ablation, experiment config, or all-in-one train + sample + eval wrapper. Distinguish variants that need model code and registry changes from ablations already supported by existing runtime code.
 - Inventory compatible partial work before editing. Reuse a valid partial chain, create only missing artifacts, and make repeated invocations idempotent; never overwrite incompatible files or create a second launcher for the same semantic script and output bucket.
 - Preserve template structure and validate consistency across the model/registry, numeric-prefixed YAML, semantic wrapper, and dated run-time wrapper. Run syntax checks plus `python scripts/check_output_dir.py --config <config>` before allocation.
-- Allocate only when no equivalent run-time wrapper exists. Preview `scripts/_run_times/new_run.sh` with `--dry-run`, inspect the date, slot, `gpu_ids`, script, config, and wrapper, then rerun the same command without `--dry-run`; only 4- and 8-GPU allocations are supported.
-- After the target wrapper validates, compose `describe-experiment` for its adjacent description. If its date directory already contains `commands.csv` or legacy `commands.md`, report those tables as stale but do not rewrite or delete them unless `command-table` was also requested.
+- Allocate only when no equivalent run-time wrapper exists. Preview `scripts/_run_times/new_run.sh` with `--dry-run`, inspect the date, GPU count, placeholder `gpu_ids`, script, config, and wrapper, then rerun the same command without `--dry-run`. Any positive GPU count is supported; actual IDs are claimed at launch.
+- After the target wrapper validates, compose `describe-experiment` for its adjacent description and maintain `commands.md` in the required table-only format. Report an existing `commands.csv` as stale if affected; regenerate that CSV only when `command-table` was also requested.
 
 #### `rerun-experiment`
 
 - Use after model/config semantic changes, or when an unchanged `model_name` and config basename would collide with or resume an old output. Resolve the complete config, semantic-script, dated-wrapper, and description set before editing.
 - Enumerate existing version chains and use `python scripts/check_output_dir.py --suggest-version <config>` to choose a coordinated fresh `_vN` basename unless the user supplied one. Missing or stale descriptions are generated-sidecar repairs and never justify advancing `_vN`.
 - Rename text files with `apply_patch` add/delete operations, not `git mv`, so the Git index is untouched. Update exact `CONFIG=`, `LOG=`, and `exec bash` references in lock-step and preserve executable modes.
-- Keep every existing slot header and YAML `gpu_ids` unchanged, never call `new_run.sh`, and never alter or delete the old output directory. Regenerate each affected description in place after validation and report existing `commands.csv`/`commands.md` as stale.
-- A missing run-time wrapper cannot preserve a slot. Requests for a parallel seed/independent copy, or to keep both old and new launch definitions, also require an explicit handoff to `new-experiment`, which creates a distinct output bucket and allocates a distinct supported slot.
+- Keep the existing GPU-count header, claim logic, and YAML `gpu_ids` unchanged (including fixed assignments on legacy wrappers), never call `new_run.sh`, and never alter or delete the old output directory. Regenerate each affected description and `commands.md` after validation; report an existing CSV as stale unless its regeneration was requested.
+- A missing run-time wrapper requires a handoff to `new-experiment`. Requests for a parallel seed/independent copy, or to keep both old and new launch definitions, likewise use `new-experiment` to create a distinct output bucket and launch wrapper.
 
 #### `command-table`
 
 - For one dated batch, trace each launch wrapper through its semantic script and YAML config, and write or replace only `scripts/_run_times/<date>/commands.csv`.
 - Read `command-tables/command-table-template.csv` and preserve the exact columns `实验描述,git分支,启动命令,输出位置`. Use plain-text cells and RFC 4180 quoting.
-- Sort wrappers by slot in natural order, including historical `.3`/`.4` slots. Use the current Git branch unless the user specifies a per-experiment branch, and derive output as `{output_root}/{model_name}/{config_basename}/`; a top-level `output_dir` changes only `output_root`.
-- Report unresolved rows and any legacy `commands.md` as stale; never delete or rewrite `commands.md` and never launch any listed command.
+- Sort current wrappers by filename and legacy slots naturally, including historical `.3`/`.4` slots. Use the current Git branch unless the user specifies a per-experiment branch, and derive output as `{output_root}/{model_name}/{config_basename}/`; a top-level `output_dir` changes only `output_root`.
+- Report unresolved rows. This CSV-only workflow leaves the required `commands.md` intact; report any actual mismatch, but do not call it obsolete or suggest deleting it. Wrapper-changing workflows maintain that Markdown table automatically.
 
 #### `describe-experiment`
 
 - Trace each dated wrapper through the semantic script, config, registry, model implementation, and relevant project documentation. Ground every claim in inspected code, config, or documentation rather than inferring behavior from filenames.
 - Write Chinese-first bilingual plain text beside the wrapper as `<wrapper-basename>-describe.txt`, with two to four numbered changes in importance order.
 - Compare the experiment with both the base ProMoE TC/EC design and its immediate inheritance parent or meaningful sibling/default flag setting. Claim step-0 equivalence, parameter changes, checkpoint-loading behavior, or train-fresh requirements only when the implementation or documentation proves them.
-- Descriptions are generated sidecars: write only the adjacent `*-describe.txt`, and regenerate a missing or stale description in place without changing the experiment suffix or GPU slot.
+- Descriptions are generated sidecars: write only the adjacent `*-describe.txt`, and regenerate a missing or stale description in place without changing the experiment suffix or GPU allocation.
 
 ## Testing Guidelines
 No dedicated `tests/` directory. Use smoke checks aligned to your change surface:
