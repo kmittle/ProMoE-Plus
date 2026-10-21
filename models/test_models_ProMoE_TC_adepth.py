@@ -4,8 +4,9 @@ import copy
 import unittest
 
 import torch
+from easydict import EasyDict
 
-from models.models_ProMoE_TC_adepth import SparseMoeBlock
+from models.models_ProMoE_TC_adepth import DiT, SparseMoeBlock
 
 
 class AdaptiveDepthInferenceTests(unittest.TestCase):
@@ -37,7 +38,9 @@ class AdaptiveDepthInferenceTests(unittest.TestCase):
         self.hidden[0, :, 1] = torch.linspace(-1, 1, 10)
         self.labels = torch.tensor([1, 1000])
 
-    def forward_with_counts(self, block):
+    def forward_with_counts(self, block, hidden=None, labels=None):
+        hidden = self.hidden if hidden is None else hidden
+        labels = self.labels if labels is None else labels
         calls = {0: [], 2: []}
         handles = []
         for expert_id in calls:
@@ -46,7 +49,7 @@ class AdaptiveDepthInferenceTests(unittest.TestCase):
             handles.append(block.experts[expert_id].register_forward_hook(record))
         try:
             with torch.no_grad():
-                output, _ = block(self.hidden, self.labels)
+                output, _ = block(hidden, labels)
         finally:
             for handle in handles:
                 handle.remove()
@@ -99,6 +102,72 @@ class AdaptiveDepthInferenceTests(unittest.TestCase):
         _, calls = self.forward_with_counts(restored)
         self.assertEqual(calls[0], [8, 2])
         self.assertEqual(restored._depth_step.item(), 300001)
+
+    # Scores are linspace(-1, 1, 10); q=0.2 skips tokens 0:2 and deepens 8:10. These cutoffs
+    # fall between the quota's boundary scores.
+    SKIP_CUTOFF, DEEPEN_CUTOFF = -2.0 / 3.0, 2.0 / 3.0
+
+    def test_thresholds_between_quota_boundaries_reproduce_the_quota(self):
+        self.block._depth_step.fill_(300001)
+        quota = copy.deepcopy(self.block).eval()
+        cutoffs = copy.deepcopy(self.block).eval()
+        cutoffs.set_depth_thresholds(self.SKIP_CUTOFF, self.DEEPEN_CUTOFF)
+        quota_output, quota_calls = self.forward_with_counts(quota)
+        cutoff_output, cutoff_calls = self.forward_with_counts(cutoffs)
+        self.assertEqual(cutoff_calls[0], [8, 2])
+        self.assertEqual(cutoff_calls, quota_calls)
+        torch.testing.assert_close(cutoff_output, quota_output, rtol=0, atol=0)
+
+    def test_thresholds_classify_each_image_on_its_own(self):
+        self.block._depth_step.fill_(300001)
+        alone = self.hidden[:1]
+        paired = self.hidden.clone()
+        paired[1, :, 1] = 2  # a second cond image whose tokens all score above the first's
+        paired_labels = torch.tensor([1, 1])
+
+        cutoffs = copy.deepcopy(self.block).eval()
+        cutoffs.set_depth_thresholds(self.SKIP_CUTOFF, self.DEEPEN_CUTOFF)
+        alone_output, _ = self.forward_with_counts(cutoffs, alone, torch.tensor([1]))
+        paired_output, paired_calls = self.forward_with_counts(cutoffs, paired, paired_labels)
+        self.assertEqual(paired_calls[0], [18, 12])  # 2 skipped; 2 + 10 deepened
+        torch.testing.assert_close(paired_output[:1], alone_output)
+
+        # The quota instead ranks the pair jointly: the first image loses its deepened
+        # tokens to the second and skips four tokens instead of two.
+        quota = copy.deepcopy(self.block).eval()
+        quota_alone, _ = self.forward_with_counts(quota, alone, torch.tensor([1]))
+        quota_paired, quota_calls = self.forward_with_counts(quota, paired, paired_labels)
+        self.assertEqual(quota_calls[0], [16, 4])
+        torch.testing.assert_close(quota_alone, alone_output, rtol=0, atol=0)
+        self.assertFalse(torch.allclose(quota_paired[:1], quota_alone))
+
+    def test_training_ignores_thresholds(self):
+        self.block._depth_step.fill_(300001)
+        plain = copy.deepcopy(self.block).train()
+        cutoffs = copy.deepcopy(self.block).train()
+        cutoffs.set_depth_thresholds(-5.0, 5.0)  # would select no token
+        plain_output, plain_calls = self.forward_with_counts(plain)
+        cutoff_output, cutoff_calls = self.forward_with_counts(cutoffs)
+        self.assertEqual(cutoff_calls[0], [8, 2])
+        self.assertEqual(cutoff_calls, plain_calls)
+        torch.testing.assert_close(cutoff_output, plain_output, rtol=0, atol=0)
+        self.assertEqual(cutoffs._depth_step.item(), 300002)
+
+    def test_threshold_validation(self):
+        with self.assertRaises(ValueError):
+            self.block.set_depth_thresholds(1.0, -1.0)
+        with self.assertRaises(ValueError):
+            self.block.set_depth_thresholds(float("nan"), 0.0)
+        self.block.alloc_mode = "none"
+        with self.assertRaises(ValueError):
+            self.block.set_depth_thresholds(-1.0, 1.0)
+        self.assertIsNone(self.block.depth_skip_threshold)
+
+    def test_current_depth_q_follows_warmup(self):
+        self.block._depth_step.fill_(50)
+        self.assertAlmostEqual(self.block.current_depth_q(), 0.1)
+        self.block._depth_step.fill_(300001)
+        self.assertAlmostEqual(self.block.current_depth_q(), 0.2)
 
     def backward_with_score_grads(self, block):
         scores = []
@@ -186,6 +255,43 @@ class AdaptiveDepthInferenceTests(unittest.TestCase):
             self.assertEqual(default.state_dict().keys(), other.state_dict().keys())
             for name, value in default.state_dict().items():
                 torch.testing.assert_close(value, other.state_dict()[name], rtol=0, atol=0)
+
+
+
+class AdaptiveDepthThresholdConfigTests(unittest.TestCase):
+    def build(self, thresholds=None):
+        moe_config = EasyDict(
+            num_routed_experts=2, moe_intermediate_size=16, shared_expert_intermediate_size=16,
+            top_k=1, router_weight_mode="identity", routing_contrastive_lam=0,
+            interleave=True, init_MoeMLP=False,
+            alloc_mode="fixed_q", depth_q=0.2, depth_warmup=100,
+        )
+        if thresholds is not None:
+            moe_config.depth_infer_thresholds = thresholds
+        torch.manual_seed(0)
+        return DiT(input_size=8, patch_size=2, in_channels=4, hidden_size=16, depth=4,
+                   num_heads=2, MoE_config=moe_config)
+
+    def test_pairs_go_to_moe_blocks_in_order(self):
+        model = self.build([[-1, 1], [-2, 2]])
+        moe_mlps = [block.mlp for block in model.blocks if block.use_moe]
+        self.assertEqual(len(moe_mlps), 2)
+        self.assertEqual((moe_mlps[0].depth_skip_threshold, moe_mlps[0].depth_deepen_threshold), (-1.0, 1.0))
+        self.assertEqual((moe_mlps[1].depth_skip_threshold, moe_mlps[1].depth_deepen_threshold), (-2.0, 2.0))
+        model.eval()
+        with torch.no_grad():
+            output = model(torch.randn(2, 4, 8, 8), torch.tensor([10.0, 900.0]), torch.tensor([3, 1000]))
+        self.assertEqual(tuple(output.shape), (2, 8, 8, 8))
+
+    def test_without_pairs_eval_keeps_the_quota(self):
+        model = self.build()
+        for block in model.blocks:
+            if block.use_moe:
+                self.assertIsNone(block.mlp.depth_skip_threshold)
+
+    def test_pair_count_must_match_moe_blocks(self):
+        with self.assertRaises(ValueError):
+            self.build([[-1, 1]])
 
 
 if __name__ == "__main__":

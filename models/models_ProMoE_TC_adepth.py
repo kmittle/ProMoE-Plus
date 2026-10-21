@@ -37,6 +37,14 @@ from .modules import get_2d_sincos_pos_embed, Attention, modulate, TimestepEmbed
 # RNG for depth_gate, so fresh weights differ from a same-seed base run). q anneals via a
 # per-block step buffer. Config:
 # alloc_mode {none, fixed_q}, depth_q, depth_warmup. (dynamic_reg mode = v2, TODO.)
+#
+# Inference cutoffs. Eval keeps the batch quota by default, but a sampling forward shares
+# one timestep, so the quota forces exactly q skipped and q deepened tokens at every step.
+# A training batch mixes timesteps, and the learned scores move the split with t (300K q0p3,
+# blocks[3]: ~0% skipped at sigma<0.3, 52-65% at sigma>=0.6). MoE_config key
+# depth_infer_thresholds (one [skip, deepen] score pair per MoE block, in block order, from
+# scripts/adepth/calibrate_depth_thresholds.py) makes eval classify each cond token by its
+# own score instead: s < skip -> skip, s > deepen -> deepen. Training always uses the quota.
 # ============================================================================
 
 
@@ -130,8 +138,25 @@ class SparseMoeBlock(nn.Module):
         self.depth_gate = nn.Linear(hidden_size, 1)          # difficulty score s_t (zero-init)
         self.deepen_gain = nn.Parameter(torch.zeros(1))      # deepen 2nd-pass gate (zero-init -> step-0)
         self.register_buffer("_depth_step", torch.zeros(1, dtype=torch.long), persistent=True)
+        # Eval-only score cutoffs (set_depth_thresholds); None keeps the batch quota in eval.
+        self.depth_skip_threshold = None
+        self.depth_deepen_threshold = None
 
         self._init_weights()
+
+    def current_depth_q(self):
+        """The quota after warmup: depth_q * min(1, _depth_step / depth_warmup)."""
+        return self.depth_q * min(1.0, float(self._depth_step.item()) / float(max(1, self.depth_warmup)))
+
+    def set_depth_thresholds(self, skip_threshold, deepen_threshold):
+        """Classify cond tokens in eval by fixed score cutoffs instead of the batch quota."""
+        if self.alloc_mode != "fixed_q":
+            raise ValueError("depth thresholds need alloc_mode='fixed_q'")
+        skip_threshold, deepen_threshold = float(skip_threshold), float(deepen_threshold)
+        if not skip_threshold <= deepen_threshold:  # also rejects NaN
+            raise ValueError(f"skip threshold {skip_threshold} must not exceed deepen threshold {deepen_threshold}")
+        self.depth_skip_threshold = skip_threshold
+        self.depth_deepen_threshold = deepen_threshold
 
     def compute_router(self, hidden_states, labels):
         batch_size, seq_len, _ = hidden_states.shape
@@ -241,7 +266,7 @@ class SparseMoeBlock(nn.Module):
             # _depth_step counts FORWARD passes; == optimizer steps only when grad_mix==1 (the
             # default; our configs don't set grad_mix). Under grad accumulation (grad_mix>1) the
             # warmup finishes ~grad_mix× sooner -> scale depth_warmup.
-            q_cur = self.depth_q * min(1.0, float(self._depth_step.item()) / float(max(1, self.depth_warmup)))
+            q_cur = self.current_depth_q()
             if self.training:
                 self._depth_step += 1
             if n_cond > 0:
@@ -251,7 +276,11 @@ class SparseMoeBlock(nn.Module):
                     tau_full[cond_pos] = 1.0 + (sig - sig.detach())              # fwd == 1 EXACTLY; bwd grad
                 sig_full[cond_pos] = sig
                 k = min(int(round(q_cur * n_cond)), n_cond // 2)                 # #skip == #deepen == k
-                if k > 0:
+                if not self.training and self.depth_skip_threshold is not None:
+                    # Calibrated cutoffs (header): a token's class depends on its own score only.
+                    depth_class[cond_pos[s.float() > self.depth_deepen_threshold]] = 2
+                    depth_class[cond_pos[s.float() < self.depth_skip_threshold]] = 0
+                elif k > 0:
                     # single argsort -> disjoint bottom-k / top-k (robust to ties, e.g. s==0 at init);
                     # k <= n_cond//2 guarantees the two slices never overlap.
                     order = torch.argsort(s)                                     # ascending
@@ -478,6 +507,16 @@ class DiT(nn.Module):
             DiTBlock(hidden_size, num_heads // (1 if use_moe_flag[i] else 1), head_dim=head_dim, mlp_ratio=mlp_ratio, qk_norm=qk_norm, 
                      use_swiglu=use_swiglu, MoE_config=MoE_config, use_moe=use_moe_flag[i]) for i in range(depth)
         ])
+        # Calibrated eval cutoffs, one [skip, deepen] pair per MoE block in block order (header).
+        depth_infer_thresholds = MoE_config.get("depth_infer_thresholds")
+        if depth_infer_thresholds is not None:
+            moe_mlps = [block.mlp for block in self.blocks if block.use_moe]
+            if len(depth_infer_thresholds) != len(moe_mlps):
+                raise ValueError(
+                    f"depth_infer_thresholds has {len(depth_infer_thresholds)} pairs for {len(moe_mlps)} MoE blocks"
+                )
+            for mlp, (skip_threshold, deepen_threshold) in zip(moe_mlps, depth_infer_thresholds):
+                mlp.set_depth_thresholds(skip_threshold, deepen_threshold)
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
         self.init_MoeMLP= MoE_config.init_MoeMLP
         self.initialize_weights()
