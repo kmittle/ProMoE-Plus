@@ -1,0 +1,8 @@
+实验 / Experiment: B_adepth_q0p3_per_image_ste
+model_name: ProMoE_TC_B_adepth  |  config: configs/004_ProMoE_B_adepth_q0p3_per_image_ste.yaml
+基线 / Baseline: 基础 ProMoE-TC（条件/无条件分流、余弦原型路由、top-1 专家和 shared expert）；直接父变体 / Parent: adaptive-depth q=0.3，保留原 STE、在每个 rank 的整个条件 token batch 内排序。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. depth_rank_scope=image：训练和推理都在每张条件图内部独立排序。保持 depth_q=0.3、depth_warmup=5000，每张图各取最低 q 比例跳过 routed FFN、最高 q 比例重复同一个 top-1 FFN，中间执行一次；名额按图取整且 skip 与 deepen 数量相等。等分时按图内 token 顺序决定名额，深度选择不再与其他图竞争。shared expert 和无条件分支保持原逻辑，未设置 depth_infer_thresholds。
+2. depth_keep_ste=True：保留原方案的梯度机制，normal 和 deepen token 的第一次 FFN 均乘前向值为 1 的 STE 系数，打分器同时接收第一次 STE 和 loop token 第二次 sigmoid 分数 p 的梯度。第二次 FFN 仍保留原来的路由权重和 deepen_gain。排序范围开关不增加参数、不改变初始化。
+3. 独立输出目录从零训练：global_seed=0、global batch=256、4 卡；训练至 300K 后，以 CFG 1.0/1.5 各采样 50K 张评估，不自动继续到 500K。已有 batch 排序 STE 方案是排序范围的参照；与 B_adepth_q0p3_p_only 图内排序组的实验配置仅 depth_keep_ste 不同，用于比较打分器的梯度来源。

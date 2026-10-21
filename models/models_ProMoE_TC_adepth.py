@@ -9,7 +9,8 @@ from .modules import get_2d_sincos_pos_embed, Attention, modulate, TimestepEmbed
 # ProMoE-TC Adaptive-FFN-Depth variant (改进组三) — MoD-style per-token routed-FFN depth.
 #
 # Per MoE block a lightweight `depth_gate = Linear(d,1)` scores each COND token
-# (difficulty s_t). Cond tokens are split (batch-flattened ranking) into 3 tiers by
+# (difficulty s_t). Cond tokens are split into 3 tiers by ranking within the local
+# batch by default, or within each image with depth_rank_scope="image", using
 # a fixed quota q (alloc_mode="fixed_q"): bottom-q -> SKIP (0 routed passes, real
 # compute skip), middle -> NORMAL (1 pass, == base), top-q -> DEEPEN (2 passes; the
 # 2nd re-applies the SAME top-1 routed expert to x + rw·E(x)). #skip == #deepen == k
@@ -36,9 +37,11 @@ from .modules import get_2d_sincos_pos_embed, Attention, modulate, TimestepEmbed
 # matches when base weights are loaded — like any added-param variant, a fresh init draws extra
 # RNG for depth_gate, so fresh weights differ from a same-seed base run). q anneals via a
 # per-block step buffer. Config:
-# alloc_mode {none, fixed_q}, depth_q, depth_warmup. (dynamic_reg mode = v2, TODO.)
+# alloc_mode {none, fixed_q}, depth_q, depth_warmup, depth_rank_scope {batch, image}.
+# (dynamic_reg mode = v2, TODO.)
 #
-# Inference cutoffs. Eval keeps the batch quota by default, but a sampling forward shares
+# Inference cutoffs. Eval keeps the configured ranking scope by default. With batch
+# ranking, a sampling forward shares
 # one timestep, so the quota forces exactly q skipped and q deepened tokens at every step.
 # A training batch mixes timesteps, and the learned scores move the split with t (300K q0p3,
 # blocks[3]: ~0% skipped at sigma<0.3, 52-65% at sigma>=0.6). MoE_config key
@@ -91,6 +94,7 @@ class SparseMoeBlock(nn.Module):
         depth_q=0.25,
         depth_warmup=5000,
         depth_keep_ste=True,
+        depth_rank_scope="batch",
         **kwargs,
     ):
         super().__init__()
@@ -133,12 +137,15 @@ class SparseMoeBlock(nn.Module):
         if not isinstance(depth_keep_ste, bool):
             raise TypeError("depth_keep_ste must be a bool")
         self.depth_keep_ste = depth_keep_ste
+        if depth_rank_scope not in ("batch", "image"):
+            raise ValueError("depth_rank_scope must be 'batch' or 'image'")
+        self.depth_rank_scope = depth_rank_scope
         if alloc_mode != "none":
             assert top_k == 1, "adaptive depth (deepen re-applies the top-1 expert) requires top_k == 1"
         self.depth_gate = nn.Linear(hidden_size, 1)          # difficulty score s_t (zero-init)
         self.deepen_gain = nn.Parameter(torch.zeros(1))      # deepen 2nd-pass gate (zero-init -> step-0)
         self.register_buffer("_depth_step", torch.zeros(1, dtype=torch.long), persistent=True)
-        # Eval-only score cutoffs (set_depth_thresholds); None keeps the batch quota in eval.
+        # Eval-only score cutoffs; None keeps the configured ranking scope in eval.
         self.depth_skip_threshold = None
         self.depth_deepen_threshold = None
 
@@ -149,7 +156,7 @@ class SparseMoeBlock(nn.Module):
         return self.depth_q * min(1.0, float(self._depth_step.item()) / float(max(1, self.depth_warmup)))
 
     def set_depth_thresholds(self, skip_threshold, deepen_threshold):
-        """Classify cond tokens in eval by fixed score cutoffs instead of the batch quota."""
+        """Classify cond tokens in eval by fixed score cutoffs instead of a ranked quota."""
         if self.alloc_mode != "fixed_q":
             raise ValueError("depth thresholds need alloc_mode='fixed_q'")
         skip_threshold, deepen_threshold = float(skip_threshold), float(deepen_threshold)
@@ -275,11 +282,21 @@ class SparseMoeBlock(nn.Module):
                 if self.depth_keep_ste:
                     tau_full[cond_pos] = 1.0 + (sig - sig.detach())              # fwd == 1 EXACTLY; bwd grad
                 sig_full[cond_pos] = sig
-                k = min(int(round(q_cur * n_cond)), n_cond // 2)                 # #skip == #deepen == k
+                rank_size = seq_len if self.depth_rank_scope == "image" else n_cond
+                k = min(int(round(q_cur * rank_size)), rank_size // 2)           # #skip == #deepen per group
                 if not self.training and self.depth_skip_threshold is not None:
                     # Calibrated cutoffs (header): a token's class depends on its own score only.
                     depth_class[cond_pos[s.float() > self.depth_deepen_threshold]] = 2
                     depth_class[cond_pos[s.float() < self.depth_skip_threshold]] = 0
+                elif k > 0 and self.depth_rank_scope == "image":
+                    # Labels select whole images, so each row contains one cond image.
+                    # Stable ties use token order within that image, independent of peers.
+                    image_pos = cond_pos.view(-1, seq_len)
+                    order = torch.argsort(s.view(-1, seq_len), dim=1, stable=True)
+                    deepen_pos = image_pos.gather(1, order[:, -k:]).reshape(-1)
+                    skip_pos = image_pos.gather(1, order[:, :k]).reshape(-1)
+                    depth_class[deepen_pos] = 2
+                    depth_class[skip_pos] = 0
                 elif k > 0:
                     # single argsort -> disjoint bottom-k / top-k (robust to ties, e.g. s==0 at init);
                     # k <= n_cond//2 guarantees the two slices never overlap.

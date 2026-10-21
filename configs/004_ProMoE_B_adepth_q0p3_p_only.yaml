@@ -1,4 +1,4 @@
-# Scorer-gradient ablation: only the looped-token second-pass p trains the scorer.
+# Per-image scorer-gradient ablation: only the looped-token second-pass p trains the scorer.
 # Train from scratch through checkpoint 300000, then evaluate both CFG values.
 model_name: "ProMoE_TC_B_adepth"
 
@@ -40,6 +40,7 @@ DiT_B_config:
     depth_q: 0.3
     depth_warmup: 5000
     depth_keep_ste: False  # True: first-pass STE + second-pass p; False: second-pass p only.
+    depth_rank_scope: image  # Rank conditional tokens separately within each image.
 
 ###### For sample
 step_list_for_sample: [300000]

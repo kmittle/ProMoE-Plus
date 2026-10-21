@@ -1,4 +1,4 @@
-"""Regression tests for adaptive-depth inference and scorer-gradient ablations."""
+"""Regression tests for adaptive-depth inference, ranking, and scorer gradients."""
 
 import copy
 import unittest
@@ -169,6 +169,88 @@ class AdaptiveDepthInferenceTests(unittest.TestCase):
         self.block._depth_step.fill_(300001)
         self.assertAlmostEqual(self.block.current_depth_q(), 0.2)
 
+    def test_image_ranking_matches_individual_images_in_train_and_eval(self):
+        second = self.hidden[:1].clone()
+        second[0, :, 1] = torch.linspace(11, 9, 10)
+        # Keep an unconditional image between the two conditional images.
+        hidden = torch.cat((self.hidden, second))
+        labels = torch.tensor([1, 1000, 2])
+        for training in (True, False):
+            for tied_scores in (False, True):
+                with self.subTest(training=training, tied_scores=tied_scores):
+                    block = copy.deepcopy(self.block).train(training)
+                    block.depth_rank_scope = "image"
+                    block._depth_step.fill_(300001)
+                    if tied_scores:
+                        with torch.no_grad():
+                            block.depth_gate.weight.zero_()
+                    reference = copy.deepcopy(block)
+                    # With distinct scores, the original single-image batch ranking
+                    # gives an independent reference for the intended selection.
+                    if not tied_scores:
+                        reference.depth_rank_scope = "batch"
+                    individual = torch.cat([
+                        self.forward_with_counts(reference, hidden[i:i + 1], labels[i:i + 1])[0]
+                        for i in range(len(labels))
+                    ])
+                    together, calls = self.forward_with_counts(block, hidden, labels)
+                    torch.testing.assert_close(together, individual)
+                    self.assertEqual(calls[0], [16, 4])
+                    self.assertEqual(calls[2], [10])
+                    permutation = torch.tensor([2, 0, 1])
+                    permuted, _ = self.forward_with_counts(block, hidden[permutation], labels[permutation])
+                    torch.testing.assert_close(permuted, together[permutation])
+
+    def test_image_quota_rounding_warmup_and_small_sequences(self):
+        cases = ((3, 100, 0.2, 1), (1, 100, 0.5, 0), (3, 100, 0.5, 1),
+                 (10, 50, 0.2, 1), (10, 0, 0.2, 0))
+        for seq_len, step, q, skipped in cases:
+            with self.subTest(seq_len=seq_len, step=step, q=q):
+                block = copy.deepcopy(self.block).eval()
+                block.depth_rank_scope = "image"
+                block.depth_q = q
+                block._depth_step.fill_(step)
+                _, calls = self.forward_with_counts(
+                    block, self.hidden[:, :seq_len].contiguous(), torch.tensor([1, 2]))
+                expected = [2 * (seq_len - skipped)]
+                if skipped:
+                    expected.append(2 * skipped)
+                self.assertEqual(calls[0], expected)
+                self.assertEqual(sum(calls[0]), 2 * seq_len)
+                self.assertEqual(block._depth_step.item(), step)
+
+    def test_image_ranking_leaves_all_unconditional_batches_unchanged(self):
+        for training in (True, False):
+            with self.subTest(training=training):
+                block = copy.deepcopy(self.block).train(training)
+                block.depth_rank_scope = "image"
+                block._depth_step.fill_(300001)
+                plain = copy.deepcopy(block)
+                plain.alloc_mode = "none"
+                labels = torch.full_like(self.labels, 1000)
+                output, calls = self.forward_with_counts(block, labels=labels)
+                expected, _ = self.forward_with_counts(plain, labels=labels)
+                torch.testing.assert_close(output, expected, rtol=0, atol=0)
+                self.assertEqual(calls[2], [20])
+                self.assertEqual(block._depth_step.item(), 300001 + int(training))
+
+    def test_image_ranking_retains_first_pass_ste_for_normal_and_loop_tokens(self):
+        self.block.depth_rank_scope = "image"
+        self.block._depth_step.fill_(300001)
+        # Suppress the second-pass scorer gradient to isolate the original STE.
+        with torch.no_grad():
+            self.block.deepen_gain.zero_()
+        _, score_grads, _ = self.backward_with_score_grads(self.block)
+        self.assertTrue(self.block.depth_keep_ste)
+        self.assertEqual(torch.count_nonzero(score_grads[:2]).item(), 0)
+        self.assertEqual(torch.count_nonzero(score_grads[2:8]).item(), 6)
+        self.assertEqual(torch.count_nonzero(score_grads[8:]).item(), 2)
+
+    def test_invalid_ranking_scope_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "depth_rank_scope"):
+            SparseMoeBlock(num_routed_experts=2, hidden_size=8, moe_intermediate_size=16,
+                           shared_expert_intermediate_size=16, depth_rank_scope="invalid")
+
     def backward_with_score_grads(self, block):
         scores = []
 
@@ -235,7 +317,7 @@ class AdaptiveDepthInferenceTests(unittest.TestCase):
         self.assertEqual(eval_calls[2], [10])
         self.assertEqual(restored._depth_step.item(), 300001)
 
-    def test_ste_flag_preserves_initial_weights_and_rng(self):
+    def test_depth_options_preserve_initial_weights_and_rng(self):
         def construct(**kwargs):
             torch.manual_seed(2718)
             block = SparseMoeBlock(
@@ -248,9 +330,15 @@ class AdaptiveDepthInferenceTests(unittest.TestCase):
         default, default_rng = construct()
         explicit, explicit_rng = construct(depth_keep_ste=True)
         p_only, p_only_rng = construct(depth_keep_ste=False)
+        batch, batch_rng = construct(depth_rank_scope="batch")
+        image, image_rng = construct(depth_rank_scope="image")
         self.assertTrue(default.depth_keep_ste)
         self.assertFalse(p_only.depth_keep_ste)
-        for other, rng in ((explicit, explicit_rng), (p_only, p_only_rng)):
+        self.assertEqual(default.depth_rank_scope, "batch")
+        self.assertEqual(image.depth_rank_scope, "image")
+        self.assertTrue(image.depth_keep_ste)
+        for other, rng in ((explicit, explicit_rng), (p_only, p_only_rng),
+                           (batch, batch_rng), (image, image_rng)):
             torch.testing.assert_close(default_rng, rng, rtol=0, atol=0)
             self.assertEqual(default.state_dict().keys(), other.state_dict().keys())
             for name, value in default.state_dict().items():
@@ -258,8 +346,8 @@ class AdaptiveDepthInferenceTests(unittest.TestCase):
 
 
 
-class AdaptiveDepthThresholdConfigTests(unittest.TestCase):
-    def build(self, thresholds=None):
+class AdaptiveDepthConfigTests(unittest.TestCase):
+    def build(self, thresholds=None, **moe_overrides):
         moe_config = EasyDict(
             num_routed_experts=2, moe_intermediate_size=16, shared_expert_intermediate_size=16,
             top_k=1, router_weight_mode="identity", routing_contrastive_lam=0,
@@ -268,6 +356,7 @@ class AdaptiveDepthThresholdConfigTests(unittest.TestCase):
         )
         if thresholds is not None:
             moe_config.depth_infer_thresholds = thresholds
+        moe_config.update(moe_overrides)
         torch.manual_seed(0)
         return DiT(input_size=8, patch_size=2, in_channels=4, hidden_size=16, depth=4,
                    num_heads=2, MoE_config=moe_config)
@@ -292,6 +381,15 @@ class AdaptiveDepthThresholdConfigTests(unittest.TestCase):
     def test_pair_count_must_match_moe_blocks(self):
         with self.assertRaises(ValueError):
             self.build([[-1, 1]])
+
+    def test_image_ranking_and_ste_reach_every_moe_block(self):
+        model = self.build(depth_rank_scope="image", depth_keep_ste=True)
+        moe_mlps = [block.mlp for block in model.blocks if block.use_moe]
+        self.assertEqual(len(moe_mlps), 2)
+        for mlp in moe_mlps:
+            self.assertEqual(mlp.depth_rank_scope, "image")
+            self.assertTrue(mlp.depth_keep_ste)
+            self.assertIsNone(mlp.depth_skip_threshold)
 
 
 if __name__ == "__main__":
