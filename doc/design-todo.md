@@ -7,9 +7,9 @@
 > **目录 / Index**（历史独立改进组；当前优先做补测和组合消融）：
 > 1. **改进组一 · DAG-fuse**（shared↔conditional 单向融合）—— ✅ 已实现 + 验证 + **已 push**（`ProMoE_TC_B_dagfuse`，3 臂）
 > 2. **改进组二 · lbcontra**（路由对比损失负载均衡）—— ✅ 已实现 + 验证 + **已 push**（`ProMoE_TC_B_lbcontra`，13 run）
-> 3. **改进组三 · adaptive-depth**（token 自适应跳过 / 加深 FFN，MoD 式）—— ✅ 已实现 + 验证 + **已 push**（`ProMoE_TC_B_adepth`，fixed_q，扫 depth_q ×4）
+> 3. **改进组三 · adaptive-depth**（token 自适应跳过 / 加深 FFN，MoD 式）—— ✅ 已实现 + 验证 + **已 push**（`ProMoE_TC_B_adepth`，fixed_q，扫 depth_q ×4）。**更正（2026-10-21）**：此前所有 adepth 的 FID/IS 都是推理时 q=0（既不跳过也不加深）测出来的，作废。`b76a3ef` 让推理也按 checkpoint 的配额执行，300K 重评（本地评测文件，`outputs/ProMoE_TC_B_adepth/reeval_20261020/`）CFG 1.0 / 1.5 的 FID 为 q0p1 31.65 / 10.29、q0p2 31.97 / 10.40、q0p3 30.71 / 10.11。但采样时同一 batch 共用一个 timestep，配额会让每一步都恰好跳过 q、加深 q，而训练 batch 混合多个 t，学到的跳过/加深比例随 t 变化，所以仍不一致；`4d5957b` 加了按校准分数阈值推理，评测见 `outputs/ProMoE_TC_B_adepth/reeval_threshold_20261021/`。
 > 4. **改进组四 · lossfree**（无损路由负载均衡，DeepSeek arXiv 2408.15664）—— ✅ 已实现 + 验证（`ProMoE_TC_B_lossfree`，扫 u ×3）；未提交（本次新增）
-> 5. **当前任务 · 300K 门禁与四点组合**——对尚未判定的候选先执行 300K 门禁；已淘汰 `adepth_q0p2`、`expert_contra_param_cos` 和 `lossfree_u1e2_credit_control`，不再续训。四点组合只跑了 `H+R+O+P`，300K 门禁未通过（CFG 1.0 / 1.5 的 FID 为 31.19 / 10.07，基线为 30.86 / 9.73）；其余 9 个从未启动的组合臂（H、H+R、H+O、H+P、H+O+P、H+R+O、H+R+P，以及 `HO_norm`、`HROP_norm`）已于 2026-09-14 连同配置、脚本、队列和只给它们用的模型开关一起删除，组合方式待重新设计。
+> 5. **当前任务 · 300K 门禁与四点组合**——对尚未判定的候选先执行 300K 门禁；已淘汰 `adepth_q0p2`、`expert_contra_param_cos` 和 `lossfree_u1e2_credit_control`，不再续训（`adepth_q0p2` 的淘汰依据是 q=0 推理的无效评测，见第 3 条更正）。四点组合只跑了 `H+R+O+P`，300K 门禁未通过（CFG 1.0 / 1.5 的 FID 为 31.19 / 10.07，基线为 30.86 / 9.73）；其余 9 个从未启动的组合臂（H、H+R、H+O、H+P、H+O+P、H+R+O、H+R+P，以及 `HO_norm`、`HROP_norm`）已于 2026-09-14 连同配置、脚本、队列和只给它们用的模型开关一起删除，组合方式待重新设计。
 > 6. **当前任务 · EC 混合训练（2026-09-14）**——在 TC 训练中混入 Expert-Choice：系列一混合 TC/EC 路由对比损失，系列二把一定比例的 step 换成完整 EC step；共 11 个，每个 2 卡，按用户决定不设 300K 门禁、只在 500K 采样评测。见文末同名章节。
 > 7. **工程改进 · 全局类中心（2026-09-14）**——路由对比损失的专家类中心改用整个 global batch 计算（各卡同步 token 之和与个数）；4 卡、与基线同设置，300K 和 500K 都评测、不自动停。见文末同名章节。
 > 8. **当前任务 · 正则组合消融（2026-10-03）**——按用户新方案重做组合：每个组合臂默认开 global center，异构专家放最后；先做两两组合：LS-Reg + 专家参数正则、LS-Reg + 专家输出正则，各 4 臂（锚点 + 3 个 τ 扫描），每臂 2 卡；另有 LS-Reg 全局计数（2 卡）和专家输出正则全局 pooling（4 卡）两个独立研究。300K 和 500K 都评测、不设门禁。见文末同名章节。
