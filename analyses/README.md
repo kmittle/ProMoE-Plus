@@ -5,6 +5,7 @@ Each Python entrypoint in this directory has a matching Markdown guide with the 
 
 ## Entry Scripts
 
+- [`run_image_expert_benchmark.py`](run_image_expert_benchmark.py): four-GPU DDP training-step comparison of image-expert bmm and loop backends. See [`run_image_expert_benchmark.md`](run_image_expert_benchmark.md).
 - [`run_tokenwise_tsne.py`](/mnt/miah204/bycao/ProMoE-Plus/analyses/run_tokenwise_tsne.py): token-wise routing t-SNE during sampling. See [`run_tokenwise_tsne.md`](/mnt/miah204/bycao/ProMoE-Plus/analyses/run_tokenwise_tsne.md).
 - [`run_samplewise_pooled_tsne.py`](/mnt/miah204/bycao/ProMoE-Plus/analyses/run_samplewise_pooled_tsne.py): sample-wise t-SNE based on pooled block token features. See [`run_samplewise_pooled_tsne.md`](/mnt/miah204/bycao/ProMoE-Plus/analyses/run_samplewise_pooled_tsne.md).
 - [`run_imagewise_tsne.py`](/mnt/miah204/bycao/ProMoE-Plus/analyses/run_imagewise_tsne.py): image-wise t-SNE based on pretrained image encoder features from generated PNGs. See [`run_imagewise_tsne.md`](/mnt/miah204/bycao/ProMoE-Plus/analyses/run_imagewise_tsne.md).

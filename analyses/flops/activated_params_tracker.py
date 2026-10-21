@@ -3,6 +3,8 @@
 For dense models (no MoE), all parameters are activated every forward pass.
 For MoE models, only a subset of experts is activated per forward pass:
 - Shared expert: always activated
+- Image-wise pools: only experts assigned at least one image are activated;
+  conditional-only pooling and routing parameters are inactive for all-uncond input
 - Routed experts: only experts that receive actual tokens are activated
   (the remaining experts receive a dummy zero-input forward whose output
   is discarded; those are NOT counted as activated)
@@ -13,6 +15,7 @@ us exactly which experts received real tokens, with no heuristics.
 """
 
 from analyses.flops.tracking_utils import find_moe_blocks
+from analyses.flops.image_expert_support import find_image_expert_pools
 
 
 class ActivatedParamsTracker:
@@ -33,6 +36,8 @@ class ActivatedParamsTracker:
         self.moe_blocks = find_moe_blocks(model)
         # Per-MoE-block: param count of each expert (indexed by expert id)
         self._expert_params = {}  # block_idx -> list[int]
+        self._image_expert_params = {}  # (block_idx, module_path) -> list[int]
+        self._image_router_params = {}  # (block_idx, module_path) -> int
         # Non-MoE parameter count (always activated, includes shared experts)
         self._non_moe_params = 0
         # Per-forward records: which experts were activated in each MoE block
@@ -55,20 +60,37 @@ class ActivatedParamsTracker:
 
     def _compute_param_breakdown(self):
         """Separate total params into non-MoE (always-on) and per-expert params."""
+        self._expert_params.clear()
+        self._image_expert_params.clear()
+        self._image_router_params.clear()
         for block_idx, moe_module in self.moe_blocks:
             expert_params_list = []
             for expert in moe_module.experts:
                 p_count = sum(p.numel() for p in expert.parameters())
                 expert_params_list.append(p_count)
             self._expert_params[block_idx] = expert_params_list
+            for name, pool in find_image_expert_pools(moe_module):
+                key = (block_idx, name)
+                self._image_expert_params[key] = [
+                    sum(p.numel() for p in expert.parameters())
+                    for expert in pool.experts
+                ]
+                self._image_router_params[key] = (
+                    sum(p.numel() for p in pool.parameters())
+                    - sum(self._image_expert_params[key])
+                )
 
         # non_moe_params = total - routed expert params
-        # (shared expert is always activated, so it stays in the "always-on" base)
+        # Fixed shared experts stay always-on; routed image experts do not.
         total_params = sum(p.numel() for p in self.model.parameters())
         routed_expert_params = sum(
             sum(ep) for ep in self._expert_params.values()
         )
-        self._non_moe_params = total_params - routed_expert_params
+        image_expert_params = sum(sum(ep) for ep in self._image_expert_params.values())
+        image_router_params = sum(self._image_router_params.values())
+        self._non_moe_params = (
+            total_params - routed_expert_params - image_expert_params - image_router_params
+        )
 
     def _patch_forward(self, block_idx, moe_module):
         """Patch SparseMoeBlock.forward to capture routing decisions."""
@@ -107,6 +129,11 @@ class ActivatedParamsTracker:
             if 'expert_indices' in captured:
                 activated = set(captured['expert_indices'].unique().tolist())
                 tracker._current_forward[block_idx] = activated
+            for name, pool in find_image_expert_pools(moe_module):
+                if pool.last_expert_indices is not None:
+                    tracker._current_forward[("image", block_idx, name)] = set(
+                        pool.last_expert_indices.unique().tolist()
+                    )
 
             return result
 
@@ -139,6 +166,12 @@ class ActivatedParamsTracker:
                 for eid in activated_experts:
                     if eid < len(expert_params_list):
                         activated += expert_params_list[eid]
+            for key, expert_params_list in self._image_expert_params.items():
+                selected = record.get(("image", *key), set())
+                if selected:
+                    activated += self._image_router_params[key]
+                for eid in selected:
+                    activated += expert_params_list[eid]
             activated_list.append(activated)
         return activated_list
 

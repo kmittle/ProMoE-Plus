@@ -1,0 +1,9 @@
+实验 / Experiment: B_shared_plus_cond_image_e4
+model_name: ProMoE_TC_B_shared_plus_cond_image  |  config: configs/004_ProMoE_B_shared_plus_cond_image_e4.yaml
+基线 / Baseline: 基础 ProMoE-TC（条件/无条件分流、余弦原型 token 路由、固定 shared expert 和 routing contrastive）；直接父变体 / Parent: 基础 ProMoE-TC，复用 image_shared 的图级 pooling、专家池和对比路由模块。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 保留处理所有图像的固定 shared expert，额外增加独立的 4 个 image-wise 专家，每张 conditional 图像 top-1 选择一个专家处理全部 tokens。与 B_image_shared_e4 的“替换共享分支、cond/uncond 都图级路由”不同，本方案在 label dropout 后筛选 cond 图像；uncond 不进入新增 pooling、图级路由、image FFN 或图级对比损失，只经过原有 shared 和专用 uncond FFN。
+2. 按用户确定的 FFN 预算分配宽度：B 模型 dense FFN hidden dim=3072，shared_expert_intermediate_size=1536、uncond_expert_intermediate_size=1536 保持 dense 的 1/2；moe_intermediate_size=768、image_expert_intermediate_size=768 各为 dense 的 1/4。cond 的 1536+768+768 和 uncond 的 1536+1536 均为 3072，只对齐 FFN 主矩阵计算；cross-attn pooling 和新增图级路由另有开销，不声称完整模型 FLOPs 严格不变。
+3. 其余图级机制沿用 B_image_shared_e4：单个 learned query 做 cross-attn pooling 后接 Linear，与独立 image cluster_centers 计算余弦 top-1，分数乘在专家输出上；同一基线 routing contrastive 目标用于 cond image embeddings，系数 1.0、温度 0.07。默认 image_expert_backend=bmm，loop 共享参数及路由；FLOPs 自动切换 loop 并还原，全 uncond 输入不计新增分支的 activated params。
+4. 从零训练：seed=0、global batch=256、4 卡，300K 时以 CFG 1.0/1.5 各采样 50K 张，不自动继续至 500K。模型前向沿用基线的 attention、残差和标签丢弃流程，不加入 adaptive-depth。

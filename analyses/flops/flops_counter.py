@@ -15,6 +15,12 @@ from thop.vision.basic_hooks import (
     count_softmax,
 )
 
+from analyses.flops.image_expert_support import (
+    IMAGE_EXPERT_CUSTOM_OPS,
+    restore_backends,
+    use_loop_backend,
+)
+
 
 class FLOPsAccumulator:
     """Accumulates FLOPs across multiple forward passes of a model.
@@ -28,8 +34,9 @@ class FLOPsAccumulator:
 
     def __init__(self, model, custom_ops=None):
         self.model = model
-        self.custom_ops = custom_ops or {}
+        self.custom_ops = {**IMAGE_EXPERT_CUSTOM_OPS, **(custom_ops or {})}
         self._hooks = []
+        self._previous_image_backends = []
         self.total_flops = 0
         self._started = False
 
@@ -39,9 +46,12 @@ class FLOPsAccumulator:
             return
         self._started = True
         self._hooks = []
+        self._previous_image_backends = use_loop_backend(self.model)
 
         def _add_hooks(module):
-            if len(list(module.children())) > 0:
+            # Composite image modules count only their functional attention/router
+            # MACs; their child Linear modules are counted by the usual hooks.
+            if len(list(module.children())) > 0 and type(module) not in self.custom_ops:
                 return
 
             # thop hooks accumulate into module.total_ops (use plain attr, not buffer,
@@ -68,7 +78,11 @@ class FLOPsAccumulator:
                 handle = module.register_forward_hook(fn)
                 self._hooks.append(handle)
 
-        self.model.apply(_add_hooks)
+        try:
+            self.model.apply(_add_hooks)
+        except Exception:
+            self.stop()
+            raise
 
     def collect(self):
         """Collect and accumulate FLOPs from all modules since last collect() call."""
@@ -89,6 +103,8 @@ class FLOPsAccumulator:
         for h in self._hooks:
             h.remove()
         self._hooks.clear()
+        restore_backends(self._previous_image_backends)
+        self._previous_image_backends.clear()
         self._started = False
 
     def reset(self):

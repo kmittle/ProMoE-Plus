@@ -58,6 +58,8 @@ from models.models_TCDiT import DiT as TCDiT
 from models.models_ECDiT import DiT as ECDiT
 from models.models_DiffMoE import DiT as DiffMoE
 from models.models_ProMoE_TC import DiT as ProMoE_TC
+from models.models_ProMoE_TC_image_shared import DiT as ProMoE_TC_image_shared
+from models.models_ProMoE_TC_shared_plus_cond_image import DiT as ProMoE_TC_shared_plus_cond_image
 from models.models_ProMoE_TC_symmetric import DiT as ProMoE_TC_symmetric
 from models.models_ProMoE_TC_sigmoid import DiT as ProMoE_TC_sigmoid
 from models.models_ProMoE_TC_hierar import DiT as ProMoE_TC_hierar
@@ -106,6 +108,8 @@ model_dict = {
     "ProMoE_TC_S_hierar": (ProMoE_TC_hierar, "DiT_S_config"),
     "ProMoE_TC_S_hetero_expert": (ProMoE_TC_hetero_expert, "DiT_S_config"),
     "ProMoE_TC_B": (ProMoE_TC, "DiT_B_config"),
+    "ProMoE_TC_B_image_shared": (ProMoE_TC_image_shared, "DiT_B_config"),
+    "ProMoE_TC_B_shared_plus_cond_image": (ProMoE_TC_shared_plus_cond_image, "DiT_B_config"),
     "ProMoE_TC_B_hierar": (ProMoE_TC_hierar, "DiT_B_config"),
     "ProMoE_TC_B_hetero_expert": (ProMoE_TC_hetero_expert, "DiT_B_config"),
     "ProMoE_TC_L": (ProMoE_TC, "DiT_L_config"),

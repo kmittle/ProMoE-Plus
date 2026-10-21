@@ -1,0 +1,9 @@
+实验 / Experiment: B_image_shared_e4
+model_name: ProMoE_TC_B_image_shared  |  config: configs/004_ProMoE_B_image_shared_e4.yaml
+基线 / Baseline: 基础 ProMoE-TC（条件/无条件分流、余弦原型路由、top-1 token 专家、固定 shared expert 和 routing contrastive）；直接父变体 / Parent: 基础 ProMoE-TC。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 仅替换 shared expert：每个 MoE 层有独立的 image-wise 专家池，num_image_experts=4，每张图选择一个专家处理其全部 tokens。原有 token-wise 路由、conditional/unconditional experts 和对比正则沿用基线；这是独立方向，不含 adaptive-depth。conditional 与 unconditional 图像都从这 4 个 image experts 中选择，各自根据当前层特征独立路由。
+2. 图像 embedding 来自单个可学习 query 的 cross-attention pooling，再经 Linear；image_pool_num_heads=1，cond/uncond 共用该层的 query、K/V 和输出投影。embedding 与 image cluster_centers 计算余弦相似度，top-1 分数乘在选中专家输出上。直接复用基线 routing contrastive 目标，将 token embeddings 换为 image embeddings；image_routing_contrastive_lam=1.0、image_routing_contrastive_temperature=0.07，无条件图像也参与图级正则。
+3. image_expert_backend=bmm：按每张图选中的专家收集参数，使用 torch.bmm 并行执行；同时实现同参数、同路由的 loop 后端，按专家分组处理整张图。FLOPsAccumulator 自动切换到 loop 计数并恢复原后端，计入 pooling 与图级路由的矩阵乘；activated params 只计入实际选中的 image experts。
+4. 独立输出目录从零训练，global_seed=0、global batch=256、4 卡，训练至 300K 后以 CFG 1.0/1.5 各采样 50K 张评估，不自动继续到 500K。模型新增图级路由参数，不复用其他实验 checkpoint。

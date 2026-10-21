@@ -13,6 +13,32 @@ It resolves the corresponding YAML configuration from a checkpoint path, uses th
 - Average expert activation frequency across all tracked blocks
 - Per-step expert activation frequency snapshots saved every `N` denoising steps
 
+For `ProMoE_TC_B_image_shared`, the FLOPs counter temporarily switches the image-wise
+shared experts from the default `bmm` backend to `loop`, then restores the previous
+backend when stopped. Both backends perform the same selected FFNs. The loop calls
+each selected expert's `nn.Linear` modules, allowing the existing THOP hooks to count
+them without materializing per-image weight copies. Raw functional `torch.bmm` calls
+are not counted by those Linear hooks; changing backend is instrumentation, not a
+change in the model's theoretical FFN work.
+
+The image pool's K/V and output Linear projections, single-query attention products,
+and image-prototype dot products are included. Counts follow the existing THOP MAC
+convention (one multiply-accumulate is one reported operation); memory copies and
+normalization/softmax elementwise work are not additional GEMM FLOPs. Unselected image
+experts do not perform dummy Linear forwards during evaluation. Activated-parameter
+statistics count only the image experts selected during that forward, while pooling
+and routing parameters remain always-on. Expert-frequency plots still describe the
+original conditional token-wise expert pool.
+
+For `ProMoE_TC_B_shared_plus_cond_image`, the fixed shared expert remains always-on,
+while the additional image pool receives only conditional images after label dropout.
+The same automatic loop instrumentation counts only those images. On all-unconditional
+input, no image-pooling, image-routing, or image-FFN work runs, and none of that pool's
+parameters are counted as activated. The B experiment uses widths 1536 for shared
+and unconditional FFNs, and 768 for conditional token and image FFNs: the selected
+FFN widths sum to the dense width of 3072 in both cases. Pooling/router work is extra,
+so matching those FFN widths is not an assertion of equal complete-model FLOPs.
+
 ## Output Directory
 
 Results are written to:
