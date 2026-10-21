@@ -1,8 +1,8 @@
-# Matched scorer-gradient ablation: only depth_keep_ste differs between the two arms.
+# Scorer-gradient ablation: only the looped-token second-pass p trains the scorer.
 # Train from scratch through checkpoint 300000, then evaluate both CFG values.
 model_name: "ProMoE_TC_B_adepth"
 
-gpu_ids: [0, 1, 2, 3]
+gpu_ids: [0, 1, 2, 3]  # placeholder: the wrapper claims idle GPUs at launch
 
 ###### For train
 image_size: 256

@@ -1,0 +1,8 @@
+实验 / Experiment: B_adepth_q0p3_p_only
+model_name: ProMoE_TC_B_adepth  |  config: configs/004_ProMoE_B_adepth_q0p3_p_only.yaml
+基线 / Baseline: 基础 ProMoE-TC（条件/无条件分流、余弦原型路由、top-1 专家和 shared expert）；直接父变体 / Parent: adaptive-depth q=0.3，默认 depth_keep_ste=True。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. depth_keep_ste=False：关闭所有已执行第一次 FFN 的 token（包括 normal 和 deepen）的 first-pass STE。打分器只通过 looped token 第二次 FFN 的 sigmoid 分数 p 接收非零任务梯度；普通 FFN 和输入的梯度保留。deepen_gain 初始为零时打分器暂时没有非零梯度，deepen_gain 自身仍可学习。
+2. 保留父变体的 fixed_q adaptive depth：depth_q=0.3，depth_warmup=5000，按每个 rank 的展平条件 token 分数选择 skip / normal / deepen；deepen 重复同一个 top-1 routed FFN，shared expert 和无条件分支不变。未设置 depth_infer_thresholds，训练与推理均使用配额选择；该开关在固定权重下不改变前向值、配额、参数或初始化。
+3. 以已有 q=0.3 原方案的结果作为历史参照。新消融使用 global_seed=0、global batch=256、4 卡，独立输出目录从零训练到 300K，再以 CFG 1.0/1.5 各采样 50K 张评估，不自动继续到 500K。
