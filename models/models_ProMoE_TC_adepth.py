@@ -16,14 +16,21 @@ from .modules import get_2d_sincos_pos_embed, Attention, modulate, TimestepEmbed
 # => total routed passes == N_cond (compute conserved, reallocated easy->hard).
 # shared expert + uncond tokens UNCHANGED. deepen=depth only (top_k==1 required).
 #
-# Differentiability (selection is non-diff): (1) a straight-through keep-gate
+# Differentiability (selection is non-diff): (1) by default, a straight-through keep-gate
 # tau = 1 + sigmoid(s) - sigmoid(s).detach() multiplies every processed token's 1st
 # pass — forward==1 (base-exact) but backward carries a gradient. This trains the
 # scores of PROCESSED (normal/deepen) tokens near the skip boundary (a normal token
 # whose FFN is useless has its s pushed toward the skip end); ALREADY-skipped tokens
-# get no task-loss gradient that step (like MoD's unselected tokens), their rank
-# self-corrects across steps/images. (2) the deepen 2nd pass is a real soft multiply
-# deepen_gain*sigmoid(s), giving the DEEPEN side its signal. STEP-0 bit-identity: depth_gate
+# get no task-loss gradient that step (like MoD's unselected tokens). Their ranks
+# can change as the shared scorer learns on other tokens. (2) the deepen 2nd pass
+# is a real soft multiply deepen_gain*sigmoid(s), giving the DEEPEN side its signal.
+# Ablation: depth_keep_ste=False disables (1) for BOTH normal and deepen tokens.
+# The scorer then learns only through (2); forward values, quotas, parameters,
+# and initialization are unchanged at fixed weights. Ordinary expert/input
+# gradient paths remain attached.
+# While deepen_gain==0 or no tokens deepen, this ablation gives the scorer no
+# nonzero gradient; deepen_gain can still learn once tokens take the second pass.
+# STEP-0 bit-identity: depth_gate
 # zero-init (s=0 -> tau=1) + deepen_gain=0 + q annealed from 0 (k=0 at init) =>
 # forward == base ProMoE_TC (the depth mechanism is inert at init; "==base" means the forward
 # matches when base weights are loaded — like any added-param variant, a fresh init draws extra
@@ -75,6 +82,7 @@ class SparseMoeBlock(nn.Module):
         alloc_mode="none",
         depth_q=0.25,
         depth_warmup=5000,
+        depth_keep_ste=True,
         **kwargs,
     ):
         super().__init__()
@@ -114,6 +122,9 @@ class SparseMoeBlock(nn.Module):
         self.alloc_mode = alloc_mode
         self.depth_q = depth_q
         self.depth_warmup = depth_warmup
+        if not isinstance(depth_keep_ste, bool):
+            raise TypeError("depth_keep_ste must be a bool")
+        self.depth_keep_ste = depth_keep_ste
         if alloc_mode != "none":
             assert top_k == 1, "adaptive depth (deepen re-applies the top-1 expert) requires top_k == 1"
         self.depth_gate = nn.Linear(hidden_size, 1)          # difficulty score s_t (zero-init)
@@ -224,20 +235,20 @@ class SparseMoeBlock(nn.Module):
         if self.alloc_mode == "fixed_q":
             cond_pos = torch.where(ad_cond_mask)[0]
             n_cond = cond_pos.numel()
-            # Advance the q anneal every TRAINING forward (incl. rare all-uncond batches) so the
-            # schedule counts forwards consistently across ranks; q=0 in eval (step-0 identical).
+            # Use the checkpoint's annealed quota in both training and inference.
+            # Advance it only during training (including all-uncond batches).
+            # A fresh model still has q=0; a trained model retains skip/deepen in eval.
             # _depth_step counts FORWARD passes; == optimizer steps only when grad_mix==1 (the
             # default; our configs don't set grad_mix). Under grad accumulation (grad_mix>1) the
             # warmup finishes ~grad_mix× sooner -> scale depth_warmup.
+            q_cur = self.depth_q * min(1.0, float(self._depth_step.item()) / float(max(1, self.depth_warmup)))
             if self.training:
-                q_cur = self.depth_q * min(1.0, float(self._depth_step.item()) / float(max(1, self.depth_warmup)))
                 self._depth_step += 1
-            else:
-                q_cur = 0.0
             if n_cond > 0:
                 s = self.depth_gate(flat_input[cond_pos]).squeeze(-1)            # [n_cond] difficulty
                 sig = torch.sigmoid(s.float())                                   # fp32 for exactness
-                tau_full[cond_pos] = 1.0 + (sig - sig.detach())                  # fwd == 1 EXACTLY; bwd grad
+                if self.depth_keep_ste:
+                    tau_full[cond_pos] = 1.0 + (sig - sig.detach())              # fwd == 1 EXACTLY; bwd grad
                 sig_full[cond_pos] = sig
                 k = min(int(round(q_cur * n_cond)), n_cond // 2)                 # #skip == #deepen == k
                 if k > 0:
