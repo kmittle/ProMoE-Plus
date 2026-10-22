@@ -1,0 +1,8 @@
+实验 / Experiment: B_shared_plus_cond_image_e4_ffn_thirds
+model_name: ProMoE_TC_B_shared_plus_cond_image  |  config: configs/004_ProMoE_B_shared_plus_cond_image_e4_ffn_thirds.yaml
+基线 / Baseline: 基础 ProMoE-TC（条件/无条件分流、余弦原型 token 路由、固定 shared expert 和 routing contrastive）；对照变体 / Parent: B_shared_plus_cond_image_e4，保留 shared 并新增仅 cond 使用的 4 个图级专家，原 FFN 宽度为 shared/uncond 1536、cond token/image 768。本实验复用同一模型实现，仅改变四类 FFN 的 hidden dim。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 将 conditional 路径的 FFN 预算均分：B 模型 dense FFN hidden dim=3072，moe_intermediate_size=1024、image_expert_intermediate_size=1024、shared_expert_intermediate_size=1024，各为 dense 的 1/3；uncond_expert_intermediate_size=2048，为 dense 的 2/3。cond 的 1024+1024+1024 和 uncond 的 1024+2048 均为 3072。这里只对齐 FFN 主矩阵计算，cross-attn pooling 和新增路由另有开销；非 MoE 层仍使用宽度 3072 的 dense FFN。
+2. 路由和损失沿用对照变体：shared 处理全部图像；label dropout 后的 cond 图像通过单个 learned query 做 cross-attn pooling，再接 Linear，使用独立 image cluster_centers 的余弦 top-1 选择 4 个 image-wise 专家之一处理整张图，路由分数乘在专家输出上。uncond 不进入 pooling、图级专家或图级对比损失，只经过 shared 和专用 uncond FFN。保留 12 个 conditional token 专家及原 token 路由；图级 routing contrastive 系数 1.0、温度 0.07。默认 image_expert_backend=bmm，loop 使用相同参数与路由，FLOPs 分析自动切换 loop 并还原。
+3. 训练和评估设置与对照变体一致：seed=0、global batch=256、4 卡、lr=1e-4，从零训练至 300K，以 CFG 1.0/1.5 各采样 50K 张并评估，不自动继续至 500K。新配置 basename 使用独立输出目录；启动包装器在运行时申请 4 张空闲 GPU。
