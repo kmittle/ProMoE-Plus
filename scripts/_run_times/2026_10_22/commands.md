@@ -1,3 +1,5 @@
 | 实验描述 | git分支 | 启动命令 | 输出位置 |
 |---|---|---|---|
+| ProMoE-B clean_route student_ratio0（t=0 干净 teacher，学生侧对比学习，align_lam 5e-4，τ 0.07）加矫正 router：每个 MoE 层用参考干净 latent 估计 x̂0 修正 12 个专家的路由分数，学生 KL 用修正后分数、teacher 用原分数，训练参考沿模型自身速度回退构造（4 卡） | repa | bash scripts/_run_times/2026_10_22/B_clean_route_student_ratio0_corr_router.sh | outputs/ProMoE_TC_B_clean_route_corr_router/004_ProMoE_B_clean_route_student_ratio0_corr_router/ |
+| ProMoE-B 会议版加矫正 router：每个 MoE 层由 x̂0 的 patch embedding、原始余弦、t 与类别、参考噪声水平算出 12 个专家的修正分数，选专家和专家权重都用原分数加修正，训练参考按间隔 [1,4,5,10,20,50]/1000 沿模型自身速度回退构造，无 clean teacher（4 卡） | repa | bash scripts/_run_times/2026_10_22/B_corr_router.sh | outputs/ProMoE_TC_B_corr_router/004_ProMoE_B_corr_router/ |
 | ProMoE-B 保留共享专家并新增 4 个仅 cond 使用的图级专家，shared/cond token/cond image 宽度各为 dense 的 1/3，uncond 为 2/3（4 卡） | repa | bash scripts/_run_times/2026_10_22/B_shared_plus_cond_image_e4_ffn_thirds.sh | outputs/ProMoE_TC_B_shared_plus_cond_image/004_ProMoE_B_shared_plus_cond_image_e4_ffn_thirds/ |

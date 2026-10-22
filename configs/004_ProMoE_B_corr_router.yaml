@@ -1,0 +1,63 @@
+# Correction router on the conference ProMoE-TC (models/models_ProMoE_TC_corr_router.py), no clean-route teacher.
+# Every MoE block adds delta = corrector(e, s, c, r) to its 12 routing scores: e = patch embedding of a reference
+# estimate of the clean latent, s = the raw cosines, c = t_emb + y_emb, r = timestep embedding of the reference's
+# noise level (all detached). Experts are selected by s + delta and weighted by s_sel + delta_sel. Without a
+# teacher the corrector learns only through the selected expert's gate: from flow matching and from the later
+# blocks' routing-contrastive losses (a block's own contrastive loss uses its selection, not delta). Training
+# reference: half the images get none (x0_hat = 0, sigma_ref = 1); the rest step back k / 1000 in sigma (k uniform
+# in skip_intervals) along the model's own velocity with two no-grad passes. Sampling routes each step with the
+# previous step's conditional estimate.
+# 2x2 with the canonical baseline, clean_route student_ratio0 (2026_10_21) and clean_route_student_ratio0_corr_router.
+# Train fresh to 300K, then evaluate CFG 1.0 / 1.5; continue to 500K only if both
+# FIDs beat the canonical baseline (30.86 / 9.73).
+model_name: "ProMoE_TC_B_corr_router"
+
+gpu_ids: [0, 1, 2, 3]  # placeholder: the wrapper claims idle GPUs at launch
+
+###### For train
+image_size: 256
+total_train_batch_size: 256
+lr: 0.0001
+weight_decay: 0
+global_seed: 0
+img_num_workers: 16
+prefetch_factor: 2
+use_pre_latents: True
+use_encoded_latents: True
+latent_data_path: "/home/dev/imagenet-1k/sd-vae-ft-mse_Latents_256img_npz"
+resume_checkpoint: False
+log_interval: 10
+num_steps: 300001
+save_ckpt_interval: 50000
+
+DiT_B_config:
+  qk_norm: False
+  corr_router_config:
+    hidden_dim: 256
+    skip_intervals: [1, 4, 5, 10, 20, 50]  # thousandths of sigma: one Euler step of a 1000 / 250 / 200 / 100 / 50 / 20-step sampler
+    no_reference_prob: 0.5
+  MoE_config:
+    num_routed_experts: 12
+    moe_intermediate_size: 1536  # 768 // (1+1 shared) * mlp_ration (4)
+    shared_expert_intermediate_size: 1536  # 768 // (1+1 shared) * mlp_ration (4)
+    load_balance_loss_coef: 0
+    norm_topk_prob: False
+    seq_aux: False
+    use_shared_expert: True
+    interleave: True
+    init_MoeMLP: False
+    top_k: 1
+    router_weight_mode: identity
+    routing_contrastive_lam: 1
+    use_top_k_for_routing_contrastive: True
+    routing_contrastive_temperature: 0.07
+
+###### For sample
+step_list_for_sample: [300000]
+num_fid_samples: 50000
+sample_batch_size: 128
+sample_steps: 250
+sample_shift: 1.0
+guide_scale_list: [1.0, 1.5]
+save_img_num: 50000
+save_inception_features: False

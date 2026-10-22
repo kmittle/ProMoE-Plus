@@ -94,6 +94,10 @@ from models.models_ProMoE_TC_dualreg import DiT as ProMoE_TC_dualreg
 from models.models_ProMoE_TC_regcombo import DiT as ProMoE_TC_regcombo
 from models.models_ProMoE_TC_clean_route import DiT as ProMoE_TC_clean_route
 from models.models_ProMoE_TC_clean_route import NUM_SIGMA_BINS as CLEAN_ROUTE_NUM_SIGMA_BINS
+from models.models_ProMoE_TC_corr_router import DiT as ProMoE_TC_corr_router
+from models.models_ProMoE_TC_corr_router import CORR_BIN_ROWS
+from models.models_ProMoE_TC_corr_router import NUM_SIGMA_BINS as CORR_ROUTER_NUM_SIGMA_BINS
+from models.models_ProMoE_TC_clean_route_corr_router import DiT as ProMoE_TC_clean_route_corr_router
 
 model_dict = {
     "DiT_B": (DiT, "DiT_B_config"),
@@ -149,6 +153,8 @@ model_dict = {
     "ProMoE_TC_B_dualreg": (ProMoE_TC_dualreg, "DiT_B_config"),
     "ProMoE_TC_B_regcombo": (ProMoE_TC_regcombo, "DiT_B_config"),
     "ProMoE_TC_B_clean_route": (ProMoE_TC_clean_route, "DiT_B_config"),
+    "ProMoE_TC_B_corr_router": (ProMoE_TC_corr_router, "DiT_B_config"),
+    "ProMoE_TC_B_clean_route_corr_router": (ProMoE_TC_clean_route_corr_router, "DiT_B_config"),
 }
 
 DENOISING_REGRET_MODELS = {"ProMoE_TC_B_FDRR"}
@@ -215,7 +221,7 @@ REGCOMBO_STAT_NAMES = (
     for index in range(REGCOMBO_NUM_LOGGED_BLOCKS)
     for field in ("loss_log10", "dist_min")
 )
-CLEAN_ROUTE_MODELS = {"ProMoE_TC_B_clean_route"}
+CLEAN_ROUTE_MODELS = {"ProMoE_TC_B_clean_route", "ProMoE_TC_B_clean_route_corr_router"}
 CLEAN_ROUTE_NUM_LOGGED_BLOCKS = 6
 CLEAN_ROUTE_STAT_NAMES = (
     "clean_route_align_loss",
@@ -235,6 +241,23 @@ CLEAN_ROUTE_STAT_NAMES = (
     for field in ("kl", "agree")
 ) + tuple(
     f"clean_route_kl_b{index}" for index in range(CLEAN_ROUTE_NUM_LOGGED_BLOCKS)
+)
+CORR_ROUTER_MODELS = {"ProMoE_TC_B_corr_router", "ProMoE_TC_B_clean_route_corr_router"}
+CORR_ROUTER_NUM_LOGGED_BLOCKS = 6
+CORR_ROUTER_STAT_NAMES = (
+    "corr_router_delta_abs",
+    "corr_router_switch_ref",
+    "corr_router_switch_noref",
+    "corr_router_gate_mean",
+    "corr_router_gate_neg_frac",
+    "corr_router_ref_frac",
+    "corr_router_ref_gap",
+) + tuple(
+    f"corr_router_{field}_s{index}"
+    for index in range(CORR_ROUTER_NUM_SIGMA_BINS)
+    for field in ("delta_abs", "switch_ref")
+) + tuple(
+    f"corr_router_delta_abs_b{index}" for index in range(CORR_ROUTER_NUM_LOGGED_BLOCKS)
 )
 TRAINER_STATE_VERSION = 2
 LEGACY_TRAINER_STATE_VERSION = 1
@@ -1436,6 +1459,80 @@ def _reduce_clean_route_stats(loss_dict):
     values.div_(dist.get_world_size())
     for name, value in zip(CLEAN_ROUTE_STAT_NAMES, values):
         loss_dict[name] = value
+
+
+def _corr_router_generator(global_seed, step, micro_step, rank, device):
+    """The generator of a corr_router model's reference coin and gaps for one micro-batch.
+
+    Its seed depends only on the run's seed and the micro-batch's position, so
+    a resumed run draws what an uninterrupted one draws, and the global RNG
+    stream (data, noise, sigma, label dropout) stays the base model's.
+    """
+    seed = ((int(global_seed) * 1_000_003 + int(step)) * 1_009 + int(micro_step)) * 4_099 + int(rank)
+    generator = torch.Generator(device=device)
+    generator.manual_seed(seed % (1 << 63))
+    return generator
+
+
+def _collect_corr_router_stats(model):
+    """Diagnostics of the corr_router routing correction, over the global batch.
+
+    The blocks' per-sigma-bin sums (rows CORR_BIN_ROWS, over prototype-routed
+    tokens) and the model's reference counts are summed over ranks here, so
+    every value describes the global batch and is the same on every rank.  A
+    token "switched" when its top-1 under s + delta differs from its top-1
+    under s; "ref" / "noref" split the tokens by whether their image had a
+    reference this step.  ``ref_frac`` is the share of prototype-routed images
+    with a reference and ``ref_gap`` their mean sigma_ref - sigma.  The bins
+    split the image's sigma into equal widths on [0, 1]; a ratio without
+    tokens reports 0.
+    """
+    module = model.module if hasattr(model, "module") else model
+    if not getattr(module, "is_corr_router_model", False):
+        return {}
+
+    blocks = module.moe_blocks()
+    if module.last_corr_reference is None or any(block.last_corr_bins is None for block in blocks):
+        raise RuntimeError("corr_router diagnostics are missing: the training pass did not run")
+    bins = torch.stack([block.last_corr_bins.detach().float() for block in blocks])
+    reference = module.last_corr_reference.detach().float()
+    if dist.is_available() and dist.is_initialized():
+        packed = torch.cat([bins.reshape(-1), reference.reshape(-1)])
+        dist.all_reduce(packed, op=dist.ReduceOp.SUM)
+        bins_part, reference = packed.split([bins.numel(), reference.numel()])
+        bins = bins_part.view_as(bins)
+
+    zero = torch.zeros((), device=bins.device, dtype=torch.float32)
+
+    def _ratio(numerator, denominator):
+        return torch.where(denominator > 0, numerator / denominator.clamp_min(1.0), zero)
+
+    row = {name: index for index, name in enumerate(CORR_BIN_ROWS)}
+    per_bin = bins.sum(dim=0)
+    total = per_bin.sum(dim=1)
+    stats = {
+        "corr_router_delta_abs": _ratio(total[row["delta_abs"]], total[row["tokens"]]),
+        "corr_router_switch_ref": _ratio(total[row["switch_ref"]], total[row["ref_tokens"]]),
+        "corr_router_switch_noref": _ratio(total[row["switch_noref"]], total[row["noref_tokens"]]),
+        "corr_router_gate_mean": _ratio(total[row["gate"]], total[row["tokens"]]),
+        "corr_router_gate_neg_frac": _ratio(total[row["gate_negative"]], total[row["tokens"]]),
+        "corr_router_ref_frac": _ratio(reference[0], reference[1]),
+        "corr_router_ref_gap": _ratio(reference[2], reference[0]),
+    }
+    for index in range(CORR_ROUTER_NUM_SIGMA_BINS):
+        stats[f"corr_router_delta_abs_s{index}"] = _ratio(
+            per_bin[row["delta_abs"], index], per_bin[row["tokens"], index]
+        )
+        stats[f"corr_router_switch_ref_s{index}"] = _ratio(
+            per_bin[row["switch_ref"], index], per_bin[row["ref_tokens"], index]
+        )
+    per_block = bins.sum(dim=2)
+    for index in range(CORR_ROUTER_NUM_LOGGED_BLOCKS):
+        stats[f"corr_router_delta_abs_b{index}"] = (
+            _ratio(per_block[index, row["delta_abs"]], per_block[index, row["tokens"]])
+            if index < len(blocks) else zero.clone()
+        )
+    return stats
 
 
 def _reduce_regcombo_stats(loss_dict):
@@ -3156,6 +3253,13 @@ def worker(gpu, cfg):
             arg_c['clean_route_z'] = z
             arg_c['clean_route_noise'] = noise
             arg_c['clean_route_sigma'] = sigmas
+        if cfg.model_name in CORR_ROUTER_MODELS:
+            # The model steps back from noised_z_in to build its routing reference;
+            # its random draws come from this position-seeded generator.
+            arg_c['corr_router_sigma'] = sigmas
+            arg_c['corr_router_generator'] = _corr_router_generator(
+                global_seed, step, accum_steps, cfg.rank, z.device
+            )
 
         with amp.autocast(dtype=cfg.param_dtype, enabled=use_amp):
             model_output = model(noised_z_in, t, **arg_c)
@@ -3181,6 +3285,9 @@ def worker(gpu, cfg):
                 loss_dict[stat_name] = stat_value
         if cfg.model_name in CLEAN_ROUTE_MODELS:
             for stat_name, stat_value in _collect_clean_route_stats(model).items():
+                loss_dict[stat_name] = stat_value
+        if cfg.model_name in CORR_ROUTER_MODELS:
+            for stat_name, stat_value in _collect_corr_router_stats(model).items():
                 loss_dict[stat_name] = stat_value
         if cfg.model_name in DENOISING_REGRET_MODELS:
             if not isinstance(model_output, tuple) or len(model_output) != 2:

@@ -1,0 +1,8 @@
+实验 / Experiment: B_corr_router
+model_name: ProMoE_TC_B_corr_router  |  config: configs/004_ProMoE_B_corr_router.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 条件路由 + 静态 `cluster_centers` 余弦原型路由，top-1 token-choice，shared expert，routing contrastive InfoNCE）；直接父变体 / Parent: 就是基础 ProMoE-TC（只在它的 MoE block 上加矫正 router，没有 clean-route teacher）
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 矫正 router / routing corrector：每个 MoE block 加一个两层 MLP（`hidden_dim: 256`，输出层零初始化），四路输入全部 detach——参考干净 latent 估计 x̂0 的 patch embedding（`x_embedder + pos_embed`）、该层 12 个原始余弦 s、`c = t_emb + y_emb`、参考噪声水平 σ_ref 的 timestep embedding——输出 12 个专家的矫正分数 Δ。选专家用 s+Δ 的 top-1，专家输出权重用 s_sel+Δ_sel；routing contrastive 按矫正后的选择分组（InfoNCE 本身不变）。没有 clean teacher，Δ 只能经被选中专家的权重拿梯度：来自 flow matching，以及后面各层 routing contrastive 经残差流传回的梯度（本层的 contrastive 只用选择结果，不对 Δ 求导；top-1 下只有被选中专家的 Δ 有梯度）。新增约 3.6M 参数。
+2. 参考的构造 / reference：采样时第 1 步无参考（x̂0 = 0，σ_ref = 1），之后每步用上一步 cond 预测的 x̂0 = x − σ·v（sample.py，参考不增加任何前向）。训练时每张 prototype 路由的图以 `no_reference_prob: 0.5` 的概率无参考；否则从 `skip_intervals: [1, 4, 5, 10, 20, 50]`（千分之 σ，对应 1000 / 250 / 200 / 100 / 50 / 20 步采样的一步）均匀抽间隔 k，σ_ref = min(σ + k/1000, 1)，再用两次 no_grad 前向沿模型自己的速度回退：x_prev = x_t + (σ_ref − σ)·v(x_t)，x̂0 = x_prev − σ_ref·v(x_prev)。不使用干净 latent（同一份噪声的两点会定出整条直线，泄漏答案）。硬币和间隔来自 train.py 按 (global_seed, step, micro-step, rank) 播种的独立生成器，全局随机数流与基础模型相同。
+3. step-0 等价与训练开销：矫正 router 在会议版初始化之后、`fork_rng` 内构建，输出层为零，所以从头训练时 step 0 与 `ProMoE_TC_B` 逐位一致（fp32 与 bf16 均有单测）；每步额外两次 no_grad 前向，只对约一半 cond 图做。与基线、clean_route student_ratio0（2026_10_21）和 B_clean_route_student_ratio0_corr_router 组成「矫正 router × clean teacher」2×2，300K 双 CFG 门禁（30.86 / 9.73）决定是否续到 500K。

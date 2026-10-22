@@ -18,6 +18,7 @@ from train_with_repa import model_dict as _repa_model_dict
 from train_with_MoS_repa import model_dict as _mos_repa_model_dict
 from train_with_mae import model_dict as _mae_model_dict
 model_dict = {**_base_model_dict, **_repa_model_dict, **_mos_repa_model_dict, **_mae_model_dict}
+from models.models_ProMoE_TC_corr_router import sampling_reference as corr_router_sampling_reference
 import glob
 from torch.nn.parallel import DistributedDataParallel
 from tqdm import tqdm
@@ -212,6 +213,53 @@ def retrieve_timesteps(
     return timesteps, num_inference_steps
 
 
+def denoise_latents(model_val, noise, y, y_null, cfg, current_guide_scale, gpu, uses_corr_reference=False):
+    """Euler-sample one batch from ``noise``: per step the cond pass, the uncond pass when
+    ``current_guide_scale > 1``, classifier-free guidance and the scheduler step.
+
+    corr_router models (``uses_corr_reference``) route the cond pass of every step after the
+    first with the previous step's conditional estimate of the clean latent.
+    """
+    sample_scheduler = FlowMatchEulerDiscreteScheduler(num_train_timesteps=cfg.num_train_timesteps, shift=cfg.shift)
+    sampling_sigmas = get_sampling_sigmas(cfg.sample_steps, cfg.sample_shift)
+
+    latents = noise
+
+    timesteps, num_inference_steps = retrieve_timesteps(sample_scheduler, device=gpu, sigmas=sampling_sigmas)
+    arg_c = {'context': y, 'use_gradient_checkpointing': cfg.use_gradient_checkpointing}
+    arg_null = {'context': y_null, 'use_gradient_checkpointing': cfg.use_gradient_checkpointing}
+    corr_reference = {}  # none at the first step
+
+    for i_t, t in enumerate(timesteps):
+        latent_model_input = latents
+        timestep = [t] * len(latents)
+        timestep = torch.stack(timestep)
+
+        noise_pred_cond = model_val(latent_model_input, timestep, **arg_c, **corr_reference)
+        if isinstance(noise_pred_cond, tuple):
+            noise_pred_cond = noise_pred_cond[0]
+        if uses_corr_reference:
+            # This step's conditional estimate, x0 = x_t - sigma_t * v, is the next
+            # step's reference (the uncond pass routes to the uncond expert).
+            corr_reference = corr_router_sampling_reference(
+                latents, noise_pred_cond, sample_scheduler.sigmas[i_t]
+            )
+
+        if current_guide_scale > 1.0:
+            noise_pred_uncond = model_val(latent_model_input, timestep, **arg_null)
+            if isinstance(noise_pred_uncond, tuple):
+                noise_pred_uncond = noise_pred_uncond[0]
+            noise_pred = noise_pred_uncond + current_guide_scale * (noise_pred_cond - noise_pred_uncond)
+        else:
+            noise_pred = noise_pred_cond
+
+        if noise_pred.shape[1] != latents.shape[1]:
+            noise_pred, _ = noise_pred.chunk(2, dim=1)
+
+        latents = sample_scheduler.step(noise_pred.unsqueeze(2), t, latents, return_dict=False)[0]
+    return latents
+
+
 def main(**kwargs):
     deep_update(cfg, kwargs)
 
@@ -331,6 +379,9 @@ def worker(gpu, cfg):
             
             logging.info('Start the sample loop')
             model_val = model.eval()
+            # corr_router models route with a reference: the previous step's
+            # conditional estimate of the clean latent and its noise level.
+            uses_corr_reference = getattr(model.module, 'is_corr_router_model', False)
             pbar = range(iterations)
             pbar = tqdm(pbar) if cfg.rank == 0 else pbar
             save_executor = ThreadPoolExecutor(max_workers=8)
@@ -370,37 +421,9 @@ def worker(gpu, cfg):
                         continue
                 
                 with amp.autocast(dtype=cfg.val_param_dtype):
-                    sample_scheduler = FlowMatchEulerDiscreteScheduler(num_train_timesteps=cfg.num_train_timesteps, shift=cfg.shift)
-                    sampling_sigmas = get_sampling_sigmas(cfg.sample_steps, cfg.sample_shift)
-
-                    latents = noise
-
-                    timesteps, num_inference_steps = retrieve_timesteps(sample_scheduler, device=gpu, sigmas=sampling_sigmas)
-                    arg_c = {'context': y, 'use_gradient_checkpointing': cfg.use_gradient_checkpointing}
-                    arg_null = {'context': y_null, 'use_gradient_checkpointing': cfg.use_gradient_checkpointing}
-
-                    for i_t, t in enumerate(timesteps):
-                        latent_model_input = latents
-                        timestep = [t] * len(latents)
-                        timestep = torch.stack(timestep)
-
-                        noise_pred_cond = model_val(latent_model_input, timestep, **arg_c)
-                        if isinstance(noise_pred_cond, tuple):
-                            noise_pred_cond = noise_pred_cond[0]
-
-                        if current_guide_scale > 1.0:
-                            noise_pred_uncond = model_val(latent_model_input, timestep, **arg_null)
-                            if isinstance(noise_pred_uncond, tuple):
-                                noise_pred_uncond = noise_pred_uncond[0]
-                            noise_pred = noise_pred_uncond + current_guide_scale * (noise_pred_cond - noise_pred_uncond)
-                        else:
-                            noise_pred = noise_pred_cond
-                        
-                        if noise_pred.shape[1] != latents.shape[1]:
-                            noise_pred, _ = noise_pred.chunk(2, dim=1)
-
-                        latents = sample_scheduler.step(noise_pred.unsqueeze(2), t, latents, return_dict=False)[0]
-                    x0 = latents
+                    x0 = denoise_latents(
+                        model_val, noise, y, y_null, cfg, current_guide_scale, gpu, uses_corr_reference
+                    )
                 
                 samples = vae.decode(x0.squeeze(2) / 0.18215).sample
                 samples = torch.clamp(127.5 * samples + 128.0, 0, 255)

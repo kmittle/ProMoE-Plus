@@ -1,0 +1,8 @@
+实验 / Experiment: B_clean_route_student_ratio0_corr_router
+model_name: ProMoE_TC_B_clean_route_corr_router  |  config: configs/004_ProMoE_B_clean_route_student_ratio0_corr_router.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 条件路由 + 静态 `cluster_centers` 余弦原型路由，top-1 token-choice，shared expert，routing contrastive InfoNCE）；直接父变体 / Parent: clean_route student_ratio0（`ProMoE_TC_B_clean_route`：每步一次 no_grad 的干净 teacher 前向（t = 0），学生的 softmax(cos/τ) 路由以 `align_lam: 0.0005` · KL(q‖p) 对齐 teacher，`align_temperature: 0.07`，routing contrastive 留在学生侧）
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 在父变体上加矫正 router / routing corrector（与 B_corr_router 相同）：每个 MoE block 一个零初始化的两层 MLP（`hidden_dim: 256`），输入 x̂0 的 patch embedding、原始余弦 s、`c = t_emb + y_emb`、σ_ref 的 timestep embedding（全部 detach），输出 12 个专家的矫正分数 Δ；学生选专家用 s+Δ，专家输出权重用 s_sel+Δ_sel，routing contrastive 按矫正后的选择分组。
+2. clean teacher 教矫正 router / alignment on the corrected scores：学生侧 KL 改用 p = softmax((s+Δ)/τ)，teacher 侧仍是 t = 0 干净图上的原分数 q = softmax(cos(h_T, P)/τ)（teacher 不加 Δ：两侧都用 Δ 时，所有 token 一起涌向同一个专家就能让 KL 为 0，而只剩一个簇时 contrastive 返回 0，拦不住）。于是 Δ 从 KL 拿到 12 个专家的梯度；flow matching 和后面各层的辅助损失则经被选中专家的权重传回梯度。只允许 `teacher_sigma_ratio: 0`（带噪 teacher 怎样用矫正尚未决定）。
+3. 参考构造与每步顺序（与 B_corr_router 相同）：采样每步用上一步 cond 预测的 x̂0（第 1 步无参考）；训练时一半图无参考，另一半按 `skip_intervals: [1, 4, 5, 10, 20, 50]` 抽间隔，用两次 no_grad 前向沿模型自己的速度回退得到 x̂0，不使用干净 latent。每步顺序为参考前向 → teacher 前向 → 清 autocast 缓存 → 学生前向。零初始化使 step 0 与同 `clean_route_config` 的父变体逐位一致；与基线、父变体、B_corr_router 组成 2×2，300K 双 CFG 门禁（30.86 / 9.73）决定是否续到 500K。
