@@ -38,6 +38,10 @@ CONFIG="configs/004_ProMoE_B_repa_dyna_only.yaml"
 LOG="${REPO_ROOT}/logs/log_ProMoE_B_repa_dyna_only_train_sample_eval.log"
 mkdir -p "$(dirname "$LOG")"
 
+# Deployment default; also overwrite the temporary YAML so an older config's
+# latent_data_path cannot silently override this environment setting.
+export PROMOE_LATENT_PATH="${PROMOE_LATENT_PATH:-/mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz}"
+
 RESUME="${PROMOE_RESUME:-0}"
 if [[ "$RESUME" != "0" && "$RESUME" != "1" ]]; then
     echo "ERROR: PROMOE_RESUME must be 0 or 1, got: ${RESUME}" >&2
@@ -209,6 +213,7 @@ else
     echo "Sequential pipeline: ${MODEL_NAME}" | tee -a "$LOG"
 fi
 echo "Config: ${CONFIG}" | tee -a "$LOG"
+echo "Latents: ${PROMOE_LATENT_PATH}" | tee -a "$LOG"
 echo "GPUs: ${GPU_IDS} (eval: ${EVAL_GPU})" | tee -a "$LOG"
 echo "Steps: ${STEP_LIST_STR}" | tee -a "$LOG"
 echo "============================================================" | tee -a "$LOG"
@@ -248,12 +253,13 @@ for i in "${!ALL_STEPS[@]}"; do
     # checkpoint, and a constant value keeps the strict-provenance config hash
     # the same across phases.
     "$PYTHON" - "$CONFIG" "$TARGET_NUM_STEPS" "$TEMP_CONFIG" "$GPU_IDS" <<'PY'
-import sys, yaml
+import os, sys, yaml
 with open(sys.argv[1]) as f:
     cfg = yaml.safe_load(f)
 cfg['num_steps'] = int(sys.argv[2])
 cfg['resume_checkpoint'] = True
 cfg['gpu_ids'] = [int(item) for item in sys.argv[4].split(',')]
+cfg['latent_data_path'] = os.environ['PROMOE_LATENT_PATH']
 with open(sys.argv[3], 'w') as f:
     yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
 PY

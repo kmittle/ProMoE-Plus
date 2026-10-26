@@ -1,0 +1,8 @@
+实验 / Experiment: B_adepth_q0p3_p_only_resume_500k
+model_name: ProMoE_TC_B_adepth  |  config: configs/resume_500k/004_ProMoE_B_adepth_q0p3_p_only.yaml
+基线 / Baseline: 基础 ProMoE-TC；直接父实验 / Parent: 2026_10_21/B_adepth_q0p3_p_only，同一实验从 300K 续训至 500K，不新建模型或独立训练轨迹。
+
+核心改动 / Core changes（相对父实验）:
+1. 预期初始权重 / Expected checkpoint: outputs/ProMoE_TC_B_adepth/004_ProMoE_B_adepth_q0p3_p_only/checkpoints/ckpt_step_300000.pth，路径相对于另一台服务器上的仓库根目录。新 YAML 保持原 basename 和 model_name，继续写入原 output；启动时选择同目录中步数最大的非空 300K–500K checkpoint，显式设置 resume_checkpoint_step，通过 train.py 恢复模型、EMA 和优化器。缺少合格 checkpoint 则报错，禁止从零开始。
+2. 模型设置延续原实验：q=0.3、depth_rank_scope=image、depth_keep_ste=False，打分器仅从 looped token 第二轮的 p 获得非零任务梯度。4 卡、global batch=256、seed=0、lr=1e-4 保持一致；latent_data_path 改为 /mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz，模板也将有效 PROMOE_LATENT_PATH 写入临时训练 YAML。
+3. num_steps=500001、step_list_for_sample=[500000]：完成续训后以 CFG 1.0/1.5 各采样 50K 张并评估。已有 500K checkpoint 时跳过训练，两档评估均有效时全部跳过。此为用户在 2026-10-26 选定的续训任务；启动器申请 4 张空闲 GPU，未在本机执行。

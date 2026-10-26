@@ -334,6 +334,7 @@ When extending one, preserve the lock — do not loosen a gate to make a result 
 - Validate changes with `python -m py_compile <file>` for syntax, the relevant `unittest` module(s) (see "Unit Tests"), then a targeted smoke test (short training run, sample pass). Analysis-helper subpackages carry their own `test_*.py` — extend them rather than adding an ad-hoc script.
 
 ### Shell Script Convention
+- **Latent deployment path (2026-10-26):** `scripts/template.sh` defaults `PROMOE_LATENT_PATH` to `/mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz` and writes it into the temporary training YAML's `latent_data_path`, overriding stale source-YAML paths. An explicit environment override is preserved. The three 2026-10-26 continuation configs record the same path.
 - **All new three-in-one (train + sample + eval) `.sh` experiment scripts must follow the `scripts/template.sh` pattern** — otherwise the other experiment server cannot run them. (Legacy split-purpose scripts under `scripts/repa/` such as `train_repa_B.sh` / `sample_and_eval_repa_B.sh` predate the template and are exempt; new work should not introduce more of them.)
 - **Sequential pipeline pattern**: The template implements a train→stop→sample+eval→resume loop. For each step in `step_list_for_sample`: (1) generate a temp config with `num_steps` set to the checkpoint step + 1 and `resume_checkpoint: True` (every phase; the script's empty-bucket check is what guarantees a launch starts from step 0, and a constant value keeps the strict-provenance config hash identical across phases), (2) train until that step then exit, (3) sample + eval with GPUs fully free, (4) resume for the next step. The final step uses the original `num_steps` from config. This avoids concurrent training + sampling, which can exceed GPU memory for XL-scale models.
 - Key template patterns: `set -euo pipefail`, locate repo root via `SCRIPT_DIR`/`REPO_ROOT`, parse `model_name`/`gpu_ids`/`num_fid_samples`/`step_list_for_sample`/`orig_num_steps` from YAML using inline Python, call training/sampling/evaluation with absolute python paths, and `find ... -name images | sort -V` for evaluation directory traversal. Never use `conda activate`.
@@ -395,6 +396,14 @@ matter when writing scripts:
   uses 4 GPUs like its single-module counterpart `expert_contra_output`. The anchors keep
   their single-module coefficients and the arms sweep the L2 temperature only, by the
   user's decision.
+
+- On 2026-10-26 the user selected `B_adepth_q0p3_p_only`,
+  `B_clean_route_student_ratio0_corr_router`, and `B_corr_router` to extend their own
+  300K runs to 500K on four GPUs each. The two correction-router arms are explicit
+  exploratory exceptions to the dual-CFG gate. `configs/resume_500k/` keeps each
+  original YAML basename and model name, preserving its output/checkpoint directory;
+  the dated resume-only launchers select and pin the greatest saved step from 300K
+  through 500K, and fail when no qualifying checkpoint exists.
 
 **A run that starts from another experiment's weights is not an experiment.** Project rule,
 no exceptions: 接着别的实验的权重继续往下训练的实验一律不承认，因为因素混杂，这种实验根本不算是干净的

@@ -156,6 +156,16 @@ better than the canonical Base gate (`30.86`/`9.73`) may continue to 500K.
 Do not infer success or failure from 50K/200K checkpoints, training loss, or
 an auxiliary loss alone.
 
+On 2026-10-26 the user explicitly selected `B_adepth_q0p3_p_only`,
+`B_clean_route_student_ratio0_corr_router`, and `B_corr_router` for continuation
+from their own 300K checkpoints to 500K, on four GPUs each. The two correction-router
+arms are approved exploratory exceptions to the 300K dual-CFG gate. Their configs
+under `configs/resume_500k/` intentionally retain the original YAML basenames and
+model names, so checkpoints and 500K evaluations stay in the original output buckets.
+These are same-run extensions, not fresh experiments or `_vN` reruns. The launchers
+require an existing checkpoint at or beyond 300K, select the greatest saved step up
+to 500K, and pin that step via `resume_checkpoint_step`; they must not start from scratch.
+
 The output bucket must be a real directory under `outputs/`; do not use
 soft-links for experiment results. `/home/dev` must not contain any
 `promoe*` directory. Research papers and source packages belong in the
@@ -375,6 +385,7 @@ Template-specific requirements:
 
 - `scripts/template.sh` uses a sequential train-stop-sample/eval-resume loop. For each `step_list_for_sample` item, it trains to that checkpoint, exits, frees GPUs for sample/eval, then resumes training for the next step.
 - New scripts should only change `CONFIG`, `LOG`, and the training entrypoint (`train.py`, `train_with_repa.py`, `train_with_MoS_repa.py`, or `train_with_mae.py`) unless the experiment genuinely needs extra logic.
+- The template defaults `PROMOE_LATENT_PATH` to `/mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz` and writes it into the temporary training YAML's `latent_data_path`; exporting the variable alone would be overridden by an older YAML value. An explicitly supplied `PROMOE_LATENT_PATH` takes precedence. The 2026-10-26 continuation configs also record this deployment path directly.
 - Preserve `set -euo pipefail`, repo-root discovery via `SCRIPT_DIR` / `REPO_ROOT`, inline Python YAML parsing, absolute Python interpreter paths, and `find ... -name images | sort -V` evaluation traversal.
 - Keep the temporary YAML's basename identical to the original config so `custom_cfg_name` does not change. Every phase sets `resume_checkpoint: True`; intermediate phases use `num_steps = step + 1`, and the final phase uses the original `num_steps`. The fresh-output check, not a per-phase resume flag, ensures a fresh launch starts at step 0.
 - Preserve `PROMOE_GPU_IDS_OVERRIDE` validation and propagation: it must contain distinct GPU IDs and the same count as YAML `gpu_ids`. Write the actual IDs into the temporary training YAML, use them for sampling, and use the first one for evaluation. Preserve the parsed-field count check so a failed inline Python process substitution cannot silently continue.

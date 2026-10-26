@@ -1,0 +1,8 @@
+实验 / Experiment: B_clean_route_student_ratio0_corr_router_resume_500k
+model_name: ProMoE_TC_B_clean_route_corr_router  |  config: configs/resume_500k/004_ProMoE_B_clean_route_student_ratio0_corr_router.yaml
+基线 / Baseline: 基础 ProMoE-TC；直接父实验 / Parent: 2026_10_22/B_clean_route_student_ratio0_corr_router，同一实验从 300K 续训至 500K，保留 clean-route 蒸馏与矫正 router。
+
+核心改动 / Core changes（相对父实验）:
+1. 预期初始权重 / Expected checkpoint: outputs/ProMoE_TC_B_clean_route_corr_router/004_ProMoE_B_clean_route_student_ratio0_corr_router/checkpoints/ckpt_step_300000.pth，路径相对于目标服务器的仓库根目录。新 YAML 保持原 basename 和 model_name，沿用原 output；启动时选择同目录步数最大的非空 300K–500K checkpoint，显式设置 resume_checkpoint_step，恢复模型、EMA 和优化器。缺少合格 checkpoint 则报错，不启动新训练轨迹。
+2. 沿用 student_ratio0：干净 teacher、学生侧 routing contrastive、align_lam=0.0005、温度 0.07；学生路由使用矫正后的分数，teacher 使用原分数。4 卡、global batch=256、seed=0、lr=1e-4 保持一致；latent_data_path 改为 /mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz，并由模板将有效 PROMOE_LATENT_PATH 写入临时训练 YAML。
+3. num_steps=500001、step_list_for_sample=[500000]，500K 时以 CFG 1.0/1.5 各采样 50K 张评估；已完成训练和有效评估可跳过。2026-10-26 用户明确选择本实验进行探索性续训，因此本次不再执行 300K 双 CFG 门禁。启动器申请 4 张空闲 GPU，未在本机执行。
