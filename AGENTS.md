@@ -550,6 +550,17 @@ When the user asks to push, treat that as permission to commit relevant current 
 - Training uses `gpu_ids` from YAML to set `CUDA_VISIBLE_DEVICES` when provided.
 - `total_train_batch_size` is global; `train.py` derives `train_batch_size = total_train_batch_size // world_size`. Changing a run from four to two GPUs therefore changes the per-GPU batch but not the configured global batch (verify divisibility before launching).
 - Sampling uses `sample_gpu_ids` only if provided; otherwise it uses all visible GPUs.
+- Correction-router inference supports `corr_reference_velocity: conditional` (default)
+  or `cfg`, also selectable with `sample.py --corr-reference-velocity`. The latter
+  uses the CFG-fused velocity at the pre-update latent to form the next step's
+  reference, and adds `_corr_ref_cfg` to sample directory names. CFG 1.0 is
+  equivalent in both modes. `sample_checkpoint_dir` lets an inference config read
+  an original checkpoint into a separate output bucket; it requires explicit
+  steps and exact EMA state-dict loading. The inference-only wrappers under
+  `scripts/_run_times/2026_10_27/` use the two 2026-10-22 correction models' own
+  300K checkpoints on the training server, four GPUs, and CFG 1.5 / 50K samples.
+  They do not call training. `PROMOE_RESUME=1` resumes their inference outputs;
+  the required checkpoint remains in the original training bucket.
 - `train_with_repa.py` and `train_with_MoS_repa.py` read REPA behavior from top-level `repa_config`; model-level REPA knobs live under `DiT_*_config.repa_config` in YAML.
 - MoS-REPA configs (for example `004_ProMoE_B_repa_MoS.yaml`) additionally set `DiT_*_config.repa_config.num_teacher_blocks`; keep it aligned with the chosen teacher encoder depth.
 - Dynamic-select configs (`004_ProMoE_B_repa_dyna_select*.yaml`) control token selection via `DiT_B_config.repa_config.repa_select_ratio`.

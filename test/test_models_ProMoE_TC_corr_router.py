@@ -654,15 +654,18 @@ class SamplerLoopTests(unittest.TestCase):
     SAMPLER = EasyDict(num_train_timesteps=1000, shift=1.0, sample_steps=STEPS, sample_shift=1.0,
                        use_gradient_checkpointing=False)
 
-    def run_loop(self, model, uses_corr_reference, guide_scale=1.5):
+    def run_loop(self, model, uses_corr_reference, guide_scale=1.5, reference_velocity=None):
         import sample
 
         noise = torch.randn(2, 4, 1, 8, 8, generator=torch.Generator().manual_seed(8))
         y = torch.tensor([3, 7])
         y_null = torch.full((2,), 1000)
+        cfg = EasyDict(self.SAMPLER)
+        if reference_velocity is not None:
+            cfg.corr_reference_velocity = reference_velocity
         with torch.no_grad():
             latents = sample.denoise_latents(
-                model, noise, y, y_null, self.SAMPLER, guide_scale, "cpu", uses_corr_reference
+                model, noise, y, y_null, cfg, guide_scale, "cpu", uses_corr_reference
             )
         return noise, y, y_null, latents
 
@@ -688,6 +691,67 @@ class SamplerLoopTests(unittest.TestCase):
         recorder.calls.clear()
         self.run_loop(recorder, uses_corr_reference=True)
         self.assertFalse(recorder.calls[0]["reference"])
+
+    def test_cfg_reference_and_actual_step_use_the_same_fused_velocity(self):
+        for builder in (build_corr, build_clean_corr):
+            for autocast in (False, True):
+                with self.subTest(model=builder.__name__, autocast=autocast):
+                    recorder = _RecordingModel(perturb_correctors(perturb(builder())).eval())
+                    region = (torch.autocast(device_type="cpu", dtype=torch.bfloat16)
+                              if autocast else contextlib.nullcontext())
+                    with region:
+                        _, _, _, result = self.run_loop(recorder, True, 1.5, "cfg")
+                    cond = recorder.calls[::2]
+                    uncond = recorder.calls[1::2]
+                    self.assertEqual(len(recorder.calls), 2 * self.STEPS)
+                    self.assertFalse(cond[0]["reference"])
+                    self.assertTrue(all(not call["reference"] for call in uncond))
+                    for step in range(self.STEPS):
+                        current = cond[step]
+                        torch.testing.assert_close(current["x"], uncond[step]["x"], rtol=0, atol=0)
+                        fused = uncond[step]["output"] + 1.5 * (current["output"] - uncond[step]["output"])
+                        velocity = fused[:, :4].float().unsqueeze(2)
+                        sigma = 1 - step / self.STEPS
+                        # The Euler scheduler computes in float32, then returns
+                        # the next latent in the prediction's dtype.
+                        expected_next = (current["x"].float() - velocity / self.STEPS).to(fused.dtype)
+                        actual_next = cond[step + 1]["x"] if step + 1 < self.STEPS else result
+                        torch.testing.assert_close(actual_next, expected_next)
+                        if step + 1 < self.STEPS:
+                            reference = cond[step + 1]["reference"]
+                            torch.testing.assert_close(reference["corr_reference_x0"],
+                                                       current["x"].float() - sigma * velocity)
+                            torch.testing.assert_close(reference["corr_reference_sigma"],
+                                                       torch.full((2,), sigma))
+
+    def test_reference_modes_are_identical_at_cfg_one(self):
+        for builder in (build_corr, build_clean_corr):
+            with self.subTest(model=builder.__name__):
+                model = perturb_correctors(perturb(builder())).eval()
+                conditional, fused = _RecordingModel(model), _RecordingModel(model)
+                a = self.run_loop(conditional, True, 1.0, "conditional")[-1]
+                b = self.run_loop(fused, True, 1.0, "cfg")[-1]
+                self.assertTrue(torch.equal(a, b))
+                self.assertEqual(len(fused.calls), self.STEPS)
+                for left, right in zip(conditional.calls, fused.calls):
+                    self.assertTrue(torch.equal(left["x"], right["x"]))
+                    for key in left["reference"]:
+                        self.assertTrue(torch.equal(left["reference"][key], right["reference"][key]))
+
+    def test_explicit_conditional_preserves_the_default_and_cfg_changes_it(self):
+        model = perturb_correctors(perturb(build_corr())).eval()
+        default = self.run_loop(model, True)[-1]
+        conditional = self.run_loop(model, True, reference_velocity="conditional")[-1]
+        fused = self.run_loop(model, True, reference_velocity="cfg")[-1]
+        self.assertTrue(torch.equal(default, conditional))
+        self.assertFalse(torch.equal(conditional, fused))
+
+    def test_invalid_reference_mode_or_model_is_refused(self):
+        model = perturb(build_conference()).eval()
+        with self.assertRaisesRegex(ValueError, "conditional or cfg"):
+            self.run_loop(model, True, reference_velocity="invalid")
+        with self.assertRaisesRegex(ValueError, "correction-router model"):
+            self.run_loop(model, False, reference_velocity="cfg")
 
     def test_other_models_sample_as_before(self):
         """denoise_latents against the loop sample.py inlined before corr_router."""
@@ -719,6 +783,47 @@ class SamplerLoopTests(unittest.TestCase):
                             prediction, _ = prediction.chunk(2, dim=1)
                         expected = scheduler.step(prediction.unsqueeze(2), t, expected, return_dict=False)[0]
                 self.assertTrue(torch.equal(latents, expected))
+
+
+class SamplingCheckpointTests(unittest.TestCase):
+    def test_inference_reads_exact_source_checkpoint_without_using_its_output_bucket(self):
+        from pathlib import Path
+        import sample
+
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent, prefix=".corr_sampling_") as directory:
+            root = Path(directory)
+            source = root / "training" / "checkpoints"
+            destination = root / "inference"
+            source.mkdir(parents=True)
+            (destination / "checkpoints").mkdir(parents=True)
+            expected = source / "ckpt_step_300000.pth"
+            expected.write_bytes(b"source checkpoint placeholder")
+            (source / "ckpt_step_500000.pth").write_bytes(b"later checkpoint placeholder")
+            (destination / "checkpoints" / expected.name).write_bytes(b"wrong checkpoint placeholder")
+            cfg = EasyDict(output_dir=str(destination), sample_checkpoint_dir=str(source),
+                           step_list_for_sample=[300000])
+            directory, paths, steps = sample.resolve_sampling_checkpoints(cfg)
+            self.assertEqual((directory, paths, steps), (str(source), [str(expected)], [300000]))
+            expected.unlink()
+            with self.assertRaisesRegex(FileNotFoundError, "300000"):
+                sample.resolve_sampling_checkpoints(cfg)
+            expected.touch()
+            with self.assertRaisesRegex(FileNotFoundError, "Empty or invalid"):
+                sample.resolve_sampling_checkpoints(cfg)
+            cfg.step_list_for_sample = []
+            with self.assertRaisesRegex(ValueError, "explicit"):
+                sample.resolve_sampling_checkpoints(cfg)
+
+    def test_reference_modes_have_separate_sample_directories(self):
+        import sample
+
+        cfg = EasyDict(image_size=256, global_seed=0, num_fid_samples=50000, sample_batch_size=128)
+        expected = "img256_cfg1.5_seed0_FID50K_bs128_ema"
+        self.assertEqual(sample.sampling_folder_name(cfg, 1.5), expected)
+        cfg.corr_reference_velocity = "cfg"
+        self.assertEqual(sample.sampling_folder_name(cfg, 1.5), expected + "_corr_ref_cfg")
+        cfg.corr_reference_velocity = "conditional"
+        self.assertEqual(sample.sampling_folder_name(cfg, 1.5), expected)
 
 
 def _ddp_worker(rank, world_size, init_file, output_dir, kind):

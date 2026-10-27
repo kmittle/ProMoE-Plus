@@ -168,6 +168,35 @@ def load_checkpoints_every_val_step(checkpoint_dir, sample_every_step):
     return sorted_checkpoints, sorted_steps
 
 
+def resolve_sampling_checkpoints(cfg):
+    """Allow inference ablations to read old weights into a separate output bucket."""
+    source = getattr(cfg, 'sample_checkpoint_dir', None)
+    checkpoint_dir = source or osp.join(cfg.output_dir, 'checkpoints')
+    steps = getattr(cfg, 'step_list_for_sample', None)
+    if source and not steps:
+        raise ValueError('sample_checkpoint_dir requires explicit step_list_for_sample')
+    if steps:
+        paths, found_steps = load_specific_checkpoints(checkpoint_dir, steps)
+    else:
+        paths, found_steps = load_checkpoints_every_val_step(checkpoint_dir, cfg.sample_every_step)
+    if source:
+        missing = set(steps) - set(found_steps)
+        if missing:
+            raise FileNotFoundError(f'Missing requested checkpoint steps {sorted(missing)} in {checkpoint_dir}')
+        for path in paths:
+            if not osp.isfile(path) or os.path.getsize(path) == 0:
+                raise FileNotFoundError(f'Empty or invalid sampling checkpoint: {path}')
+    return checkpoint_dir, paths, found_steps
+
+
+def sampling_folder_name(cfg, guide_scale):
+    name = (f"img{cfg.image_size}_cfg{guide_scale}_seed{cfg.global_seed}_"
+            f"FID{int(cfg.num_fid_samples / 1000)}K_bs{cfg.sample_batch_size}_ema")
+    if getattr(cfg, 'corr_reference_velocity', 'conditional') == 'cfg':
+        name += '_corr_ref_cfg'
+    return name
+
+
 def get_sampling_sigmas(sampling_steps, shift):
     # extra step for zero
     # sigma = torch.linspace(1, 0, sampling_steps + 1)
@@ -218,8 +247,14 @@ def denoise_latents(model_val, noise, y, y_null, cfg, current_guide_scale, gpu, 
     ``current_guide_scale > 1``, classifier-free guidance and the scheduler step.
 
     corr_router models (``uses_corr_reference``) route the cond pass of every step after the
-    first with the previous step's conditional estimate of the clean latent.
+    first with the previous step's clean-latent estimate. ``corr_reference_velocity``
+    chooses the conditional velocity (default) or the CFG-fused sampling velocity.
     """
+    reference_velocity = getattr(cfg, 'corr_reference_velocity', 'conditional')
+    if reference_velocity not in ('conditional', 'cfg'):
+        raise ValueError('corr_reference_velocity must be conditional or cfg')
+    if reference_velocity == 'cfg' and not uses_corr_reference:
+        raise ValueError('corr_reference_velocity=cfg requires a correction-router model')
     sample_scheduler = FlowMatchEulerDiscreteScheduler(num_train_timesteps=cfg.num_train_timesteps, shift=cfg.shift)
     sampling_sigmas = get_sampling_sigmas(cfg.sample_steps, cfg.sample_shift)
 
@@ -238,13 +273,6 @@ def denoise_latents(model_val, noise, y, y_null, cfg, current_guide_scale, gpu, 
         noise_pred_cond = model_val(latent_model_input, timestep, **arg_c, **corr_reference)
         if isinstance(noise_pred_cond, tuple):
             noise_pred_cond = noise_pred_cond[0]
-        if uses_corr_reference:
-            # This step's conditional estimate, x0 = x_t - sigma_t * v, is the next
-            # step's reference (the uncond pass routes to the uncond expert).
-            corr_reference = corr_router_sampling_reference(
-                latents, noise_pred_cond, sample_scheduler.sigmas[i_t]
-            )
-
         if current_guide_scale > 1.0:
             noise_pred_uncond = model_val(latent_model_input, timestep, **arg_null)
             if isinstance(noise_pred_uncond, tuple):
@@ -252,6 +280,14 @@ def denoise_latents(model_val, noise, y, y_null, cfg, current_guide_scale, gpu, 
             noise_pred = noise_pred_uncond + current_guide_scale * (noise_pred_cond - noise_pred_uncond)
         else:
             noise_pred = noise_pred_cond
+
+        if uses_corr_reference:
+            # Use the pre-update x and sigma. This reference is consumed by the
+            # NEXT conditional pass; the uncond pass receives no reference.
+            reference_pred = noise_pred if reference_velocity == 'cfg' else noise_pred_cond
+            corr_reference = corr_router_sampling_reference(
+                latents, reference_pred, sample_scheduler.sigmas[i_t]
+            )
 
         if noise_pred.shape[1] != latents.shape[1]:
             noise_pred, _ = noise_pred.chunk(2, dim=1)
@@ -272,6 +308,11 @@ def main(**kwargs):
     os.environ['MASTER_PORT']= find_free_port()
 
     cfg.output_dir = osp.join(cfg.output_dir, cfg.model_name, cfg.custom_cfg_name)
+
+    reference_velocity = getattr(cfg, 'corr_reference_velocity', 'conditional')
+    if reference_velocity not in ('conditional', 'cfg'):
+        raise ValueError('corr_reference_velocity must be conditional or cfg')
+    cfg.checkpoint_dir, cfg.val_loss_model, cfg.val_loss_model_steps = resolve_sampling_checkpoints(cfg)
 
     cfg.pmi_rank = int(os.getenv('RANK', 0))
     cfg.pmi_world_size = 1
@@ -321,11 +362,8 @@ def worker(gpu, cfg):
     if cfg.save_inception_features:
         inception = InceptionV3().to(gpu).eval()
 
-    cfg.checkpoint_dir = osp.join(cfg.output_dir, 'checkpoints')
-    if hasattr(cfg, 'step_list_for_sample') and cfg.step_list_for_sample:
-        cfg.val_loss_model, cfg.val_loss_model_steps = load_specific_checkpoints(cfg.checkpoint_dir, cfg.step_list_for_sample)
-    else:
-        cfg.val_loss_model, cfg.val_loss_model_steps = load_checkpoints_every_val_step(cfg.checkpoint_dir, cfg.sample_every_step)
+    logging.info('Checkpoint directory: %s; corr_reference_velocity: %s',
+                 cfg.checkpoint_dir, getattr(cfg, 'corr_reference_velocity', 'conditional'))
     
     if hasattr(cfg, 'guide_scale_list') and cfg.guide_scale_list:
         guide_scales = cfg.guide_scale_list
@@ -334,7 +372,7 @@ def worker(gpu, cfg):
     
     for ckpt_path, ckpt_step in zip(cfg.val_loss_model, cfg.val_loss_model_steps):
         for current_guide_scale in guide_scales:
-            folder_name = f"img{cfg.image_size}_cfg{current_guide_scale}_seed{cfg.global_seed}_FID{int(cfg.num_fid_samples/1000)}K_bs{cfg.sample_batch_size}_ema"
+            folder_name = sampling_folder_name(cfg, current_guide_scale)
             cfg.sample_folder_dir = osp.join(cfg.output_dir, 'sample', f'step{ckpt_step}', folder_name)
             os.makedirs(cfg.sample_folder_dir, exist_ok=True)
             logging.info(f"Saving .png samples at {cfg.sample_folder_dir} with guide_scale={current_guide_scale}")
@@ -359,9 +397,14 @@ def worker(gpu, cfg):
             model_cfg = getattr(cfg, config_name)
             logging.info(f'model_cfg: {model_cfg}')
             model = model_class(**model_cfg)
+            if (getattr(cfg, 'corr_reference_velocity', 'conditional') == 'cfg'
+                    and not getattr(model, 'is_corr_router_model', False)):
+                raise ValueError('corr_reference_velocity=cfg requires a correction-router model')
 
             checkpoint = _load_project_checkpoint(ckpt_path, map_location='cpu')
-            missing_key, unexpected_key = model.load_state_dict(checkpoint['ema_model_state_dict'], strict=False)
+            missing_key, unexpected_key = model.load_state_dict(
+                checkpoint['ema_model_state_dict'], strict=bool(getattr(cfg, 'sample_checkpoint_dir', None))
+            )
             logging.info(f"missing key: {missing_key}")
             logging.info(f"unexpected key: {unexpected_key}")
 
@@ -380,7 +423,7 @@ def worker(gpu, cfg):
             logging.info('Start the sample loop')
             model_val = model.eval()
             # corr_router models route with a reference: the previous step's
-            # conditional estimate of the clean latent and its noise level.
+            # clean-latent estimate (conditional or CFG-fused) and its noise level.
             uses_corr_reference = getattr(model.module, 'is_corr_router_model', False)
             pbar = range(iterations)
             pbar = tqdm(pbar) if cfg.rank == 0 else pbar
@@ -505,6 +548,8 @@ if __name__ == '__main__':
                         default=None)
     parser.add_argument('--vae-path', type=str, default=None,
                         help='Local path to a pretrained VAE directory (skip auto-download)')
+    parser.add_argument('--corr-reference-velocity', choices=('conditional', 'cfg'), default=None,
+                        help='Velocity for the next-step routing reference: conditional (default) or CFG-fused')
     args = parser.parse_args()
 
     with open(args.config, 'r') as file:
@@ -527,5 +572,8 @@ if __name__ == '__main__':
 
     if args.vae_path is not None:
         custom_cfg['vae_path'] = args.vae_path
+
+    if args.corr_reference_velocity is not None:
+        custom_cfg['corr_reference_velocity'] = args.corr_reference_velocity
 
     main(**custom_cfg)

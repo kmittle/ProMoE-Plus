@@ -67,6 +67,17 @@ CUDA_VISIBLE_DEVICES=0 python sample.py --config configs/004_ProMoE_L.yaml \
   --step_list_for_sample 200000,300000 --guide_scale_list 1.0,1.5,4.0 --num_fid_samples 10000
 ```
 
+Correction-router sampling accepts `--corr-reference-velocity conditional|cfg`
+(or the YAML key `corr_reference_velocity`, default `conditional`). `cfg` forms
+the next step's reference from the current pre-update latent and CFG-fused
+velocity; it adds no forward passes and appends `_corr_ref_cfg` to sample folder
+names. CFG 1.0 is equivalent in both modes. For inference ablations, set
+`sample_checkpoint_dir` to the original training bucket's checkpoint directory;
+explicit `step_list_for_sample` is required and EMA weights are loaded strictly.
+The 2026-10-27 inference-only wrappers reuse the two correction models' 300K
+checkpoints at CFG 1.5 / 50K on four automatically claimed GPUs, with new config
+names and output buckets. `PROMOE_RESUME=1` resumes sampling/evaluation there.
+
 ### End-to-End Scripts
 Scripts under `scripts/` run train + sample + eval in one go. Organized by experiment family:
 

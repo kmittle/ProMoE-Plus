@@ -18,10 +18,12 @@ output is weighted by ``s_sel + delta_sel``.  The routing-contrastive loss
 groups its clusters by that corrected selection; its InfoNCE matrix
 (prototypes against cluster means) is the conference one.
 
-The reference.  At sampling step i it is the previous step's conditional
+The reference.  By default, at sampling step i it is the previous step's conditional
 prediction, ``x0_hat = x_{i-1} - sigma_{i-1} * v_{i-1}`` with
 ``sigma_ref = sigma_{i-1}`` (sample.py carries it over); the first step has
-none (``x0_hat = 0``, ``sigma_ref = 1``).  A training step has no previous
+none (``x0_hat = 0``, ``sigma_ref = 1``). The sampling-only switch
+``corr_reference_velocity=cfg`` instead extrapolates with the CFG-fused velocity.
+A training step has no previous
 step, so the model builds one for each prototype-routed image.  With
 probability ``no_reference_prob`` the image gets no reference.  Otherwise a gap
 ``k`` is drawn uniformly from ``skip_intervals``, in thousandths of sigma (one
@@ -91,10 +93,10 @@ CORRECTOR_INIT_SEED = 20261022
 def sampling_reference(latents, prediction, sigma):
     """The reference the next sampling step routes with, as ``forward`` keyword arguments.
 
-    It is this step's conditional estimate of the clean latent,
+    It is this step's estimate of the clean latent,
     ``x0_hat = x_t - sigma_t * v_t``, at noise level ``sigma_t``.
     latents: (N, C, ...) the step's input x_t; prediction: the model's
-    conditional output, whose first C channels are the velocity; sigma: the
+    conditional or CFG-fused output, whose first C channels are the velocity; sigma: the
     step's noise level (a scalar).
     """
     sigma = torch.as_tensor(sigma, device=latents.device, dtype=torch.float32).reshape(())

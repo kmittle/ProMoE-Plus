@@ -39,3 +39,6 @@ latent_paths_cache.txt
 
 # Local Claude Code harness settings (per-user permission allowlists)
 /.claude/settings.local.json
+
+# Local illustration work
+/_illustration/
