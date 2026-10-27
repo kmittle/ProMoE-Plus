@@ -16,8 +16,14 @@ def _balanced_router(pool, image_embeddings):
         images = F.normalize(image_embeddings.to(score_dtype), dim=-1)
         centers = F.normalize(pool.cluster_centers.to(score_dtype), dim=-1)
         scores = images @ centers.T
-        indices = torch.arange(len(images), device=images.device) % pool.num_image_experts
-        selected = scores.gather(1, indices[:, None]).squeeze(1)
+        # Image i takes experts (i * top_k + j) % num_image_experts, j < top_k:
+        # distinct within an image, and round-robin across all selected slots.
+        slots = (torch.arange(len(images), device=images.device)[:, None] * pool.top_k
+                 + torch.arange(pool.top_k, device=images.device))
+        indices = slots % pool.num_image_experts
+        selected = scores.gather(1, indices)
+    if pool.top_k == 1:
+        return selected.squeeze(1), indices.squeeze(1)
     return selected, indices
 
 

@@ -241,7 +241,8 @@ class SharedPlusConditionalImageTests(unittest.TestCase):
         for changes in ({"image_expert_intermediate_size": 0},
                         {"uncond_expert_intermediate_size": True},
                         {"use_shared_expert": False}, {"use_uncond_expert": False},
-                        {"top_k": 2}):
+                        {"top_k": 0}, {"top_k": 3},
+                        {"top_k": True}, {"top_k": 1.5}):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 config = dict(self.config())
                 config.update(changes)

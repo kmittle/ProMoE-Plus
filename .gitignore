@@ -11,6 +11,7 @@ latent_paths_cache.txt
 *.pb
 .DS_Store
 *.log
+*.log.lock
 
 ######################
 /literature/*

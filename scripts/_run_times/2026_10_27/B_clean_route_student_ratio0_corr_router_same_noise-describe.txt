@@ -1,0 +1,8 @@
+实验 / Experiment: B_clean_route_student_ratio0_corr_router_same_noise
+model_name: ProMoE_TC_B_clean_route_corr_router  |  training config: configs/004_ProMoE_B_clean_route_student_ratio0_corr_router_same_noise.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分流、余弦原型路由、共享专家和路由对比学习）；直接父变体 / Parent: clean_route_student_ratio0_corr_router（previous_state_mode: model_velocity）。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 上一步状态构造 / Same-noise interpolation：previous_state_mode: same_noise，复用当前训练样本的同一份干净 latent z 和 noise，只把加噪幅度改为 sigma_ref；随后由模型在该状态预测速度并外推干净 latent 参考。参考生成由两次 no_grad 前向减为一次，保留 skip_intervals=[1,4,5,10,20,50]、no_reference_prob=0.5、stop-gradient 和原损失。这是父变体刻意避免的直线泄露构造：同一噪声下的两个点确定整条条件直线及其干净终点，训练参考因此携带目标 z，而推理时没有这种信号；本组用于衡量该泄露的影响。
+2. 路由结构 / Routing：继承父变体的四输入矫正器，对原型余弦分数加 delta，按矫正后的分数选择并加权专家。保留 t=0、无路由矫正的 clean-route teacher；student 路由蒸馏仍使用矫正后的分数，align_lam=0.0005。
+3. 单次训练、两组评估 / Shared checkpoint, separate experiments：4 卡自动分配，global batch=256、seed=0、lr=1e-4，从零训练至 300K。权重保存在 outputs/ProMoE_TC_B_clean_route_corr_router/004_ProMoE_B_clean_route_student_ratio0_corr_router_same_noise/checkpoints/。分别通过 configs/004_ProMoE_B_clean_route_student_ratio0_corr_router_same_noise_cond_ref.yaml 和 configs/004_ProMoE_B_clean_route_student_ratio0_corr_router_same_noise_cfg_ref.yaml 运行 CFG 前速度（conditional）与 CFG 后速度（cfg）的采样，每组均按 CFG 1.0→1.5、250 步、128 张/卡、每个 CFG 50K 张图评估。两组各自保存到 outputs/ProMoE_TC_B_clean_route_corr_router/004_ProMoE_B_clean_route_student_ratio0_corr_router_same_noise_cond_ref/ 和 outputs/ProMoE_TC_B_clean_route_corr_router/004_ProMoE_B_clean_route_student_ratio0_corr_router_same_noise_cfg_ref/，内部均为标准 sample/step300000/img..._ema/images，seed 与 CFG 顺序一致。PROMOE_RESUME=1 分别补齐未完成的评估，不重复训练或复制权重；不自动续训到 500K。

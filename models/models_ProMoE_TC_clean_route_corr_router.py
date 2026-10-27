@@ -13,7 +13,9 @@ blocks also carry the corr_router corrector (models_ProMoE_TC_corr_router.py):
   ``p = softmax((cos(h_S, P) + delta) / tau)``, so the KL trains the corrector
   directly, for every expert;
 * a training step runs the corr_router reference passes, then the teacher
-  pass, then the student pass.
+  pass, then the student pass. With ``previous_state_mode: same_noise``, the
+  reference reuses ``clean_route_z`` and ``clean_route_noise`` and needs one
+  auxiliary pass; the teacher pass is unchanged.
 
 The teacher is the clean latents at t = 0 (``teacher_sigma_ratio: 0``): how a
 noisy teacher should use the correction is left open (user decision,
@@ -96,6 +98,8 @@ class DiT(CorrRouterDiT):
         clean_route_z / clean_route_noise / clean_route_sigma: the clean-route teacher inputs,
             and corr_router_sigma / corr_router_generator the reference inputs (the same
             sigma); all required in training (train.py passes them).
+            The same clean latent and noise also construct the previous reference state
+            when ``corr_router_config.previous_state_mode`` is ``same_noise``.
         corr_reference_x0 / corr_reference_sigma: eval only, as in models_ProMoE_TC_corr_router.
         """
         if not self.training:
@@ -121,7 +125,9 @@ class DiT(CorrRouterDiT):
         try:
             # The reference passes run with no phase set: a teacher record set
             # before them would be dropped by their phase changes.
-            reference = self._training_reference(x, timestep, sigma, y, labels, corr_router_generator)
+            reference = self._training_reference(
+                x, timestep, sigma, y, labels, corr_router_generator, z=clean_route_z, noise=clean_route_noise
+            )
             if bool(routed_images.any()):
                 ratio = self.teacher_sigma_ratio
                 teacher_sigma = (ratio * sigma)[routed_images]

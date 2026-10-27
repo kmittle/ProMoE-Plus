@@ -123,7 +123,7 @@ def benchmark_one(config, backend, batches, warmup, steps, device, rank, seed,
             pool = getattr(block.mlp, "image_experts", None)
             if pool is None:
                 pool = block.mlp.shared_expert
-            routes.append(torch.bincount(pool.last_expert_indices,
+            routes.append(torch.bincount(pool.last_expert_indices.reshape(-1),
                                          minlength=pool.num_image_experts).cpu().tolist())
     local_result = {
         "rank": rank, "elapsed_seconds": elapsed,

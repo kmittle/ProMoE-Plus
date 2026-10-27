@@ -29,6 +29,8 @@ import yaml
 config_path, repo_path = sys.argv[1:]
 repo = Path(repo_path).resolve()
 cfg = yaml.safe_load(Path(config_path).read_text())
+if cfg.get("corr_reference_separate_output") is not True:
+    raise ValueError("This experiment requires the standard separate-output layout")
 if cfg.get("corr_reference_velocity") != "cfg":
     raise ValueError("This ablation requires corr_reference_velocity: cfg")
 if cfg.get("step_list_for_sample") != [300000] or cfg.get("guide_scale_list") != [1.5]:
@@ -64,7 +66,7 @@ count = int(cfg["num_fid_samples"])
 if count <= 0:
     raise ValueError("num_fid_samples must be positive")
 folder = (f"img{cfg['image_size']}_cfg1.5_seed{cfg['global_seed']}_"
-          f"FID{int(count / 1000)}K_bs{cfg['sample_batch_size']}_ema_corr_ref_cfg")
+          f"FID{int(count / 1000)}K_bs{cfg['sample_batch_size']}_ema")
 print(",".join(map(str, gpu_ids)))
 print(gpu_ids[0])
 print(output)
@@ -98,6 +100,17 @@ if [[ "$RESUME" == "0" && -d "$OUTPUT_BASE" ]] &&
         [[ -n "$(find "$OUTPUT_BASE" -mindepth 1 -print -quit)" ]]; then
     echo "ERROR: output bucket is not empty; use PROMOE_RESUME=1 to resume this inference" >&2
     exit 1
+fi
+# Move a legacy sample folder together with its images, NPZ and metrics on resume.
+# Never merge two layouts or follow a symlink.
+LEGACY_FOLDER="${IMAGES%/images}_corr_ref_cfg"
+STANDARD_FOLDER="${IMAGES%/images}"
+if [[ "$RESUME" == "1" && ( -e "$LEGACY_FOLDER" || -L "$LEGACY_FOLDER" ) ]]; then
+    if [[ ! -d "$LEGACY_FOLDER" || -L "$LEGACY_FOLDER" || -e "$STANDARD_FOLDER" || -L "$STANDARD_FOLDER" ]]; then
+        echo "ERROR: cannot migrate legacy sample layout without overwriting or following a symlink" >&2
+        exit 1
+    fi
+    mv -- "$LEGACY_FOLDER" "$STANDARD_FOLDER"
 fi
 if [[ "$RESUME" == "1" ]] && promoe_eval_file_metrics_valid "${IMAGES}_eval_openai.txt"; then
     echo "Completed CFG-reference 300K evaluation already exists: ${IMAGES}_eval_openai.txt"

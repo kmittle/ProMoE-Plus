@@ -550,10 +550,20 @@ When the user asks to push, treat that as permission to commit relevant current 
 - Training uses `gpu_ids` from YAML to set `CUDA_VISIBLE_DEVICES` when provided.
 - `total_train_batch_size` is global; `train.py` derives `train_batch_size = total_train_batch_size // world_size`. Changing a run from four to two GPUs therefore changes the per-GPU batch but not the configured global batch (verify divisibility before launching).
 - Sampling uses `sample_gpu_ids` only if provided; otherwise it uses all visible GPUs.
+- Correction-router training supports optional `DiT_*_config.corr_router_config.previous_state_mode`:
+  `model_velocity` (default) keeps the original two auxiliary no-grad forwards;
+  `same_noise` constructs the previous state as `(1 - sigma_ref) * z + sigma_ref * noise`
+  using the current training sample's exact clean latent and noise. This deliberately
+  reintroduces the leak the default avoids: two same-noise points on the straight
+  conditional path determine its clean end. Only one auxiliary
+  forward remains, to predict velocity at that state and extrapolate the clean reference.
+  Gap/no-reference draws, stop-gradient, losses and sampling are unchanged. `train.py`
+  supplies `corr_router_z` / `corr_router_noise` to the plain model; the clean-route
+  combination reuses `clean_route_z` / `clean_route_noise`, with its teacher unchanged.
 - Correction-router inference supports `corr_reference_velocity: conditional` (default)
   or `cfg`, also selectable with `sample.py --corr-reference-velocity`. The latter
   uses the CFG-fused velocity at the pre-update latent to form the next step's
-  reference, and adds `_corr_ref_cfg` to sample directory names. CFG 1.0 is
+  reference, and by default adds `_corr_ref_cfg` to sample directory names. CFG 1.0 is
   equivalent in both modes. `sample_checkpoint_dir` lets an inference config read
   an original checkpoint into a separate output bucket; it requires explicit
   steps and exact EMA state-dict loading. The inference-only wrappers under
@@ -561,6 +571,19 @@ When the user asks to push, treat that as permission to commit relevant current 
   300K checkpoints on the training server, four GPUs, and CFG 1.5 / 50K samples.
   They do not call training. `PROMOE_RESUME=1` resumes their inference outputs;
   the required checkpoint remains in the original training bucket.
+  `corr_reference_separate_output: True` instead uses standard internal sample
+  names for both modes. It requires an explicit `sample_checkpoint_dir` and an
+  experiment output directory that does not overlap the training bucket.
+  The two existing `cfg_ref_300k` configs use this layout; on resume their scripts
+  move an old suffixed sample folder, including images/NPZ/metrics, to the standard
+  name, refusing to overwrite or merge another layout.
+- The two `*_same_noise` pipelines under `scripts/_run_times/2026_10_27/` each
+  train once to 300K on four GPUs, then run both reference modes as separate
+  evaluation experiments (`*_same_noise_cond_ref` and `*_same_noise_cfg_ref`).
+  Each evaluation YAML reads the same training bucket's checkpoint, uses standard
+  internal names, and samples CFG 1.0 then 1.5 with 50K images each. No weights are
+  copied. The shared `scripts/corr_router/_dual_reference_eval.sh` checks all four
+  mode/CFG metrics and resumes the two experiments independently.
 - `train_with_repa.py` and `train_with_MoS_repa.py` read REPA behavior from top-level `repa_config`; model-level REPA knobs live under `DiT_*_config.repa_config` in YAML.
 - MoS-REPA configs (for example `004_ProMoE_B_repa_MoS.yaml`) additionally set `DiT_*_config.repa_config.num_teacher_blocks`; keep it aligned with the chosen teacher encoder depth.
 - Dynamic-select configs (`004_ProMoE_B_repa_dyna_select*.yaml`) control token selection via `DiT_B_config.repa_config.repa_select_ratio`.
@@ -577,9 +600,26 @@ When the user asks to push, treat that as permission to commit relevant current 
 - Shared-expert DAG-Fuse configs (`004_ProMoE_B_dagfuse_{dense,densenet,sharedroute,region}_*.yaml`) use `fuse_apply: none|cond|all`, `fuse_mech: dag|softmax`, and `fuse_dim` (default 64). `sharedroute` adds `fuse_top_k: 1|2`; `region` adds `region_size` (default 3) and `region_attach: shared|resid`. The augmentation is zero-initialized, so these variants are step-0-identical and can load base checkpoints non-strictly. The four sources differ in whether they consume prior dense output, prior shared outputs, router-selected shared outputs, or fixed-size region representations.
 - Expert-Contra parameter ablations retain `model_name: ProMoE_TC_B_expert_contra`. `expert_contrastive_mode` is `output`, `param` (L2 RBF repulsion), or `param_cos` (magnitude-invariant cosine repulsion); parameter variants can set `expert_contrastive_include_bias`, `expert_contrastive_include_shared`, and `expert_contrastive_include_uncond`. Keep `expert_contrastive_blocks` restricted to MoE blocks. The v2 configs (`nobias`, `cos`, `shared`, `shared_uncond`, `tau0p07`, `tau7`) are one-factor-at-a-time ablations and remain backward-compatible with the baseline defaults.
 - Adaptive-depth (adepth) configs set `alloc_mode=fixed_q`, `depth_q`, and `depth_warmup`; requires `top_k==1`, and zero-init gates keep it step-0-identical (non-strict).
-- Image-wise shared-expert configs use `ProMoE_TC_B_image_shared` with `num_image_experts` (default 3), `image_expert_backend` (`bmm` by default, or `loop`), `image_pool_num_heads` (default 1), `image_routing_contrastive_lam`, and `image_routing_contrastive_temperature` under `DiT_B_config.MoE_config`. Only the shared branch changes: conditional and unconditional images both use the same learned-query pooling and select one image expert independently. Token-wise routing stays inherited from base TC; train this variant fresh.
+- Image-wise shared-expert configs use `ProMoE_TC_B_image_shared` with `num_image_experts` (default 3), `image_expert_backend` (`bmm` by default, or `loop`), `image_pool_num_heads` (default 1), `image_routing_contrastive_lam`, and `image_routing_contrastive_temperature` under `DiT_B_config.MoE_config`. Only the shared branch changes: conditional and unconditional images both use the same learned-query pooling and select one image expert independently by default. Token-wise routing stays inherited from base TC; train this variant fresh.
 - `ProMoE_TC_B_shared_plus_cond_image` retains the fixed shared expert and adds the same image pool only for images whose post-dropout label is conditional. Its original `e4` B config keeps shared/unconditional widths at 1536 (dense FFN width / 2), and conditional token/image widths at 768 (dense width / 4), via `moe_intermediate_size`, `shared_expert_intermediate_size`, `uncond_expert_intermediate_size`, and `image_expert_intermediate_size`. The `e4_ffn_thirds` config reuses the same model with shared/conditional-token/conditional-image widths of 1024 (dense width / 3) and an unconditional width of 2048 (2 * dense width / 3). Both schemes match FFN matrix work on conditional and unconditional branches; pooling/router overhead is extra. The token router and attention-pooling design are inherited.
 - The two image-expert launch configs in `scripts/_run_times/2026_10_21/` explicitly use `num_image_experts: 4` and the `e4` filename suffix. The configurable model constructors retain their default of 3; use the launch YAML to reproduce the selected experiment.
+- The additive image model accepts integer token `top_k` from 1 through
+  `num_routed_experts`; image routing uses `image_top_k` (default 1). The `e4_token_top2` config
+  uses 12 conditional token experts, four conditional image experts, and widths
+  of 1536 for token/image/shared/unconditional FFNs. Conditional tokens activate
+  two token experts, one image expert, and shared (width sum 6144), matching
+  base token Top-3 plus shared in FFN matrix work. Unconditional tokens still
+  execute only shared and the dedicated unconditional expert (width sum 3072).
+  Image pooling/router overhead and total parameter count are additional; this
+  is not an equality of complete-model FLOPs or total parameters.
+- Both image expert pools support integer `image_top_k` in `[1, num_image_experts]`.
+  Each image shares its selected experts across all tokens; raw selected cosine
+  scores weight their summed outputs. Image contrastive guidance includes every
+  selected assignment. Default Top-1 retains its original max/tie behavior.
+  The `e4_image_top2` config is the counterpart of `e4_token_top2`: token Top-1
+  plus image Top-2, with the same 12 token experts, four image experts, widths 1536,
+  367,743,008 trainable parameters and conditional/unconditional FFN width sums
+  6144/3072. It retains shared and bypasses the image branch for unconditional images.
 - Loss-free (lossfree) configs set `use_lossfree_bias` and `bias_update_rate` (`u`); the per-prototype bias is a non-trainable buffer added only to top-1 selection, step-0-identical (non-strict).
 - Most provided YAMLs set `resume_checkpoint: True`; when no checkpoint exists the loader logs an error and training starts from step 0.
 - `sample.py` behavior:

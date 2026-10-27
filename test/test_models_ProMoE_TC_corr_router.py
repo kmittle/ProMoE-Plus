@@ -154,13 +154,15 @@ def model_inputs(kind, labels, z, noise, sigma, generator_seed=GENERATOR_SEED):
             corr_router_sigma=sigma,
             corr_router_generator=torch.Generator().manual_seed(generator_seed),
         )
+    if kind == "corr":
+        inputs.update(corr_router_z=z, corr_router_noise=noise)
     return inputs
 
 
 def train_step(model, kind, autocast=False, labels=LABELS, sigma_value=None, z=None, noise=None):
     """One step as train.py runs it: the forward under autocast, the backward outside.
 
-    ``z`` / ``noise`` replace the clean-route teacher inputs without changing x.
+    ``z`` / ``noise`` replace the auxiliary inputs without changing x.
     """
     model.train()
     model.zero_grad(set_to_none=True)
@@ -392,10 +394,137 @@ class ReferenceTests(unittest.TestCase):
                 torch.testing.assert_close(counts[2], gap)
 
     def test_the_reference_sigma_stops_at_one(self):
-        model = perturb(build_corr(no_reference_prob=0.0, skip_intervals=[50]))
-        with captured_inputs(model.t_embedder) as times:
-            train_step(model, "corr", sigma_value=0.98)
-        self.assertTrue(torch.equal(times[2], torch.full_like(times[2], 1000.0)))
+        for mode, previous_index in (("model_velocity", 2), ("same_noise", 0)):
+            with self.subTest(mode):
+                model = perturb(build_corr(no_reference_prob=0.0, skip_intervals=[50], previous_state_mode=mode))
+                with captured_inputs(model.t_embedder) as times:
+                    train_step(model, "corr", sigma_value=0.98)
+                previous_time = times[previous_index]
+                self.assertTrue(torch.equal(previous_time, torch.full_like(previous_time, 1000.0)))
+
+
+class SameNoiseReferenceTests(unittest.TestCase):
+    def build(self, kind, **overrides):
+        config = dict(previous_state_mode="same_noise", **overrides)
+        model = build_corr(**config) if kind == "corr" else build_clean_corr(corr_overrides=config, align_lam=1.0)
+        return perturb_correctors(perturb(model))
+
+    def test_reference_uses_the_original_pair_and_only_one_auxiliary_forward(self):
+        x, t, z, noise, sigma = batch()
+        labels = dropped_labels()
+        use, previous_sigma_all = expected_draws(0.5, sigma, labels)
+        self.assertTrue(bool(use.any()))
+        self.assertTrue(bool(((labels != 1000) & ~use).any()))
+        index = torch.where(use)[0]
+        previous_sigma = previous_sigma_all[index]
+        scale = previous_sigma.view(-1, 1, 1, 1, 1)
+        previous = (1 - scale) * z[index] + scale * noise[index]
+        for kind in ("corr", "clean_corr"):
+            with self.subTest(kind):
+                model = self.build(kind)
+                with captured_inputs(model.x_embedder) as patches, captured_inputs(model.t_embedder) as times:
+                    train_step(model, kind)
+                # One reference pass (input + empty reference), the optional
+                # clean teacher (input only), and the student (input + reference).
+                self.assertEqual(len(patches), 4 if kind == "corr" else 5)
+                self.assertEqual(len(times), len(patches))
+                torch.testing.assert_close(patches[0], previous.squeeze(2), rtol=0, atol=0)
+                torch.testing.assert_close(patches[1], torch.zeros_like(patches[1]), rtol=0, atol=0)
+                torch.testing.assert_close(times[0], previous_sigma * 1000)
+                torch.testing.assert_close(patches[-2], x.squeeze(2), rtol=0, atol=0)
+                if kind == "clean_corr":
+                    torch.testing.assert_close(patches[2], z[labels != 1000].squeeze(2), rtol=0, atol=0)
+                    torch.testing.assert_close(times[2], torch.zeros_like(times[2]), rtol=0, atol=0)
+                with torch.no_grad():
+                    y = model.y_embedder.embedding_table(labels)
+                    prediction = model._run(
+                        previous, previous_sigma * 1000, y[index], labels[index], model._no_reference(previous)
+                    )
+                    expected = torch.zeros_like(x)
+                    expected[index] = previous - scale * model._velocity(prediction, previous)
+                torch.testing.assert_close(patches[-1], expected.squeeze(2))
+                expected_sigma = torch.ones(BATCH)
+                expected_sigma[index] = previous_sigma
+                torch.testing.assert_close(times[-1], expected_sigma * 1000)
+
+    def test_reference_is_detached_and_main_forward_keeps_gradients_in_fp32_and_bf16(self):
+        for kind in ("corr", "clean_corr"):
+            for autocast in (False, True):
+                with self.subTest(kind=kind, autocast=autocast):
+                    model = self.build(kind, no_reference_prob=0.0)
+                    _, _, z, noise, _ = batch()
+                    z.requires_grad_()
+                    noise.requires_grad_()
+                    grad_modes = []
+                    handle = model.x_embedder.register_forward_pre_hook(
+                        lambda _module, args: grad_modes.append(torch.is_grad_enabled())
+                    )
+                    try:
+                        output, grads = train_step(model, kind, autocast=autocast, z=z, noise=noise)
+                    finally:
+                        handle.remove()
+                    self.assertEqual(grad_modes, ([False] * (2 if kind == "corr" else 3)) + [True, True])
+                    self.assertIsNone(z.grad)
+                    self.assertIsNone(noise.grad)
+                    self.assertTrue(bool(torch.isfinite(output).all()))
+                    expected = {name for name, parameter in model.named_parameters() if parameter.requires_grad}
+                    self.assertEqual(set(grads), expected)
+                    for name, gradient in grads.items():
+                        self.assertTrue(bool(torch.isfinite(gradient).all()), name)
+                    self.assertGreater(sum(float(g.abs().sum()) for name, g in grads.items() if is_corrector(name)), 0)
+
+    def test_reference_selection_and_both_random_streams_are_unchanged(self):
+        for kind in ("corr", "clean_corr"):
+            records = []
+            for mode in ("model_velocity", "same_noise"):
+                model = self.build(kind)
+                model.previous_state_mode = mode
+                x, t, z, noise, sigma = batch()
+                inputs = model_inputs(kind, LABELS, z, noise, sigma)
+                torch.manual_seed(DROPOUT_SEED)
+                model(x, t, **inputs)
+                records.append((
+                    torch.get_rng_state(), inputs["corr_router_generator"].get_state(), model.last_corr_reference
+                ))
+            for before, after in zip(*records):
+                self.assertTrue(torch.equal(before, after), kind)
+
+    def test_no_auxiliary_reference_pass_when_all_images_are_uncond_or_without_reference(self):
+        for kind in ("corr", "clean_corr"):
+            for all_uncond in (False, True):
+                with self.subTest(kind=kind, all_uncond=all_uncond):
+                    model = self.build(kind, no_reference_prob=0.999999)
+                    labels = torch.full_like(LABELS, 1000) if all_uncond else LABELS
+                    with captured_inputs(model.x_embedder) as patches:
+                        train_step(model, kind, labels=labels)
+                    teacher_calls = int(kind == "clean_corr" and not all_uncond)
+                    self.assertEqual(len(patches), 2 + teacher_calls)
+                    self.assertEqual(float(model.last_corr_reference[0]), 0.0)
+                    torch.testing.assert_close(patches[-1], torch.zeros_like(patches[-1]), rtol=0, atol=0)
+
+    def test_four_and_five_dimensional_latents_produce_the_same_prediction(self):
+        for kind in ("corr", "clean_corr"):
+            outputs = []
+            model = self.build(kind)
+            for ndim in (4, 5):
+                x, t, z, noise, sigma = batch()
+                if ndim == 4:
+                    x, z, noise = (value.squeeze(2) for value in (x, z, noise))
+                torch.manual_seed(DROPOUT_SEED)
+                outputs.append(model(x, t, **model_inputs(kind, LABELS, z, noise, sigma)).detach())
+            torch.testing.assert_close(*outputs, rtol=0, atol=0)
+
+    def test_eval_needs_no_training_pair_and_is_identical_between_modes(self):
+        x, t, z, _, sigma = batch()
+        for kind in ("corr", "clean_corr"):
+            model = self.build(kind).eval()
+            for reference in ({}, dict(corr_reference_x0=z, corr_reference_sigma=sigma)):
+                outputs = []
+                for mode in ("model_velocity", "same_noise"):
+                    model.previous_state_mode = mode
+                    with torch.no_grad():
+                        outputs.append(model(x, t, context=LABELS, **reference))
+                torch.testing.assert_close(*outputs, rtol=0, atol=0)
 
 
 class CorrectionTests(unittest.TestCase):
@@ -825,8 +954,46 @@ class SamplingCheckpointTests(unittest.TestCase):
         cfg.corr_reference_velocity = "conditional"
         self.assertEqual(sample.sampling_folder_name(cfg, 1.5), expected)
 
+    def test_separate_experiments_share_standard_internal_directory_names(self):
+        import sample
 
-def _ddp_worker(rank, world_size, init_file, output_dir, kind):
+        cfg = EasyDict(image_size=256, global_seed=0, num_fid_samples=50000, sample_batch_size=128,
+                       corr_reference_separate_output=True)
+        for scale in (1.0, 1.5):
+            expected = f"img256_cfg{scale}_seed0_FID50K_bs128_ema"
+            for mode in ("conditional", "cfg"):
+                cfg.corr_reference_velocity = mode
+                self.assertEqual(sample.sampling_folder_name(cfg, scale), expected)
+
+    def test_standard_layout_requires_a_separate_output_and_explicit_source(self):
+        from pathlib import Path
+        import sample
+
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent, prefix=".corr_layout_") as directory:
+            root = Path(directory)
+            source = root / "training" / "checkpoints"
+            source.mkdir(parents=True)
+            checkpoint = source / "ckpt_step_300000.pth"
+            checkpoint.write_bytes(b"checkpoint placeholder")
+            cfg = EasyDict(output_dir=str(root / "conditional"), corr_reference_separate_output=True,
+                           step_list_for_sample=[300000])
+            with self.assertRaisesRegex(ValueError, "sample_checkpoint_dir"):
+                sample.resolve_sampling_checkpoints(cfg)
+            cfg.sample_checkpoint_dir = str(source)
+            for output in (root / "training", root / "training" / "nested", root):
+                cfg.output_dir = str(output)
+                with self.assertRaisesRegex(ValueError, "separate experiment"):
+                    sample.resolve_sampling_checkpoints(cfg)
+            for mode in ("conditional", "cfg"):
+                cfg.output_dir = str(root / mode)
+                cfg.corr_reference_velocity = mode
+                self.assertEqual(sample.resolve_sampling_checkpoints(cfg)[1], [str(checkpoint)])
+            cfg.corr_reference_separate_output = "true"
+            with self.assertRaisesRegex(ValueError, "boolean"):
+                sample.resolve_sampling_checkpoints(cfg)
+
+
+def _ddp_worker(rank, world_size, init_file, output_dir, kind, previous_state_mode):
     """Two DDP steps as train.py runs them: bf16 forward, the stat collectives, backward, update.
 
     Rank 1 starts with a batch of uncond images only, so its first step trains
@@ -836,8 +1003,9 @@ def _ddp_worker(rank, world_size, init_file, output_dir, kind):
     try:
         import train  # the generator, stat collectors and reducer under test
 
-        builder = build_corr if kind == "corr" else (lambda: build_clean_corr(align_lam=1.0))
-        model = perturb_correctors(perturb(builder()))
+        config = dict(previous_state_mode=previous_state_mode)
+        model = build_corr(**config) if kind == "corr" else build_clean_corr(corr_overrides=config, align_lam=1.0)
+        model = perturb_correctors(perturb(model))
         ddp_model = DistributedDataParallel(model)
         optimizer = torch.optim.SGD(ddp_model.parameters(), lr=1e-2)
         trainable = {name for name, parameter in model.named_parameters() if parameter.requires_grad}
@@ -856,6 +1024,8 @@ def _ddp_worker(rank, world_size, init_file, output_dir, kind):
             }
             if kind == "clean_corr":
                 inputs.update(clean_route_z=z, clean_route_noise=noise, clean_route_sigma=sigma)
+            else:
+                inputs.update(corr_router_z=z, corr_router_noise=noise)
             with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
                 output = ddp_model(x, t, **inputs)
             stats = train._collect_corr_router_stats(ddp_model)
@@ -883,11 +1053,14 @@ class DistributedTests(unittest.TestCase):
         import train
 
         world_size = 2
-        for kind in ("corr", "clean_corr"):
-            with self.subTest(kind), tempfile.TemporaryDirectory() as output_dir:
+        for kind, mode in (
+            ("corr", "model_velocity"), ("corr", "same_noise"),
+            ("clean_corr", "model_velocity"), ("clean_corr", "same_noise"),
+        ):
+            with self.subTest(kind=kind, mode=mode), tempfile.TemporaryDirectory() as output_dir:
                 mp.spawn(
                     _ddp_worker,
-                    args=(world_size, os.path.join(output_dir, "init"), output_dir, kind),
+                    args=(world_size, os.path.join(output_dir, "init"), output_dir, kind, mode),
                     nprocs=world_size,
                     join=True,
                 )
@@ -938,6 +1111,13 @@ class TrainingIntegrationTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
+    def test_previous_state_mode_defaults_to_the_original_velocity_method(self):
+        self.assertEqual(corr_router.parse_corr_router_config(corr_config())["previous_state_mode"], "model_velocity")
+        for mode in ("model_velocity", "same_noise"):
+            self.assertEqual(corr_router.parse_corr_router_config(corr_config(previous_state_mode=mode))[
+                "previous_state_mode"
+            ], mode)
+
     def test_invalid_settings_are_refused(self):
         cases = {
             "missing key": {key: value for key, value in corr_config().items() if key != "hidden_dim"},
@@ -954,6 +1134,9 @@ class ConfigTests(unittest.TestCase):
             "prob of one": corr_config(no_reference_prob=1.0),
             "negative prob": corr_config(no_reference_prob=-0.1),
             "nan prob": corr_config(no_reference_prob=float("nan")),
+            "unknown previous state": corr_config(previous_state_mode="typo"),
+            "bool previous state": corr_config(previous_state_mode=True),
+            "null previous state": corr_config(previous_state_mode=None),
         }
         for name, config in cases.items():
             with self.subTest(name), self.assertRaises(ValueError):
@@ -989,6 +1172,20 @@ class ConfigTests(unittest.TestCase):
         inputs["corr_router_sigma"] = sigma * 0.5
         with self.assertRaisesRegex(ValueError, "same noise levels"):
             clean(x, t, **inputs)
+
+    def test_same_noise_requires_the_original_latents_and_noise_with_matching_shapes(self):
+        x, t, z, noise, sigma = batch()
+        for kind in ("corr", "clean_corr"):
+            config = dict(previous_state_mode="same_noise")
+            model = build_corr(**config) if kind == "corr" else build_clean_corr(corr_overrides=config)
+            prefix = "corr_router" if kind == "corr" else "clean_route"
+            for field, source in (("z", z), ("noise", noise)):
+                for invalid in (None, source[:-1], source.squeeze(2), source.to("meta")):
+                    with self.subTest(kind=kind, field=field, invalid_type=type(invalid).__name__):
+                        inputs = model_inputs(kind, LABELS, z, noise, sigma)
+                        inputs[f"{prefix}_{field}"] = invalid
+                        with self.assertRaises(ValueError):
+                            model(x, t, **inputs)
 
 
 if __name__ == "__main__":

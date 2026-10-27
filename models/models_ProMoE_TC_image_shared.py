@@ -3,8 +3,8 @@
 Only the shared branch is replaced. The base token router, conditional/unconditional
 experts, token routing-contrastive loss, attention, and block residuals are inherited.
 Each MoE layer pools each image with one learned cross-attention query and a Linear,
-then selects one of its own image experts by cosine similarity to learned prototypes.
-The selected cosine score weights that image's expert output, as in the base TC router.
+then selects top-k image experts by cosine similarity to learned prototypes (default 1).
+The selected cosine scores weight the experts' summed outputs, as in the base TC router.
 
 Both execution backends use the same parameters and routing decisions: ``bmm`` gathers
 expert weights per image, while ``loop`` groups images by expert and calls its Linear
@@ -63,7 +63,7 @@ class ImageAttentionPooling(nn.Module):
 
 
 class ImageWiseSharedExpertPool(nn.Module):
-    """One top-1 image expert per image, shared by all tokens of that image."""
+    """Top-k image experts per image, shared by all tokens of that image."""
 
     def __init__(
         self,
@@ -75,17 +75,21 @@ class ImageWiseSharedExpertPool(nn.Module):
         routing_contrastive_lam=1.0,
         routing_contrastive_temperature=0.07,
         first_expert=None,
+        top_k=1,
     ):
         super().__init__()
         if (isinstance(num_image_experts, bool) or not isinstance(num_image_experts, int)
                 or num_image_experts < 1):
             raise ValueError("num_image_experts must be a positive integer")
+        if isinstance(top_k, bool) or not isinstance(top_k, int) or not 1 <= top_k <= num_image_experts:
+            raise ValueError("image_top_k must be an integer in [1, num_image_experts]")
         if not math.isfinite(routing_contrastive_temperature) or routing_contrastive_temperature <= 0:
             raise ValueError("image routing contrastive temperature must be finite and positive")
         if not math.isfinite(routing_contrastive_lam) or routing_contrastive_lam < 0:
             raise ValueError("image routing contrastive coefficient must be finite and nonnegative")
         self.hidden_size = hidden_size
         self.num_image_experts = num_image_experts
+        self.top_k = top_k
         self.routing_contrastive_lam = routing_contrastive_lam
         self.routing_contrastive_temperature = routing_contrastive_temperature
         self.pooling = ImageAttentionPooling(hidden_size, pool_num_heads)
@@ -120,7 +124,11 @@ class ImageWiseSharedExpertPool(nn.Module):
             images = F.normalize(image_embeddings.to(score_dtype), dim=-1)
             centers = F.normalize(self.cluster_centers.to(score_dtype), dim=-1)
             scores = images @ centers.T
-            selected_scores, expert_indices = scores.max(dim=-1)
+            if self.top_k == 1:
+                # Preserve the original shapes and max tie-breaking for old configs.
+                selected_scores, expert_indices = scores.max(dim=-1)
+            else:
+                selected_scores, expert_indices = scores.topk(self.top_k, dim=-1)
         return selected_scores, expert_indices
 
     def _bmm_linear(self, hidden_states, expert_indices, projection):
@@ -161,17 +169,29 @@ class ImageWiseSharedExpertPool(nn.Module):
         image_embeddings = self.pooling(hidden_states)
         selected_scores, expert_indices = self.compute_router(image_embeddings)
         self.last_expert_indices = expert_indices.detach()
+        routed_states = hidden_states
+        if self.top_k > 1:
+            batch, tokens, channels = hidden_states.shape
+            # One batch row per (image, selected expert); both backends execute
+            # exactly the selected FFNs. Pooling/routing still runs once per image.
+            routed_states = hidden_states[:, None].expand(-1, self.top_k, -1, -1).reshape(
+                batch * self.top_k, tokens, channels
+            )
+        flat_indices = expert_indices.reshape(-1)
         if self.expert_backend == "bmm":
-            output = self._forward_bmm(hidden_states, expert_indices)
+            output = self._forward_bmm(routed_states, flat_indices)
         else:
-            output = self._forward_loop(hidden_states, expert_indices)
-        output = output * selected_scores.to(output.dtype)[:, None, None]
+            output = self._forward_loop(routed_states, flat_indices)
+        output = output * selected_scores.to(output.dtype).reshape(-1, 1, 1)
+        if self.top_k > 1:
+            output = output.reshape(batch, self.top_k, tokens, channels).sum(dim=1)
         self.last_routing_contrastive_loss = None
         if self.training and self.routing_contrastive_lam > 0:
             # Reuse the base objective exactly, substituting image embeddings for
-            # token embeddings. Cond and uncond images both use this shared branch.
+            # token embeddings. With top-k, an image belongs to every selected
+            # expert's cluster; the caller controls which images enter this pool.
             loss = SparseMoeBlock.compute_routing_contrastive_loss(
-                self, image_embeddings, expert_indices, use_top_k=False
+                self, image_embeddings, expert_indices, use_top_k=self.top_k > 1
             ) * self.routing_contrastive_lam
             self.last_routing_contrastive_loss = loss.detach()
             output = AddAuxiliaryLoss.apply(output, loss)
@@ -200,6 +220,7 @@ class DiT(BaseDiT):
                     "image_routing_contrastive_temperature", 0.07
                 ),
                 first_expert=shared,
+                top_k=MoE_config.get("image_top_k", 1),
             )
 
     def set_image_expert_backend(self, backend):

@@ -1,8 +1,9 @@
 # Inference only: reuse the original 300K EMA checkpoint; no training.
 # Only the next-step reference changes: x0_hat = x - sigma * v_cfg.
-# New output bucket plus _corr_ref_cfg sample suffix keep old results intact.
+# A separate experiment bucket uses the same standard internal layout as the source run.
 sample_checkpoint_dir: "outputs/ProMoE_TC_B_corr_router/004_ProMoE_B_corr_router/checkpoints"
 corr_reference_velocity: cfg
+corr_reference_separate_output: True
 
 model_name: "ProMoE_TC_B_corr_router"
 

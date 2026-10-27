@@ -34,10 +34,25 @@ For `ProMoE_TC_B_shared_plus_cond_image`, the fixed shared expert remains always
 while the additional image pool receives only conditional images after label dropout.
 The same automatic loop instrumentation counts only those images. On all-unconditional
 input, no image-pooling, image-routing, or image-FFN work runs, and none of that pool's
-parameters are counted as activated. The B experiment uses widths 1536 for shared
+parameters are counted as activated. The original `e4` B experiment uses widths 1536 for shared
 and unconditional FFNs, and 768 for conditional token and image FFNs: the selected
 FFN widths sum to the dense width of 3072 in both cases. Pooling/router work is extra,
 so matching those FFN widths is not an assertion of equal complete-model FLOPs.
+
+The `e4_token_top2` B config instead keeps all expert FFN widths at 1536 and
+selects two token experts plus one image expert for each conditional token,
+in addition to shared. Its conditional FFN width sum is 6144, the same as base
+Top-3 routing plus shared at that width. Unconditional FFN work stays at 3072.
+Image pooling and routing remain part of the measured total, so complete-model
+FLOPs and total parameters are not claimed to equal the base Top-3 model.
+
+The `e4_image_top2` counterpart selects one token expert and two image experts
+(`top_k: 1`, `image_top_k: 2`). Expert counts and widths are unchanged, so its
+trainable parameter count matches `e4_token_top2` exactly (367,743,008), and
+conditional/unconditional FFN width sums remain 6144/3072. The image pool routes
+once per image, executes each selected image/expert pair, and sums cosine-weighted
+outputs. Loop instrumentation counts both selected FFNs; activated-parameter
+tracking uses the union of selected image expert IDs, without counting unused experts.
 
 ## Output Directory
 

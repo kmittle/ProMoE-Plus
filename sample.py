@@ -171,6 +171,17 @@ def load_checkpoints_every_val_step(checkpoint_dir, sample_every_step):
 def resolve_sampling_checkpoints(cfg):
     """Allow inference ablations to read old weights into a separate output bucket."""
     source = getattr(cfg, 'sample_checkpoint_dir', None)
+    separate_output = getattr(cfg, 'corr_reference_separate_output', False)
+    if not isinstance(separate_output, bool):
+        raise ValueError('corr_reference_separate_output must be a boolean')
+    if separate_output:
+        if not source:
+            raise ValueError('corr_reference_separate_output requires sample_checkpoint_dir')
+        training_output = osp.dirname(osp.realpath(source))
+        sampling_output = osp.realpath(cfg.output_dir)
+        common = osp.commonpath([training_output, sampling_output])
+        if common in (training_output, sampling_output):
+            raise ValueError('corr_reference_separate_output requires a separate experiment output directory')
     checkpoint_dir = source or osp.join(cfg.output_dir, 'checkpoints')
     steps = getattr(cfg, 'step_list_for_sample', None)
     if source and not steps:
@@ -192,7 +203,8 @@ def resolve_sampling_checkpoints(cfg):
 def sampling_folder_name(cfg, guide_scale):
     name = (f"img{cfg.image_size}_cfg{guide_scale}_seed{cfg.global_seed}_"
             f"FID{int(cfg.num_fid_samples / 1000)}K_bs{cfg.sample_batch_size}_ema")
-    if getattr(cfg, 'corr_reference_velocity', 'conditional') == 'cfg':
+    if (getattr(cfg, 'corr_reference_velocity', 'conditional') == 'cfg'
+            and not getattr(cfg, 'corr_reference_separate_output', False)):
         name += '_corr_ref_cfg'
     return name
 
@@ -574,6 +586,13 @@ if __name__ == '__main__':
         custom_cfg['vae_path'] = args.vae_path
 
     if args.corr_reference_velocity is not None:
+        # Separate-output folder names do not encode the mode, so a contradicting
+        # CLI mode would mix both modes' images under one folder.
+        if (custom_cfg.get('corr_reference_separate_output', False)
+                and args.corr_reference_velocity
+                != custom_cfg.get('corr_reference_velocity', 'conditional')):
+            raise ValueError('--corr-reference-velocity must match the YAML corr_reference_velocity '
+                             'when corr_reference_separate_output is True')
         custom_cfg['corr_reference_velocity'] = args.corr_reference_velocity
 
     main(**custom_cfg)

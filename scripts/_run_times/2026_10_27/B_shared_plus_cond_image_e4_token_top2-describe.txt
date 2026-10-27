@@ -1,0 +1,8 @@
+实验 / Experiment: B_shared_plus_cond_image_e4_token_top2
+model_name: ProMoE_TC_B_shared_plus_cond_image  |  config: configs/004_ProMoE_B_shared_plus_cond_image_e4_token_top2.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分流、token 原型路由、固定 shared expert）；直接父变体 / Parent: B_shared_plus_cond_image_e4，保留 shared，额外加入仅服务 cond 图像的 image-wise 专家池。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. Token Top-2 + Image Top-1：12 个 conditional token 专家中每个 token 选两个，4 个 image 专家中每张 cond 图像选一个，整张图所有 token 共用该 image 专家；固定 shared 分支继续参与。token 路由沿用基线余弦分数和 Top-K 加权求和，use_top_k_for_routing_contrastive: True 使 token 对比损失使用两个分配；image pooling、余弦 top-1 和图级对比机制保持原设计。
+2. FFN 计算预算 / FFN budget：token、image、shared、uncond 的 hidden dim 均为 1536，即原 ProMoE 的专家宽度。cond 激活宽度和为 shared 1536 + token 2×1536 + image 1536 = 6144，与原 token Top-3 + shared 相同；uncond 仍只执行 shared 和专用 uncond FFN 各一次，宽度和 3072，跳过 image 分支。仅对齐 FFN 主矩阵计算，image pooling/router 另有开销，总参数不配平。完整模型可训练参数 367,743,008（含 pooling/router）。
+3. 训练与运行 / Training：独立从零训练，seed=0、global batch=256、lr=1e-4、自动 4 卡；300K 以 CFG 1.0/1.5 各采样 50K 张，sample_batch_size=128/卡、250 步，不自动续训至 500K。默认 image_expert_backend=bmm，FLOPs 计数自动使用 loop 并还原。latent 默认 /mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz，可用 PROMOE_LATENT_PATH 覆盖。输出为 outputs/ProMoE_TC_B_shared_plus_cond_image/004_ProMoE_B_shared_plus_cond_image_e4_token_top2/

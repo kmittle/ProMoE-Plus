@@ -1,7 +1,7 @@
 """ProMoE-TC retaining shared experts and adding conditional image-wise experts.
 
 The fixed shared expert still processes every image. Conditional images additionally
-use one token-routed expert per token and one image-routed expert for the whole image;
+use top-k token-routed experts per token and image-routed experts for the whole image;
 unconditional images use only the shared and dedicated unconditional experts.
 Widths are independent configuration values so the FFN budget can be apportioned
 without changing the pooling, prototype router, or contrastive objective.
@@ -29,6 +29,7 @@ class SparseMoeBlock(BaseSparseMoeBlock):
         image_expert_intermediate_size=None,
         uncond_expert_intermediate_size=None,
         num_image_experts=3,
+        image_top_k=1,
         image_expert_backend="bmm",
         image_pool_num_heads=1,
         image_routing_contrastive_lam=1.0,
@@ -38,8 +39,9 @@ class SparseMoeBlock(BaseSparseMoeBlock):
         super().__init__(*args, **kwargs)
         if not self.use_shared_expert or not self.use_uncond_expert:
             raise ValueError("conditional image experts require shared and unconditional experts")
-        if self.top_k != 1:
-            raise ValueError("the three-branch image ablation requires token top_k=1")
+        if (isinstance(self.top_k, bool) or not isinstance(self.top_k, int)
+                or not 1 <= self.top_k <= self.num_routed_experts):
+            raise ValueError("token top_k must be an integer in [1, num_routed_experts]")
         token_width = self.experts[0].intermediate_size
         image_width = _positive_width(
             token_width if image_expert_intermediate_size is None else image_expert_intermediate_size,
@@ -57,6 +59,7 @@ class SparseMoeBlock(BaseSparseMoeBlock):
             hidden_size=self.hidden_size,
             intermediate_size=image_width,
             num_image_experts=num_image_experts,
+            top_k=image_top_k,
             expert_backend=image_expert_backend,
             pool_num_heads=image_pool_num_heads,
             routing_contrastive_lam=image_routing_contrastive_lam,
@@ -74,7 +77,10 @@ class SparseMoeBlock(BaseSparseMoeBlock):
         else:
             # Clear previous-forward diagnostics, and keep every image parameter in
             # DDP's graph without running a dummy pooling or expert forward.
-            self.image_experts.last_expert_indices = cond_ids.detach()
+            self.image_experts.last_expert_indices = (
+                cond_ids.detach() if self.image_experts.top_k == 1
+                else cond_ids.new_empty((0, self.image_experts.top_k))
+            )
             self.image_experts.last_routing_contrastive_loss = None
             if self.training and torch.is_grad_enabled():
                 zero = sum(parameter.reshape(-1)[0] * 0.0

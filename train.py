@@ -3254,8 +3254,13 @@ def worker(gpu, cfg):
             arg_c['clean_route_noise'] = noise
             arg_c['clean_route_sigma'] = sigmas
         if cfg.model_name in CORR_ROUTER_MODELS:
-            # The model steps back from noised_z_in to build its routing reference;
-            # its random draws come from this position-seeded generator.
+            # Reuse the exact latent/noise pair if the reference is built by
+            # same-noise interpolation. The combo already receives this pair
+            # through clean_route_*; model_velocity ignores the pair.
+            if cfg.model_name not in CLEAN_ROUTE_MODELS:
+                arg_c['corr_router_z'] = z
+                arg_c['corr_router_noise'] = noise
+            # Reference draws remain independent of the global RNG stream.
             arg_c['corr_router_sigma'] = sigmas
             arg_c['corr_router_generator'] = _corr_router_generator(
                 global_seed, step, accum_steps, cfg.rank, z.device

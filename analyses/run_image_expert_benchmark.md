@@ -31,8 +31,9 @@ To isolate scaling with expert count, add `--expert-counts 3 6 12 24 --routing b
 --freeze-weights`. These overrides apply only inside the benchmark; experiment YAMLs
 and model routing defaults are unchanged. Balanced dispatch assigns conditional
 images round-robin and gathers each assigned prototype's cosine score, retaining
-the pooling/router/contrastive gradient paths. Every expert is exercised when there
-are at least as many conditional images as experts. Frozen weights use AdamW at
+the pooling/router/contrastive gradient paths. With `image_top_k` k, image i takes
+experts `(i * k + j) mod E` for j < k. Every expert is exercised when conditional
+images times k are at least the number of experts. Frozen weights use AdamW at
 learning rate zero while still running its state updates, plus the usual backward,
 clipping, DDP communication, and EMA. This measures execution with fixed parameters
 and equal dispatch, rather than allowing BF16 numerical differences to accumulate

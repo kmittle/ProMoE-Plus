@@ -28,8 +28,8 @@ step, so the model builds one for each prototype-routed image.  With
 probability ``no_reference_prob`` the image gets no reference.  Otherwise a gap
 ``k`` is drawn uniformly from ``skip_intervals``, in thousandths of sigma (one
 Euler step of a ``1000 / k``-step sampler), and ``sigma_ref = min(sigma +
-k / 1000, 1)``.  Two no-grad passes without reference then step back along
-the model's own velocity:
+k / 1000, 1)``.  By default (``previous_state_mode: model_velocity``), two
+no-grad passes without reference then step back along the model's own velocity:
 
     v = model(x_t, sigma);   x_prev = x_t + (sigma_ref - sigma) * v
     x0_hat = x_prev - sigma_ref * model(x_prev, sigma_ref)
@@ -39,6 +39,17 @@ trajectory is a function of the current one.  Building it from the clean
 latent with the same noise instead would put both points on the straight
 conditional path, which two points determine together with its clean end, and
 the reference would leak the target.
+
+The training-only ablation ``previous_state_mode: same_noise`` deliberately
+builds that leaking previous state, from the exact clean latent ``z`` and noise
+used for ``x_t``:
+
+    x_prev = (1 - sigma_ref) * z + sigma_ref * noise
+    x0_hat = x_prev - sigma_ref * model(x_prev, sigma_ref)
+
+This uses one no-grad pass instead of two. Only the previous-state construction
+changes: the gap and no-reference draws, the reference formula
+``x0_hat = x_prev - sigma_ref * v(x_prev)``, and the sampling path stay the same.
 
 The coin and the gaps come from a generator train.py seeds from the run's
 seed and the micro-batch's position (step, micro-step, rank) alone, so the
@@ -114,7 +125,7 @@ def _require_int(value, name):
 
 
 def parse_corr_router_config(corr_router_config):
-    """Validate the three corr_router settings; every key is required."""
+    """Validate three required settings and the optional previous-state mode."""
     if corr_router_config is None:
         raise ValueError(
             "corr_router models need DiT_*_config.corr_router_config with keys "
@@ -122,7 +133,7 @@ def parse_corr_router_config(corr_router_config):
         )
     config = dict(corr_router_config)
     missing = [key for key in CORR_ROUTER_CONFIG_KEYS if key not in config]
-    unknown = sorted(set(config) - set(CORR_ROUTER_CONFIG_KEYS))
+    unknown = sorted(set(config) - set(CORR_ROUTER_CONFIG_KEYS) - {"previous_state_mode"})
     if missing or unknown:
         raise ValueError(f"corr_router_config: missing keys {missing}, unknown keys {unknown}")
 
@@ -142,10 +153,14 @@ def parse_corr_router_config(corr_router_config):
     no_reference_prob = float(config["no_reference_prob"])
     if not (math.isfinite(no_reference_prob) and 0.0 <= no_reference_prob < 1.0):
         raise ValueError("corr_router_config.no_reference_prob must lie in [0, 1)")
+    previous_state_mode = config.get("previous_state_mode", "model_velocity")
+    if not isinstance(previous_state_mode, str) or previous_state_mode not in ("model_velocity", "same_noise"):
+        raise ValueError("corr_router_config.previous_state_mode must be 'model_velocity' or 'same_noise'")
     return {
         "hidden_dim": hidden_dim,
         "skip_intervals": skip_intervals,
         "no_reference_prob": no_reference_prob,
+        "previous_state_mode": previous_state_mode,
     }
 
 
@@ -431,6 +446,7 @@ class DiT(nn.Module):
             block.init_corr_router(settings["hidden_dim"], generator)
         self.skip_intervals = settings["skip_intervals"]
         self.no_reference_prob = settings["no_reference_prob"]
+        self.previous_state_mode = settings["previous_state_mode"]
         # [reference images, prototype-routed images, summed sigma_ref - sigma
         # of the reference images] of the latest training step, for train.py.
         self.last_corr_reference = None
@@ -553,12 +569,18 @@ class DiT(nn.Module):
         x = self.unpatchify(x)                   # (N, out_channels, H, W)
         return x
 
-    def _training_reference(self, x, timestep, sigma, y, labels, generator):
+    def _training_reference(self, x, timestep, sigma, y, labels, generator, *, z=None, noise=None):
         """The reference of every image of a training batch (see the module docstring)."""
         batch = x.shape[0]
         device = x.device
         if not torch.allclose(timestep.float(), sigma * NUM_TRAIN_TIMESTEPS, rtol=1e-4, atol=1e-3):
             raise ValueError(f"corr_router assumes timestep = {NUM_TRAIN_TIMESTEPS} * sigma")
+        if self.previous_state_mode == "same_noise":
+            for name, value in (("clean latent", z), ("noise", noise)):
+                if not isinstance(value, torch.Tensor):
+                    raise ValueError(f"corr_router same_noise training requires the original {name} tensor")
+                if value.shape != x.shape or value.device != x.device:
+                    raise ValueError(f"corr_router same_noise {name} must match x's shape and device")
         routed = labels != UNCOND_LABEL
         # One coin and one gap per image, routed or not, so the draws do not
         # depend on the label dropout.
@@ -573,16 +595,22 @@ class DiT(nn.Module):
         reference_sigma = torch.ones(batch, device=device)
         if bool(use_reference.any()):
             index = torch.where(use_reference)[0]
-            current = x[index]
             current_sigma = sigma[index]
             previous_sigma = (current_sigma + gaps[index]).clamp(max=1.0)
             shape = (-1,) + (1,) * (x.dim() - 1)
             with torch.no_grad():
-                velocity = self._velocity(
-                    self._run(current, timestep[index], y[index], labels[index], self._no_reference(current)),
-                    current,
-                )
-                previous = current + (previous_sigma - current_sigma).view(shape) * velocity
+                if self.previous_state_mode == "same_noise":
+                    previous = (
+                        (1.0 - previous_sigma).view(shape) * z[index]
+                        + previous_sigma.view(shape) * noise[index]
+                    )
+                else:
+                    current = x[index]
+                    velocity = self._velocity(
+                        self._run(current, timestep[index], y[index], labels[index], self._no_reference(current)),
+                        current,
+                    )
+                    previous = current + (previous_sigma - current_sigma).view(shape) * velocity
                 previous_velocity = self._velocity(
                     self._run(
                         previous,
@@ -615,7 +643,8 @@ class DiT(nn.Module):
         return reference_x0, reference_sigma, torch.ones(batch, dtype=torch.bool, device=x.device), None
 
     def forward(self, x, timestep, context, corr_router_sigma=None, corr_router_generator=None,
-                corr_reference_x0=None, corr_reference_sigma=None, **kwargs):
+                corr_reference_x0=None, corr_reference_sigma=None, corr_router_z=None, corr_router_noise=None,
+                **kwargs):
         """
         Forward pass of DiT.
         x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
@@ -623,6 +652,8 @@ class DiT(nn.Module):
         context: (N,) tensor of class labels
         corr_router_sigma / corr_router_generator: (N, ...) noise level of ``x`` and the
             generator of the reference draws; required in training (train.py passes them).
+        corr_router_z / corr_router_noise: the original clean latent and noise used to
+            construct ``x``; required in training only for ``previous_state_mode: same_noise``.
         corr_reference_x0 / corr_reference_sigma: eval only, the previous sampling step's
             estimate of the clean latent and its noise level; omitted at the first step.
         """
@@ -640,7 +671,9 @@ class DiT(nn.Module):
 
         y, labels = self.y_embedder(context, True)
         sigma = corr_router_sigma.reshape(-1).float()
-        reference = self._training_reference(x, timestep, sigma, y, labels, corr_router_generator)
+        reference = self._training_reference(
+            x, timestep, sigma, y, labels, corr_router_generator, z=corr_router_z, noise=corr_router_noise
+        )
         # The no-grad passes above left history-free weight casts in the
         # autocast cache; drop them so this pass casts afresh (see _corr_context).
         torch.clear_autocast_cache()
