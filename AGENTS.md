@@ -166,6 +166,13 @@ These are same-run extensions, not fresh experiments or `_vN` reruns. The launch
 require an existing checkpoint at or beyond 300K, select the greatest saved step up
 to 500K, and pin that step via `resume_checkpoint_step`; they must not start from scratch.
 
+On 2026-10-30 the user set today's three new training experiments
+(`B_clean_route_student_ratio0_align_delay100k`,
+`B_clean_route_student_ratio0_align_warmup200k`, and `B_top3`) to train from
+scratch to 300K, evaluate, resume their own weights to 500K, then evaluate again.
+Both checkpoints use CFG 1.0/1.5 with 50K samples per CFG on four GPUs. These
+three arms continue after a successful 300K evaluation without a FID threshold gate.
+
 The output bucket must be a real directory under `outputs/`; do not use
 soft-links for experiment results. `/home/dev` must not contain any
 `promoe*` directory. Research papers and source packages belong in the
@@ -563,8 +570,9 @@ When the user asks to push, treat that as permission to commit relevant current 
   Both clean-route model classes support the fields. The 2026-10-30 standalone
   `student_ratio0_align_delay100k` and `student_ratio0_align_warmup200k` configs
   use (start, warmup) = (100000, 0) and (0, 200000), respectively, with final weight
-  5e-4. Each trains fresh to 300K on four GPUs, with CFG 1.0/1.5 and 50K samples
-  per CFG; the original fixed-weight experiment is the control.
+  5e-4. Each trains fresh to 300K, evaluates, resumes to 500K, then evaluates
+  again on four GPUs, with CFG 1.0/1.5 and 50K samples per CFG at both steps;
+  the original fixed-weight experiment is the control.
 - Correction-router training supports optional `DiT_*_config.corr_router_config.previous_state_mode`:
   `model_velocity` (default) keeps the original two auxiliary no-grad forwards;
   `same_noise` constructs the previous state as `(1 - sigma_ref) * z + sigma_ref * noise`
@@ -575,27 +583,36 @@ When the user asks to push, treat that as permission to commit relevant current 
   Gap/no-reference draws, stop-gradient, losses and sampling are unchanged. `train.py`
   supplies `corr_router_z` / `corr_router_noise` to the plain model; the clean-route
   combination reuses `clean_route_z` / `clean_route_noise`, with its teacher unchanged.
-- Correction-router inference supports `corr_reference_velocity: conditional` (default)
+- User rule (2026-10-30): all future correction-router experiment definitions
+  must explicitly set top-level `corr_reference_velocity: cfg` for sampling and
+  evaluation. This includes plain corr_router, clean-route combinations,
+  same-noise variants, continuation scripts, and every evaluated CFG scale.
+  Generate the next step's routing reference with the CFG-fused velocity.
+  Keep any `--corr-reference-velocity` CLI override consistent with `cfg`.
+  New evaluation definitions for existing weights use a separate CFG-reference
+  output identity so historical conditional-reference results stay distinguishable.
+- Correction-router inference supports `corr_reference_velocity: conditional` (legacy fallback)
   or `cfg`, also selectable with `sample.py --corr-reference-velocity`. The latter
   uses the CFG-fused velocity at the pre-update latent to form the next step's
   reference, and by default adds `_corr_ref_cfg` to sample directory names. CFG 1.0 is
   equivalent in both modes. `sample_checkpoint_dir` lets an inference config read
   an original checkpoint into a separate output bucket; it requires explicit
   steps and exact EMA state-dict loading. The inference-only wrappers under
-  `scripts/_run_times/2026_10_27/` use the two 2026-10-22 correction models' own
+  `scripts/_run_times/2026_10_30/` use the two 2026-10-22 correction models' own
   300K/500K checkpoints on the training server, four GPUs, and CFG 1.0/1.5 with
-  50K samples per case. They keep their historical `cfg_ref_300k` names and output
-  buckets when supplementing the full grid. They do not call training.
-  `PROMOE_RESUME` defaults to `1`: skip each valid FID/IS result, sample each missing
-  case in a separate process, and check all pending checkpoints before sampling.
-  CFG 1.0 is actually sampled here; conditional-reference results are not reused.
-  The required checkpoints remain in the original training buckets.
+  50K samples per case. The two unified `*_cfg_ref.sh` launchers replace the old
+  `*_cfg_ref_300k.sh` definitions, with fresh `*_cfg_ref` output buckets; do not
+  create overlapping per-step launchers. They do not call training.
+  `PROMOE_RESUME` defaults to `0` and requires an empty output bucket, so all four
+  cases per model are resampled, including CFG 1.0. Explicit `PROMOE_RESUME=1`
+  skips valid FID/IS only within this reevaluation. Each pending case uses a
+  separate sampler process, after checking all pending checkpoints.
+  Original conditional-reference and historical `*_cfg_ref_300k` results are
+  neither copied nor migrated. Required weights stay in the original training buckets.
   `corr_reference_separate_output: True` instead uses standard internal sample
   names for both modes. It requires an explicit `sample_checkpoint_dir` and an
   experiment output directory that does not overlap the training bucket.
-  The two existing `cfg_ref_300k` configs use this layout; on resume their scripts
-  move an old suffixed sample folder, including images/NPZ/metrics, to the standard
-  name, refusing to overwrite or merge another layout.
+  The two unified `*_cfg_ref` configs use this standard layout.
 - The two `*_same_noise` pipelines under `scripts/_run_times/2026_10_27/` each
   train once to 300K on four GPUs, then run both reference modes as separate
   evaluation experiments (`*_same_noise_cond_ref` and `*_same_noise_cfg_ref`).

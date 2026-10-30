@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Inference-only adaptation of scripts/template.sh: fill missing evaluations for
+# Inference-only adaptation of scripts/template.sh: reevaluate the full grid for
 # the original 300K/500K EMA checkpoints at CFG 1.0/1.5 with CFG-fused references.
-# Run on the training server. Resume defaults to 1; valid results are preserved.
-# Keep the historical _300k name so existing results stay in the same experiment.
+# Run on the training server. A fresh launch requires an empty _cfg_ref bucket.
+# PROMOE_RESUME=1 continues this reevaluation only; historical results are not reused.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,11 +11,11 @@ cd "$REPO_ROOT"
 source "${REPO_ROOT}/scripts/_python_env.sh"
 source "${REPO_ROOT}/scripts/_eval_metric_helpers.sh"
 
-CONFIG="configs/004_ProMoE_B_clean_route_student_ratio0_corr_router_cfg_ref_300k.yaml"
-LOG="${REPO_ROOT}/logs/log_B_clean_route_student_ratio0_corr_router_cfg_ref_300k_sample_eval.log"
+CONFIG="configs/004_ProMoE_B_corr_router_cfg_ref.yaml"
+LOG="${REPO_ROOT}/logs/log_B_corr_router_cfg_ref_sample_eval.log"
 PYTHON="${PROMOE_TRAIN_PYTHON}"
 PYTHON_EVAL="${PROMOE_EVAL_PYTHON}"
-RESUME="${PROMOE_RESUME:-1}"
+RESUME="${PROMOE_RESUME:-0}"
 if [[ "$RESUME" != "0" && "$RESUME" != "1" ]]; then
     echo "ERROR: PROMOE_RESUME must be 0 or 1" >&2
     exit 1
@@ -112,23 +112,13 @@ if [[ "$RESUME" == "0" && -d "$OUTPUT_BASE" ]] &&
     echo "ERROR: output bucket is not empty; use PROMOE_RESUME=1 to resume this inference" >&2
     exit 1
 fi
-# Inspect only this CFG-fused experiment, never the conditional source outputs.
+# Inspect only this reevaluation, never the original or historical _cfg_ref_300k outputs.
 # CFG 1.0 is sampled here even though both reference modes are equivalent at 1.0.
 PENDING_STEPS=()
 PENDING_SCALES=()
 for STEP in "${ALL_STEPS[@]}"; do
     for SCALE in "${ALL_SCALES[@]}"; do
         IMAGES="$(images_dir "$STEP" "$SCALE")"
-        # Move images, NPZ and metrics together; never merge two layouts.
-        LEGACY_FOLDER="${IMAGES%/images}_corr_ref_cfg"
-        STANDARD_FOLDER="${IMAGES%/images}"
-        if [[ "$RESUME" == "1" && ( -e "$LEGACY_FOLDER" || -L "$LEGACY_FOLDER" ) ]]; then
-            if [[ ! -d "$LEGACY_FOLDER" || -L "$LEGACY_FOLDER" || -e "$STANDARD_FOLDER" || -L "$STANDARD_FOLDER" ]]; then
-                echo "ERROR: cannot migrate legacy sample layout without overwriting or following a symlink" >&2
-                exit 1
-            fi
-            mv -- "$LEGACY_FOLDER" "$STANDARD_FOLDER"
-        fi
         if [[ "$RESUME" == "1" ]] && promoe_eval_file_metrics_valid "${IMAGES}_eval_openai.txt"; then
             echo "Step ${STEP}, CFG=${SCALE}: already evaluated; skipping" | tee -a "$LOG"
             continue

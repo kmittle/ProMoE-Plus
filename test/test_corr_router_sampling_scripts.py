@@ -19,14 +19,14 @@ BASES = ("corr_router", "clean_route_student_ratio0_corr_router")
 
 
 @contextlib.contextmanager
-def fixture(base, legacy=False):
+def fixture(base, inference=False):
     with tempfile.TemporaryDirectory(dir=REPO / "test", prefix=".corr_shell_") as directory:
         root = Path(directory)
-        tag = base + ("_cfg_ref_300k" if legacy else "_same_noise")
-        script = f"scripts/corr_router/run_B_{tag}_{'sample_eval' if legacy else 'train_sample_eval'}.sh"
+        tag = base + ("_cfg_ref" if inference else "_same_noise")
+        script = f"scripts/corr_router/run_B_{tag}_{'sample_eval' if inference else 'train_sample_eval'}.sh"
         paths = [script, "scripts/_eval_metric_helpers.sh", "scripts/corr_router/_dual_reference_eval.sh",
                  f"configs/004_ProMoE_B_{tag}.yaml"]
-        if not legacy:
+        if not inference:
             paths += [f"configs/004_ProMoE_B_{tag}_{suffix}.yaml" for suffix in ("cond_ref", "cfg_ref")]
         for path in paths:
             target = root / path
@@ -98,7 +98,7 @@ Path(a.images + "_eval_openai.txt").write_text("FID: " + metric + "\\nInception 
 ''')
         cfg = yaml.safe_load((root / f"configs/004_ProMoE_B_{tag}.yaml").read_text())
         output = root / "outputs" / cfg["model_name"] / f"004_ProMoE_B_{tag}"
-        if legacy:
+        if inference:
             for step in (300000, 500000):
                 checkpoint = root / cfg["sample_checkpoint_dir"] / f"ckpt_step_{step}.pth"
                 checkpoint.parent.mkdir(parents=True, exist_ok=True)
@@ -106,8 +106,8 @@ Path(a.images + "_eval_openai.txt").write_text("FID: " + metric + "\\nInception 
         env = dict(os.environ, PATH=str(root / "bin") + os.pathsep + os.environ["PATH"],
                    PROMOE_GPU_IDS_OVERRIDE="4,5,6,7", PROMOE_LATENT_PATH="/input/latents", PROMOE_RESUME="0",
                    PYTHONPATH=str(root) + os.pathsep + os.environ.get("PYTHONPATH", ""), TMPDIR=str(root))
-        if legacy:
-            env.pop("PROMOE_RESUME", None)  # The supplementation scripts default to resume.
+        if inference:
+            env.pop("PROMOE_RESUME", None)  # Test the fresh-reevaluation default.
 
         def run(**overrides):
             return subprocess.run(["bash", script], cwd=root, env=dict(env, **overrides),
@@ -188,9 +188,9 @@ class SamplingScriptTests(unittest.TestCase):
         (folder / "images_eval_openai.txt").write_text("FID: 8.17\nInception Score: 130.39\n")
         return folder
 
-    def test_existing_inference_launchers_cover_grid_and_resume_by_default(self):
+    def test_unified_inference_launchers_cover_grid_and_require_explicit_resume(self):
         for base in BASES:
-            with self.subTest(base=base), fixture(base, legacy=True) as (root, output, run, events):
+            with self.subTest(base=base), fixture(base, inference=True) as (root, output, run, events):
                 self.assert_success(run())
                 log = events()
                 self.assertEqual([row["kind"] for row in log], ["sample", "eval"] * 4)
@@ -207,18 +207,22 @@ class SamplingScriptTests(unittest.TestCase):
                     self.assertNotIn("_corr_ref_cfg", row["images"])
                     self.assertEqual(row["count"], 50000)
                     self.assertEqual(row["gpu"], "4")
-                self.assert_success(run())
+                result = run()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("output bucket is not empty", result.stderr)
+                self.assertEqual(events(), log)
+                self.assert_success(run(PROMOE_RESUME="1"))
                 self.assertEqual(events(), log)
 
-    def test_supplement_only_missing_cases_and_do_not_reuse_conditional_cfg_one(self):
+    def test_resume_only_missing_cases_in_this_reevaluation(self):
         for base in BASES:
-            with self.subTest(base=base), fixture(base, legacy=True) as (root, output, run, events):
+            with self.subTest(base=base), fixture(base, inference=True) as (root, output, run, events):
                 completed = self.complete_case(output, 300000, 1.5)
                 metric = completed / "images_eval_openai.txt"
                 original_metric = metric.read_bytes()
-                training_output = output.with_name(output.name.removesuffix("_cfg_ref_300k"))
+                training_output = output.with_name(output.name.removesuffix("_cfg_ref"))
                 conditional = self.complete_case(training_output, 300000, 1.0)
-                self.assert_success(run())
+                self.assert_success(run(PROMOE_RESUME="1"))
                 samples = [row for row in events() if row["kind"] == "sample"]
                 self.assertEqual([(row["step"], row["scales"]) for row in samples],
                                  [(300000, [1.0]), (500000, [1.0]), (500000, [1.5])])
@@ -230,7 +234,7 @@ class SamplingScriptTests(unittest.TestCase):
                 invalid = output / "sample/step500000/img256_cfg1.0_seed0_FID50K_bs128_ema/images_eval_openai.txt"
                 invalid.write_text("FID: nan\nInception Score: 100.0\n")
                 before = len(events())
-                self.assert_success(run())
+                self.assert_success(run(PROMOE_RESUME="1"))
                 added = events()[before:]
                 self.assertEqual([row["kind"] for row in added], ["sample", "eval"])
                 self.assertEqual((added[0]["step"], added[0]["scales"]), (500000, [1.0]))
@@ -238,8 +242,8 @@ class SamplingScriptTests(unittest.TestCase):
 
     def test_all_pending_checkpoints_are_checked_before_sampling(self):
         for base in BASES:
-            with self.subTest(base=base), fixture(base, legacy=True) as (root, output, run, events):
-                source = output.with_name(output.name.removesuffix("_cfg_ref_300k")) / "checkpoints"
+            with self.subTest(base=base), fixture(base, inference=True) as (root, output, run, events):
+                source = output.with_name(output.name.removesuffix("_cfg_ref")) / "checkpoints"
                 missing = source / "ckpt_step_500000.pth"
                 missing.unlink()
                 result = run()
@@ -254,33 +258,34 @@ class SamplingScriptTests(unittest.TestCase):
                 (source / "ckpt_step_300000.pth").unlink()
                 for scale in (1.0, 1.5):
                     self.complete_case(output, 300000, scale)
-                self.assert_success(run())
+                self.assert_success(run(PROMOE_RESUME="1"))
                 samples = [row for row in events() if row["kind"] == "sample"]
                 self.assertEqual([row["step"] for row in samples], [500000, 500000])
 
-    def test_legacy_layout_is_moved_intact_and_only_missing_cases_are_sampled(self):
+    def test_all_cases_are_resampled_even_when_both_historical_modes_are_complete(self):
         for base in BASES:
-            with self.subTest(base=base), fixture(base, legacy=True) as (root, output, run, events):
-                old = self.complete_case(output, 300000, 1.5, legacy=True)
-                standard = Path(str(old).removesuffix("_corr_ref_cfg"))
+            with self.subTest(base=base), fixture(base, inference=True) as (root, output, run, events):
+                training_output = output.with_name(output.name.removesuffix("_cfg_ref"))
+                old_cfg_output = output.with_name(output.name + "_300k")
+                for step in (300000, 500000):
+                    for scale in (1.0, 1.5):
+                        self.complete_case(training_output, step, scale)
+                        self.complete_case(old_cfg_output, step, scale, legacy=(step == 300000))
+                old_files = {p: p.read_bytes() for directory in (training_output, old_cfg_output)
+                             for p in directory.rglob("*") if p.is_file()}
                 self.assert_success(run())
                 samples = [row for row in events() if row["kind"] == "sample"]
                 self.assertEqual([(row["step"], row["scales"]) for row in samples],
-                                 [(300000, [1.0]), (500000, [1.0]), (500000, [1.5])])
-                self.assertFalse(old.exists())
-                self.assertEqual((standard / "images/keep.png").read_bytes(), b"existing image")
+                                 [(300000, [1.0]), (300000, [1.5]), (500000, [1.0]), (500000, [1.5])])
+                self.assertTrue(all(row["mode"] == "cfg" and Path(row["output"]) == output for row in samples))
+                self.assertEqual({p: p.read_bytes() for directory in (training_output, old_cfg_output)
+                                  for p in directory.rglob("*") if p.is_file()}, old_files)
 
-    def test_inference_failures_are_reported_and_existing_layouts_are_not_merged(self):
-        for overrides in ({"BAD_METRICS": "1"}, {"PROMOE_GPU_IDS_OVERRIDE": "0,1"}):
-            with self.subTest(overrides=overrides), fixture(BASES[0], legacy=True) as (root, output, run, events):
+    def test_inference_failures_are_reported(self):
+        for overrides in ({"BAD_METRICS": "1"}, {"PROMOE_GPU_IDS_OVERRIDE": "0,1"}, {"PROMOE_RESUME": "2"}):
+            with self.subTest(overrides=overrides), fixture(BASES[0], inference=True) as (root, output, run, events):
                 self.assertNotEqual(run(**overrides).returncode, 0)
                 self.assertLessEqual(len(events()), 2)
-        with fixture(BASES[0], legacy=True) as (root, output, run, events):
-            standard = self.complete_case(output, 300000, 1.5)
-            old = self.complete_case(output, 300000, 1.5, legacy=True)
-            self.assertNotEqual(run().returncode, 0)
-            self.assertEqual(events(), [])
-            self.assertTrue(standard.is_dir() and old.is_dir())
 
 
 if __name__ == "__main__":

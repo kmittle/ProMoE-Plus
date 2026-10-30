@@ -1,0 +1,9 @@
+实验 / Experiment: B_clean_route_student_ratio0_corr_router_cfg_ref
+model_name: ProMoE_TC_B_clean_route_corr_router  |  config: configs/004_ProMoE_B_clean_route_student_ratio0_corr_router_cfg_ref.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分流、余弦原型路由、共享专家和路由对比学习）；直接父变体 / Parent: clean_route student_ratio0＋corr_router（干净 teacher 的路由蒸馏、学生侧对比学习和路由分数矫正），原采样以 conditional 速度生成参考。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 采样参考 / CFG-fused reference：显式设置 corr_reference_velocity: cfg；用当前步 CFG fusion 后的速度及更新前的 latent、sigma 估计干净 latent，供下一步 cond 路由矫正使用。实际 Euler 步进也使用 CFG fusion 后速度；首步无参考、uncond 分支无矫正，前向次数不增加。CFG=1.0 也重新采样。
+2. 权重复用 / Existing checkpoints：只读取 outputs/ProMoE_TC_B_clean_route_corr_router/004_ProMoE_B_clean_route_student_ratio0_corr_router/checkpoints/ 下 ckpt_step_300000.pth 和 ckpt_step_500000.pth 的 EMA 权重，严格匹配模型参数。保留 contrastive_source: student、teacher_sigma_ratio: 0.0、align_lam: 0.0005 的原模型定义；路径相对训练服务器仓库解析，采样前检查所有待评估权重，不训练、不复制权重。
+3. 统一重评 / Full reevaluation：替代旧 B_clean_route_student_ratio0_corr_router_cfg_ref_300k 评估入口，自动匹配 4 卡；seed=0，250 个采样步，sample_batch_size=128/卡；300K/500K × CFG 1.0/1.5 共四组，每组 50K 张，各自独立启动采样及评估。
+4. 结果与续接 / Output and resume：新目录 outputs/ProMoE_TC_B_clean_route_corr_router/004_ProMoE_B_clean_route_student_ratio0_corr_router_cfg_ref/ 使用标准 sample/step300000 或 step500000/img..._ema/images 布局。PROMOE_RESUME 默认 0，要求目录为空，完整重跑四组；显式 PROMOE_RESUME=1 只跳过本轮目录内有效的 FID/IS。历史 conditional 及 _cfg_ref_300k 结果保持原样，不复用、不迁移。

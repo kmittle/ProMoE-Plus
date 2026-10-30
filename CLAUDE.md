@@ -67,26 +67,35 @@ CUDA_VISIBLE_DEVICES=0 python sample.py --config configs/004_ProMoE_L.yaml \
   --step_list_for_sample 200000,300000 --guide_scale_list 1.0,1.5,4.0 --num_fid_samples 10000
 ```
 
+**User sampling rule (2026-10-30):** all future correction-router experiments
+must explicitly set top-level `corr_reference_velocity: cfg`, including plain
+corr_router, clean-route combinations, same-noise variants, continuation runs,
+and every evaluated CFG scale. The routing reference uses the CFG-fused velocity;
+keep any `--corr-reference-velocity` override consistent with `cfg`. When evaluating
+existing weights this way, use a separate CFG-reference output identity to keep
+historical conditional-reference results distinguishable.
+
 Correction-router sampling accepts `--corr-reference-velocity conditional|cfg`
-(or the YAML key `corr_reference_velocity`, default `conditional`). `cfg` forms
+(or the YAML key `corr_reference_velocity`, legacy fallback `conditional`). `cfg` forms
 the next step's reference from the current pre-update latent and CFG-fused
 velocity; it adds no forward passes and by default appends `_corr_ref_cfg` to sample folder
 names. CFG 1.0 is equivalent in both modes. For inference ablations, set
 `sample_checkpoint_dir` to the original training bucket's checkpoint directory;
 explicit `step_list_for_sample` is required and EMA weights are loaded strictly.
-The 2026-10-27 inference-only wrappers reuse the two correction models' 300K/500K
+The 2026-10-30 inference-only wrappers reuse the two correction models' 300K/500K
 checkpoints at CFG 1.0/1.5 / 50K per case on four automatically claimed GPUs.
-They retain their historical `cfg_ref_300k` config names and output buckets to
-supplement the existing experiments. `PROMOE_RESUME` defaults to `1`: each missing
-case is sampled in a separate process, completed FID/IS results are skipped, and
-all pending checkpoints are checked before sampling. CFG 1.0 is sampled again in
-these buckets; results from conditional-reference experiments are not copied.
+The two unified `*_cfg_ref.sh` launchers replace the old `*_cfg_ref_300k.sh`
+definitions and use fresh `*_cfg_ref` output buckets; do not add overlapping
+per-step launchers. `PROMOE_RESUME` defaults to `0` and requires an empty bucket,
+so all four cases per model are resampled, including CFG 1.0. Explicit
+`PROMOE_RESUME=1` skips only valid FID/IS within this reevaluation. Each pending
+case is sampled in a separate process, after checking all pending checkpoints.
+Historical conditional-reference and `*_cfg_ref_300k` results stay untouched;
+they are neither copied nor migrated. The weights remain in the training buckets.
 Those inference configs set `corr_reference_separate_output: True`, so their
 internal folders use the same standard names as conditional sampling. This flag
 requires an explicit checkpoint source and a separate, non-overlapping experiment
-output directory. On resume, the two scripts can move a legacy suffixed sample
-folder (images, NPZ and metrics together) to its standard name; they refuse to merge
-two existing layouts.
+output directory.
 
 The `*_same_noise` pipelines in `scripts/_run_times/2026_10_27/` train each model
 once to 300K on four GPUs. Two inference YAMLs (`*_same_noise_cond_ref` and
@@ -317,7 +326,7 @@ Core parameters: `num_routed_experts` (typically 12), `top_k` (experts per token
 - capacity_combo factors (capacity_combo variant only): **H** `hetero_expert` + `hetero_min_ratio`/`hetero_max_ratio`; **R** `ls_balance_mode` (`"off"` or `"token"` = historical diagonal LS-Reg) + `ls_diag_sign`/`ls_diag_strength`/`ls_ema_beta`; **O/P** `expert_output_blocks`/`expert_param_blocks` choose the blocks for each view (a block in both lists runs `dual_additive`, a block only in the param list runs `param_signature`), with `expert_contrastive_output_lam`/`_param_lam` (0.5/0.5), independent `expert_contrastive_output_temperature`/`_param_temperature` (0.5/0.7), and `expert_contrastive_signature_bins` for the P signature length.
 
 - `clean_route_config` (both clean_route models; under `DiT_*_config`, next to `MoE_config`): four keys are required -- `contrastive_source` (`student` / `teacher`), `teacher_sigma_ratio` (in [0, 1); 0 = clean teacher at t = 0), `align_lam` (>= 0) and `align_temperature` (> 0, the tau of both softmaxes). Optional nonnegative integer `align_start_step` and `align_warmup_steps` default to zero, preserving the fixed coefficient. Before start the KL weight is zero; with zero warmup it switches to `align_lam` at start, otherwise it rises linearly from zero at start to `align_lam` at start + warmup. `train.py` passes the absolute optimizer `training_step` (shared across accumulation micro-batches and restored on resume); scheduled training requires it, eval ignores it. Only KL is scheduled: FM and student contrastive remain active, and teacher passes still provide diagnostics while the weight is zero. `clean_route_align_weight` logs the effective coefficient. No model parameters/buffers are added. Unknown keys are refused, as are `load_balance_loss_coef > 0`, `phase_metric_config.enabled` and `init_MoeMLP`.
-  The 2026-10-30 standalone clean-route student_ratio0 ablations use final `align_lam: 0.0005`: `align_delay100k` sets start=100000, warmup=0; `align_warmup200k` sets start=0, warmup=200000. Both train fresh on four GPUs to 300K and evaluate CFG 1.0/1.5 with 50K images each, against the existing fixed-weight control.
+  The 2026-10-30 standalone clean-route student_ratio0 ablations use final `align_lam: 0.0005`: `align_delay100k` sets start=100000, warmup=0; `align_warmup200k` sets start=0, warmup=200000. Both train fresh on four GPUs to 300K, evaluate, resume to 500K, then evaluate again. Each checkpoint uses CFG 1.0/1.5 with 50K images each, against the existing fixed-weight control.
 
 - `corr_router_config` (corr_router variants only; under `DiT_*_config`, next to `MoE_config`): three keys are required -- `hidden_dim` (int >= 1, the corrector's hidden width), `skip_intervals` (distinct ints in [1, 1000), the training gaps in thousandths of sigma: one Euler step of a `1000 / k`-step sampler) and `no_reference_prob` (in [0, 1), the share of prototype-routed training images without a reference). Optional `previous_state_mode` is `model_velocity` (default, two no-grad reference passes) or `same_noise` (reuse the current latent/noise pair at the selected higher noise level, then one no-grad reference pass; this leaks the clean end by construction and exists only as an ablation). The plain model receives `corr_router_z` / `corr_router_noise` from train.py; the combo reuses `clean_route_z` / `clean_route_noise`. Unknown keys are refused, as are `router_weight_mode` other than `identity`, `use_uncond_expert: False` (sampling gives the uncond pass no reference), `load_balance_loss_coef > 0`, `phase_metric_config.enabled` and `init_MoeMLP`.
 
@@ -448,6 +457,11 @@ matter when writing scripts:
   original YAML basename and model name, preserving its output/checkpoint directory;
   the dated resume-only launchers select and pin the greatest saved step from 300K
   through 500K, and fail when no qualifying checkpoint exists.
+- The 2026-10-30 user decision sets `B_clean_route_student_ratio0_align_delay100k`,
+  `B_clean_route_student_ratio0_align_warmup200k`, and `B_top3` to the sequential
+  pipeline: train fresh to 300K, evaluate, resume to 500K, evaluate again.
+  Both checkpoints use CFG 1.0/1.5 with 50K samples each on four GPUs. These
+  three arms continue after successful 300K evaluation without a FID threshold gate.
 
 **A run that starts from another experiment's weights is not an experiment.** Project rule,
 no exceptions: 接着别的实验的权重继续往下训练的实验一律不承认，因为因素混杂，这种实验根本不算是干净的

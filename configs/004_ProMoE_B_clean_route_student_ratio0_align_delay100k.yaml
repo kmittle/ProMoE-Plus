@@ -2,7 +2,8 @@
 # align_start_step=100000, align_warmup_steps=0, final align_lam=5e-4.
 # Steps are absolute optimizer steps, including after resume; the teacher remains
 # the same model on clean latents. FM and student routing contrastive stay active.
-# Train fresh to 300K; evaluate CFG 1.0/1.5 with 50K images per setting.
+# Train to 300K -> evaluate -> resume to 500K -> evaluate (no 300K FID gate).
+# At both checkpoints, evaluate CFG 1.0/1.5 with 50K images per setting.
 model_name: "ProMoE_TC_B_clean_route"
 
 gpu_ids: [0, 1, 2, 3]  # placeholder: the wrapper claims idle GPUs at launch
@@ -20,7 +21,7 @@ use_encoded_latents: True
 latent_data_path: "/mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz"
 resume_checkpoint: False
 log_interval: 10
-num_steps: 300001
+num_steps: 500001
 save_ckpt_interval: 50000
 
 DiT_B_config:
@@ -49,7 +50,7 @@ DiT_B_config:
     routing_contrastive_temperature: 0.07
 
 ###### For sample
-step_list_for_sample: [300000]
+step_list_for_sample: [300000, 500000]
 num_fid_samples: 50000
 sample_batch_size: 128
 sample_steps: 250

@@ -199,6 +199,10 @@ sample_and_eval_step() {
         done < <(find "$SAMPLE_BASE" -mindepth 3 -maxdepth 3 -path "*/step${step}/*" -type d -name images | sort -V)
     fi
 
+    step_already_evaluated "$step" || {
+        echo "ERROR: step ${step} has missing or invalid FID/IS; every requested CFG must finish before continuing" | tee -a "$LOG" >&2
+        return 1
+    }
     echo "[$(date '+%H:%M:%S')] Sample+eval step ${step} done" | tee -a "$LOG"
 }
 

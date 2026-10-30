@@ -1,12 +1,13 @@
 # Inference only: reuse the original 300K/500K EMA checkpoints; no training.
-# Keep the historical _300k basename to supplement the existing experiment.
+# Unified reevaluation: resample all four cases in a fresh _cfg_ref bucket.
+# Historical conditional-reference and _cfg_ref_300k results stay untouched.
 # Only the next-step reference changes: x0_hat = x - sigma * v_cfg.
 # A separate experiment bucket uses the same standard internal layout as the source run.
-sample_checkpoint_dir: "outputs/ProMoE_TC_B_clean_route_corr_router/004_ProMoE_B_clean_route_student_ratio0_corr_router/checkpoints"
+sample_checkpoint_dir: "outputs/ProMoE_TC_B_corr_router/004_ProMoE_B_corr_router/checkpoints"
 corr_reference_velocity: cfg
 corr_reference_separate_output: True
 
-model_name: "ProMoE_TC_B_clean_route_corr_router"
+model_name: "ProMoE_TC_B_corr_router"
 
 gpu_ids: [0, 1, 2, 3]  # placeholder: the wrapper claims idle GPUs at launch
 
@@ -16,11 +17,6 @@ global_seed: 0
 
 DiT_B_config:
   qk_norm: False
-  clean_route_config:
-    contrastive_source: student
-    teacher_sigma_ratio: 0.0
-    align_lam: 0.0005
-    align_temperature: 0.07
   corr_router_config:
     hidden_dim: 256
     skip_intervals: [1, 4, 5, 10, 20, 50]  # thousandths of sigma: one Euler step of a 1000 / 250 / 200 / 100 / 50 / 20-step sampler
