@@ -74,9 +74,13 @@ velocity; it adds no forward passes and by default appends `_corr_ref_cfg` to sa
 names. CFG 1.0 is equivalent in both modes. For inference ablations, set
 `sample_checkpoint_dir` to the original training bucket's checkpoint directory;
 explicit `step_list_for_sample` is required and EMA weights are loaded strictly.
-The 2026-10-27 inference-only wrappers reuse the two correction models' 300K
-checkpoints at CFG 1.5 / 50K on four automatically claimed GPUs, with new config
-names and output buckets. `PROMOE_RESUME=1` resumes sampling/evaluation there.
+The 2026-10-27 inference-only wrappers reuse the two correction models' 300K/500K
+checkpoints at CFG 1.0/1.5 / 50K per case on four automatically claimed GPUs.
+They retain their historical `cfg_ref_300k` config names and output buckets to
+supplement the existing experiments. `PROMOE_RESUME` defaults to `1`: each missing
+case is sampled in a separate process, completed FID/IS results are skipped, and
+all pending checkpoints are checked before sampling. CFG 1.0 is sampled again in
+these buckets; results from conditional-reference experiments are not copied.
 Those inference configs set `corr_reference_separate_output: True`, so their
 internal folders use the same standard names as conditional sampling. This flag
 requires an explicit checkpoint source and a separate, non-overlapping experiment

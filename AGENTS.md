@@ -568,9 +568,13 @@ When the user asks to push, treat that as permission to commit relevant current 
   an original checkpoint into a separate output bucket; it requires explicit
   steps and exact EMA state-dict loading. The inference-only wrappers under
   `scripts/_run_times/2026_10_27/` use the two 2026-10-22 correction models' own
-  300K checkpoints on the training server, four GPUs, and CFG 1.5 / 50K samples.
-  They do not call training. `PROMOE_RESUME=1` resumes their inference outputs;
-  the required checkpoint remains in the original training bucket.
+  300K/500K checkpoints on the training server, four GPUs, and CFG 1.0/1.5 with
+  50K samples per case. They keep their historical `cfg_ref_300k` names and output
+  buckets when supplementing the full grid. They do not call training.
+  `PROMOE_RESUME` defaults to `1`: skip each valid FID/IS result, sample each missing
+  case in a separate process, and check all pending checkpoints before sampling.
+  CFG 1.0 is actually sampled here; conditional-reference results are not reused.
+  The required checkpoints remain in the original training buckets.
   `corr_reference_separate_output: True` instead uses standard internal sample
   names for both modes. It requires an explicit `sample_checkpoint_dir` and an
   experiment output directory that does not overlap the training bucket.

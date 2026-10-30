@@ -1,4 +1,5 @@
-# Inference only: reuse the original 300K EMA checkpoint; no training.
+# Inference only: reuse the original 300K/500K EMA checkpoints; no training.
+# Keep the historical _300k basename to supplement the existing experiment.
 # Only the next-step reference changes: x0_hat = x - sigma * v_cfg.
 # A separate experiment bucket uses the same standard internal layout as the source run.
 sample_checkpoint_dir: "outputs/ProMoE_TC_B_corr_router/004_ProMoE_B_corr_router/checkpoints"
@@ -36,11 +37,11 @@ DiT_B_config:
     routing_contrastive_temperature: 0.07
 
 ###### For sample
-step_list_for_sample: [300000]
+step_list_for_sample: [300000, 500000]
 num_fid_samples: 50000
 sample_batch_size: 128
 sample_steps: 250
 sample_shift: 1.0
-guide_scale_list: [1.5]
+guide_scale_list: [1.0, 1.5]
 save_img_num: 50000
 save_inception_features: False
