@@ -93,7 +93,7 @@ def dropped_labels():
     return torch.where(drop, torch.full_like(LABELS, 1000), LABELS)
 
 
-def train_step(model, use_clean_route, zero_sigma=False, loss_scale=1.0, autocast=False):
+def train_step(model, use_clean_route, zero_sigma=False, loss_scale=1.0, autocast=False, training_step=None):
     """One step as train.py runs it: the forward under autocast, the backward outside."""
     model.train()
     model.zero_grad(set_to_none=True)
@@ -102,7 +102,8 @@ def train_step(model, use_clean_route, zero_sigma=False, loss_scale=1.0, autocas
     region = torch.autocast(device_type="cpu", dtype=torch.bfloat16) if autocast else contextlib.nullcontext()
     with region:
         if use_clean_route:
-            output = model(x, t, context=LABELS, clean_route_z=z, clean_route_noise=noise, clean_route_sigma=sigma)
+            output = model(x, t, context=LABELS, clean_route_z=z, clean_route_noise=noise,
+                           clean_route_sigma=sigma, training_step=training_step)
         else:
             output = model(x, t, context=LABELS)
     (loss_scale * output.float().square().mean()).backward()
@@ -162,6 +163,90 @@ class EquivalenceTests(unittest.TestCase):
         reference_state = torch.get_rng_state()
         train_step(perturb(build_clean_route(align_lam=1.0, teacher_sigma_ratio=0.5)), use_clean_route=True)
         self.assertTrue(torch.equal(torch.get_rng_state(), reference_state))
+
+
+class AlignmentScheduleTests(unittest.TestCase):
+    def assert_same_step(self, actual, expected):
+        self.assertTrue(torch.equal(actual[0], expected[0]))
+        self.assertEqual(set(actual[1]), set(expected[1]))
+        for name, grad in actual[1].items():
+            torch.testing.assert_close(grad, expected[1][name], rtol=0, atol=0, msg=name)
+
+    def test_schedule_boundaries_match_the_corresponding_fixed_weight_gradients(self):
+        cases = [
+            ({"align_start_step": 100000}, 0, 0.0),
+            ({"align_start_step": 100000}, 99999, 0.0),
+            ({"align_start_step": 100000}, 100000, 5e-4),
+            ({"align_start_step": 100000}, 300000, 5e-4),
+            ({"align_warmup_steps": 200000}, 0, 0.0),
+            ({"align_warmup_steps": 200000}, 100000, 2.5e-4),
+            ({"align_warmup_steps": 200000}, 199999, 5e-4 * 0.999995),
+            ({"align_warmup_steps": 200000}, 200000, 5e-4),
+            ({"align_warmup_steps": 200000}, 300000, 5e-4),
+        ]
+        for settings, step, weight in cases:
+            with self.subTest(settings=settings, step=step):
+                model = perturb(build_clean_route(align_lam=5e-4, **settings))
+                actual = train_step(model, True, training_step=step)
+                expected = train_step(perturb(build_clean_route(align_lam=weight)), True)
+                self.assert_same_step(actual, expected)
+                for block in model.moe_blocks():
+                    self.assertAlmostEqual(float(block.last_align_weight), weight, places=10)
+                    torch.testing.assert_close(block.last_align_loss, block.last_kl * weight)
+                    self.assertGreater(float(block.last_contrastive_loss), 0.0)
+
+    def test_delayed_alignment_is_baseline_equivalent_under_bf16(self):
+        actual = train_step(perturb(build_clean_route(align_lam=5e-4, align_start_step=100000)),
+                            True, autocast=True, training_step=99999)
+        expected = train_step(perturb(build_conference()), False, autocast=True)
+        self.assert_same_step(actual, expected)
+
+    def test_resume_uses_the_supplied_step_without_a_model_counter(self):
+        for settings, previous, resumed_step in (
+            ({"align_start_step": 100000}, 99999, 100000),
+            ({"align_warmup_steps": 200000}, 199999, 200000),
+        ):
+            with self.subTest(settings=settings):
+                model = perturb(build_clean_route(align_lam=5e-4, **settings))
+                optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
+                train_step(model, True, training_step=previous)
+                optimizer.step()
+                restored = build_clean_route(align_lam=5e-4, **settings)
+                restored.load_state_dict(model.state_dict(), strict=True)
+                self.assert_same_step(train_step(restored, True, training_step=resumed_step),
+                                      train_step(model, True, training_step=resumed_step))
+                self.assertEqual(list(model.state_dict()), list(build_conference().state_dict()))
+                for block in restored.moe_blocks():
+                    self.assertAlmostEqual(float(block.last_align_weight), 5e-4, places=10)
+
+    def test_schedule_is_ignored_in_eval_and_preserves_checkpoint_keys(self):
+        reference = perturb(build_conference()).eval()
+        x, t, _, _, _ = batch()
+        for settings in ({"align_start_step": 100000}, {"align_warmup_steps": 200000}):
+            model = build_clean_route(align_lam=5e-4, **settings).eval()
+            model.load_state_dict(reference.state_dict(), strict=True)
+            with torch.no_grad():
+                self.assertTrue(torch.equal(model(x, t, context=LABELS), reference(x, t, context=LABELS)))
+
+    def test_scheduled_training_requires_a_valid_absolute_step(self):
+        for step in (None, -1, 1.5, True):
+            with self.subTest(step=step), self.assertRaisesRegex(ValueError, "training_step"):
+                train_step(build_clean_route(align_start_step=100000), True, training_step=step)
+        for key in ("align_start_step", "align_warmup_steps"):
+            for value in (-1, 1.5, True, None):
+                with self.subTest(key=key, value=value), self.assertRaisesRegex(ValueError, key):
+                    clean_route.parse_clean_route_config(route_config(**{key: value}))
+
+    def test_effective_weight_is_logged_when_all_images_are_unconditional(self):
+        import train
+
+        model = build_clean_route(align_lam=5e-4, align_warmup_steps=200000).train()
+        x, t, z, noise, sigma = batch()
+        model(x, t, context=torch.full_like(LABELS, 1000), clean_route_z=z,
+              clean_route_noise=noise, clean_route_sigma=sigma, training_step=100000)
+        stats = train._collect_clean_route_stats(model)
+        self.assertAlmostEqual(float(stats["clean_route_align_weight"]), 2.5e-4, places=10)
+        self.assertEqual(float(stats["clean_route_align_loss"]), 0.0)
 
 
 class LossValueTests(unittest.TestCase):

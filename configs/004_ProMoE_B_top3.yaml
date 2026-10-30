@@ -1,0 +1,55 @@
+# Base ProMoE-B token Top-3 control for the image-wise three-expert capacity arms.
+# Keep the original expert width (1536), 12 routed experts, shared and uncond.
+# Cond: shared + 3 token FFNs = width sum 6144, matching token Top-2 + image
+# Top-1 + shared and token Top-1 + image Top-2 + shared (all widths 1536).
+# Uncond: shared + its one dedicated FFN = width sum 3072, also matched.
+# Only FFN matrix work is matched: image pooling/router work and the extra
+# image-expert parameters belong to the image-wise arms, not this base control.
+# Fresh 300K training and CFG 1.0/1.5 evaluation; no automatic 500K continuation.
+model_name: "ProMoE_TC_B"
+
+gpu_ids: [0, 1, 2, 3]  # placeholder: the wrapper claims idle GPUs at launch
+
+###### For train
+image_size: 256
+total_train_batch_size: 256
+lr: 0.0001
+weight_decay: 0
+global_seed: 0
+img_num_workers: 16
+use_pre_latents: True
+use_encoded_latents: True
+latent_data_path: "/mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz"
+resume_checkpoint: False
+log_interval: 10
+num_steps: 300001
+save_ckpt_interval: 10000
+
+DiT_B_config:
+  qk_norm: False
+  MoE_config:
+    num_routed_experts: 12
+    moe_intermediate_size: 1536  # Both routed and dedicated uncond experts use this width.
+    shared_expert_intermediate_size: 1536  # Keep the original dense_width / 2.
+    load_balance_loss_coef: 0
+    norm_topk_prob: False
+    seq_aux: False
+    use_shared_expert: True
+    use_uncond_expert: True
+    interleave: True
+    init_MoeMLP: False
+    top_k: 3  # Three distinct conditional token experts, plus the shared expert.
+    router_weight_mode: identity
+    routing_contrastive_lam: 1
+    use_top_k_for_routing_contrastive: True  # Include all three routed assignments.
+    routing_contrastive_temperature: 0.07
+
+###### For sample
+step_list_for_sample: [300000]
+num_fid_samples: 50000
+sample_batch_size: 128
+sample_steps: 250
+sample_shift: 1.0
+guide_scale_list: [1.0, 1.5]
+save_img_num: 50000
+save_inception_features: False

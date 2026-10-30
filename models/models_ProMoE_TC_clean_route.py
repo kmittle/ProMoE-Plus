@@ -25,6 +25,10 @@ prototype-routed token of the two passes is the same position of the same
 image.
 
 Evaluation and sampling (eval mode) run the conference forward unchanged.
+Optional ``align_start_step`` / ``align_warmup_steps`` schedule only the KL
+coefficient, using the absolute optimizer ``training_step`` supplied by train.py.
+Both default to zero (the original constant coefficient). Teacher diagnostics
+remain available while the coefficient is zero; FM and contrastive are unchanged.
 With ``align_lam: 0`` and ``contrastive_source: student`` a training step is
 bit-identical to the conference model, also under bf16 autocast: the teacher
 pass draws no random numbers, creates no gradient, and its weight casts are
@@ -51,6 +55,7 @@ CLEAN_ROUTE_CONFIG_KEYS = (
     "align_lam",
     "align_temperature",
 )
+CLEAN_ROUTE_SCHEDULE_KEYS = ("align_start_step", "align_warmup_steps")
 CONTRASTIVE_SOURCES = ("student", "teacher")
 # The conference block sends the dropped class label to the unconditional expert.
 UNCOND_LABEL = 1000
@@ -59,7 +64,7 @@ NUM_SIGMA_BINS = 5
 
 
 def parse_clean_route_config(clean_route_config):
-    """Validate the four clean-route settings; every key is required."""
+    """Validate four required clean-route settings and optional KL schedule."""
     if clean_route_config is None:
         raise ValueError(
             "ProMoE_TC_B_clean_route needs DiT_*_config.clean_route_config with keys "
@@ -67,7 +72,7 @@ def parse_clean_route_config(clean_route_config):
         )
     config = dict(clean_route_config)
     missing = [key for key in CLEAN_ROUTE_CONFIG_KEYS if key not in config]
-    unknown = sorted(set(config) - set(CLEAN_ROUTE_CONFIG_KEYS))
+    unknown = sorted(set(config) - set(CLEAN_ROUTE_CONFIG_KEYS) - set(CLEAN_ROUTE_SCHEDULE_KEYS))
     if missing or unknown:
         raise ValueError(f"clean_route_config: missing keys {missing}, unknown keys {unknown}")
 
@@ -83,12 +88,37 @@ def parse_clean_route_config(clean_route_config):
     align_temperature = float(config["align_temperature"])
     if not (math.isfinite(align_temperature) and align_temperature > 0.0):
         raise ValueError("clean_route_config.align_temperature must be a finite value > 0")
+    schedule = {key: config.get(key, 0) for key in CLEAN_ROUTE_SCHEDULE_KEYS}
+    for key, value in schedule.items():
+        if type(value) is not int or value < 0:
+            raise ValueError(f"clean_route_config.{key} must be a nonnegative integer")
     return {
         "contrastive_source": contrastive_source,
         "teacher_sigma_ratio": teacher_sigma_ratio,
         "align_lam": align_lam,
         "align_temperature": align_temperature,
+        **schedule,
     }
+
+
+def clean_route_align_scale(training_step, start_step, warmup_steps):
+    """KL multiplier at an absolute optimizer step, with validated settings.
+
+    Before start_step it is zero. With no warmup it switches to one at
+    start_step; otherwise it rises linearly from zero there to one at
+    start_step + warmup_steps. No state/counter is saved in model checkpoints.
+    """
+    if training_step is None:
+        if start_step or warmup_steps:
+            raise ValueError("scheduled clean_route training requires training_step (train.py supplies it)")
+        return 1.0
+    if type(training_step) is not int or training_step < 0:
+        raise ValueError("clean_route training_step must be a nonnegative integer")
+    if training_step < start_step:
+        return 0.0
+    if warmup_steps == 0:
+        return 1.0
+    return min((training_step - start_step) / warmup_steps, 1.0)
 
 
 #################################################################################
@@ -114,6 +144,7 @@ class SparseMoeBlock(ConferenceSparseMoeBlock):
             raise ValueError("clean_route does not support load_balance_loss_coef > 0")
         self.contrastive_source = "student"
         self.align_lam = 0.0
+        self.align_scale = 1.0
         self.align_temperature = 1.0
         # Analysis only: keep the float32 cosines of both passes.
         self.keep_cosines = False
@@ -143,6 +174,7 @@ class SparseMoeBlock(ConferenceSparseMoeBlock):
     def reset_clean_route_stats(self):
         self.last_kl = None
         self.last_align_loss = None
+        self.last_align_weight = None
         self.last_contrastive_loss = None
         self.last_agreement = None
         self.last_student_entropy = None
@@ -240,6 +272,8 @@ class SparseMoeBlock(ConferenceSparseMoeBlock):
         device = cosines.device
         num_tokens = cosines.shape[0]
         zero = torch.zeros((), device=device)
+        align_weight = self.align_lam * self.align_scale
+        self.last_align_weight = zero.new_tensor(align_weight)
 
         if num_tokens == 0:
             # No prototype-routed token (every image dropped): nothing to align.
@@ -257,7 +291,7 @@ class SparseMoeBlock(ConferenceSparseMoeBlock):
         log_p = F.log_softmax(cosines / self.align_temperature, dim=1)
         kl_per_token = (log_q.exp() * (log_q - log_p)).sum(dim=1)
         kl = kl_per_token.mean()
-        align_loss = self.align_lam * kl
+        align_loss = align_weight * kl
 
         if self.contrastive_source == "teacher":
             contrastive_loss = zero
@@ -274,7 +308,7 @@ class SparseMoeBlock(ConferenceSparseMoeBlock):
         else:
             contrastive_loss = conference_loss
             loss = conference_loss
-        if self.align_lam > 0:
+        if align_weight > 0:
             loss = align_loss if loss is None else loss + align_loss
 
         with torch.no_grad():
@@ -424,6 +458,8 @@ class DiT(nn.Module):
         if not self.moe_blocks():
             raise ValueError("clean_route needs at least one MoE block")
         self.teacher_sigma_ratio = settings["teacher_sigma_ratio"]
+        self.align_start_step = settings["align_start_step"]
+        self.align_warmup_steps = settings["align_warmup_steps"]
         for block in self.moe_blocks():
             block.configure_clean_route(
                 settings["contrastive_source"], settings["align_lam"], settings["align_temperature"]
@@ -506,7 +542,7 @@ class DiT(nn.Module):
         return x
 
     def forward(self, x, timestep, context, clean_route_z=None, clean_route_noise=None,
-                clean_route_sigma=None, **kwargs):
+                clean_route_sigma=None, training_step=None, **kwargs):
         """
         Forward pass of DiT.
         x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
@@ -515,6 +551,7 @@ class DiT(nn.Module):
         clean_route_z / clean_route_noise: (N, C, [1,] H, W) clean latents and the noise
             sample that built ``x``; clean_route_sigma: (N, ...) its noise level.
             Required in training, ignored in eval mode.
+        training_step: absolute optimizer step, required when a KL schedule is enabled.
         """
         if not self.training:
             y, labels = self.y_embedder(context, False)
@@ -524,6 +561,10 @@ class DiT(nn.Module):
                 "clean_route training needs clean_route_z, clean_route_noise and clean_route_sigma "
                 "(train.py passes them for CLEAN_ROUTE_MODELS)"
             )
+
+        align_scale = clean_route_align_scale(training_step, self.align_start_step, self.align_warmup_steps)
+        for block in self.moe_blocks():
+            block.align_scale = align_scale
 
         # Draw the class-label dropout once: both passes see the same labels.
         y, labels = self.y_embedder(context, True)

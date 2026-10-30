@@ -225,6 +225,7 @@ CLEAN_ROUTE_MODELS = {"ProMoE_TC_B_clean_route", "ProMoE_TC_B_clean_route_corr_r
 CLEAN_ROUTE_NUM_LOGGED_BLOCKS = 6
 CLEAN_ROUTE_STAT_NAMES = (
     "clean_route_align_loss",
+    "clean_route_align_weight",
     "clean_route_contrastive_loss",
     "clean_route_kl",
     "clean_route_agreement",
@@ -1421,6 +1422,7 @@ def _collect_clean_route_stats(model):
     kl = _per_block("last_kl")
     stats = {
         "clean_route_align_loss": _per_block("last_align_loss").sum(),
+        "clean_route_align_weight": _per_block("last_align_weight").mean(),
         "clean_route_contrastive_loss": _per_block("last_contrastive_loss").sum(),
         "clean_route_kl": kl.mean(),
         "clean_route_agreement": _per_block("last_agreement").mean(),
@@ -3253,6 +3255,9 @@ def worker(gpu, cfg):
             arg_c['clean_route_z'] = z
             arg_c['clean_route_noise'] = noise
             arg_c['clean_route_sigma'] = sigmas
+            # Absolute optimizer step: all micro-batches share it, and resume
+            # restores it from trainer_state rather than restarting the schedule.
+            arg_c['training_step'] = step
         if cfg.model_name in CORR_ROUTER_MODELS:
             # Reuse the exact latent/noise pair if the reference is built by
             # same-noise interpolation. The combo already receives this pair

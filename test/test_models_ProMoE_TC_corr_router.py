@@ -159,7 +159,8 @@ def model_inputs(kind, labels, z, noise, sigma, generator_seed=GENERATOR_SEED):
     return inputs
 
 
-def train_step(model, kind, autocast=False, labels=LABELS, sigma_value=None, z=None, noise=None):
+def train_step(model, kind, autocast=False, labels=LABELS, sigma_value=None, z=None, noise=None,
+               training_step=None):
     """One step as train.py runs it: the forward under autocast, the backward outside.
 
     ``z`` / ``noise`` replace the auxiliary inputs without changing x.
@@ -171,8 +172,11 @@ def train_step(model, kind, autocast=False, labels=LABELS, sigma_value=None, z=N
     noise = batch_noise if noise is None else noise
     torch.manual_seed(DROPOUT_SEED)  # class-label dropout draws from the global RNG
     region = torch.autocast(device_type="cpu", dtype=torch.bfloat16) if autocast else contextlib.nullcontext()
+    inputs = model_inputs(kind, labels, z, noise, sigma)
+    if training_step is not None:
+        inputs["training_step"] = training_step
     with region:
-        output = model(x, t, **model_inputs(kind, labels, z, noise, sigma))
+        output = model(x, t, **inputs)
     output.float().square().mean().backward()
     grads = {
         name: parameter.grad.detach().clone()
@@ -1088,6 +1092,20 @@ class DistributedTests(unittest.TestCase):
 
 
 class TrainingIntegrationTests(unittest.TestCase):
+    def test_clean_route_schedule_also_applies_to_the_combination(self):
+        for step, weight in ((0, 0.0), (100000, 2.5e-4), (200000, 5e-4)):
+            with self.subTest(step=step):
+                model = perturb_correctors(perturb(build_clean_corr(align_lam=5e-4, align_warmup_steps=200000)))
+                fixed = perturb_correctors(perturb(build_clean_corr(align_lam=weight)))
+                output, grads = train_step(model, "clean_corr", training_step=step)
+                expected, expected_grads = train_step(fixed, "clean_corr")
+                self.assertTrue(torch.equal(output, expected))
+                self.assertEqual(set(grads), set(expected_grads))
+                for name, grad in grads.items():
+                    torch.testing.assert_close(grad, expected_grads[name], rtol=0, atol=0, msg=name)
+                for block in model.moe_blocks():
+                    self.assertAlmostEqual(float(block.last_align_weight), weight, places=10)
+
     def test_the_models_are_registered_with_their_inputs(self):
         import train
 

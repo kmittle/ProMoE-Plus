@@ -550,6 +550,21 @@ When the user asks to push, treat that as permission to commit relevant current 
 - Training uses `gpu_ids` from YAML to set `CUDA_VISIBLE_DEVICES` when provided.
 - `total_train_batch_size` is global; `train.py` derives `train_batch_size = total_train_batch_size // world_size`. Changing a run from four to two GPUs therefore changes the per-GPU batch but not the configured global batch (verify divisibility before launching).
 - Sampling uses `sample_gpu_ids` only if provided; otherwise it uses all visible GPUs.
+- Clean-route KL scheduling uses optional `align_start_step` and `align_warmup_steps`
+  under `DiT_*_config.clean_route_config`, both nonnegative integers defaulting to
+  zero (the original fixed coefficient). Before the start the KL weight is zero;
+  with zero warmup it reaches `align_lam` at the start, otherwise it rises linearly
+  to `align_lam` at start + warmup. `train.py` supplies the absolute optimizer
+  `training_step`, shared by gradient-accumulation micro-batches and restored on
+  resume. Scheduled training requires that argument; eval ignores the schedule.
+  This changes only the KL weight, leaves FM/student contrastive active, and adds
+  no checkpoint parameters or buffers. Teacher passes still run for diagnostics
+  while the weight is zero; logs/TensorBoard include `clean_route_align_weight`.
+  Both clean-route model classes support the fields. The 2026-10-30 standalone
+  `student_ratio0_align_delay100k` and `student_ratio0_align_warmup200k` configs
+  use (start, warmup) = (100000, 0) and (0, 200000), respectively, with final weight
+  5e-4. Each trains fresh to 300K on four GPUs, with CFG 1.0/1.5 and 50K samples
+  per CFG; the original fixed-weight experiment is the control.
 - Correction-router training supports optional `DiT_*_config.corr_router_config.previous_state_mode`:
   `model_velocity` (default) keeps the original two auxiliary no-grad forwards;
   `same_noise` constructs the previous state as `(1 - sigma_ref) * z + sigma_ref * noise`

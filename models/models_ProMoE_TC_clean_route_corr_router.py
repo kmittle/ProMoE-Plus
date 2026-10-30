@@ -30,7 +30,7 @@ is ``student``); from then on the corrector learns.
 import torch
 
 from .models_ProMoE_TC_clean_route import SparseMoeBlock as CleanRouteSparseMoeBlock
-from .models_ProMoE_TC_clean_route import UNCOND_LABEL, parse_clean_route_config
+from .models_ProMoE_TC_clean_route import UNCOND_LABEL, clean_route_align_scale, parse_clean_route_config
 from .models_ProMoE_TC_corr_router import CorrRouterBlockMixin
 from .models_ProMoE_TC_corr_router import DiT as CorrRouterDiT
 
@@ -77,6 +77,8 @@ class DiT(CorrRouterDiT):
             )
         super().__init__(*args, **kwargs)
         self.teacher_sigma_ratio = settings["teacher_sigma_ratio"]
+        self.align_start_step = settings["align_start_step"]
+        self.align_warmup_steps = settings["align_warmup_steps"]
         for block in self.moe_blocks():
             block.configure_clean_route(
                 settings["contrastive_source"], settings["align_lam"], settings["align_temperature"]
@@ -89,7 +91,7 @@ class DiT(CorrRouterDiT):
 
     def forward(self, x, timestep, context, clean_route_z=None, clean_route_noise=None,
                 clean_route_sigma=None, corr_router_sigma=None, corr_router_generator=None,
-                corr_reference_x0=None, corr_reference_sigma=None, **kwargs):
+                corr_reference_x0=None, corr_reference_sigma=None, training_step=None, **kwargs):
         """
         Forward pass of DiT.
         x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
@@ -101,6 +103,7 @@ class DiT(CorrRouterDiT):
             The same clean latent and noise also construct the previous reference state
             when ``corr_router_config.previous_state_mode`` is ``same_noise``.
         corr_reference_x0 / corr_reference_sigma: eval only, as in models_ProMoE_TC_corr_router.
+        training_step: absolute optimizer step for the optional clean-route KL schedule.
         """
         if not self.training:
             return super().forward(
@@ -118,6 +121,10 @@ class DiT(CorrRouterDiT):
         sigma = clean_route_sigma.reshape(-1).float()
         if not torch.equal(corr_router_sigma.reshape(-1).float(), sigma):
             raise ValueError("clean_route_sigma and corr_router_sigma must be the same noise levels")
+
+        align_scale = clean_route_align_scale(training_step, self.align_start_step, self.align_warmup_steps)
+        for block in self.moe_blocks():
+            block.align_scale = align_scale
 
         # Draw the class-label dropout once: every pass sees the same labels.
         y, labels = self.y_embedder(context, True)
