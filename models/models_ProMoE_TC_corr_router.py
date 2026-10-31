@@ -11,6 +11,10 @@ correction ``delta`` of the routed-expert scores:
 * ``r``: the timestep embedding of the reference's noise level ``sigma_ref``.
 
 All four inputs are detached, so the corrector trains only its own weights.
+Optional ``use_reference_embedding`` and ``use_score_input`` (both True by
+default) mask the corresponding entire input with zeros in training and
+sampling. The projections and their initialization are retained, including
+the reference projection's bias. Original cosines still enter actual routing.
 Each input is projected to ``hidden_dim``, the projections are summed, then
 SiLU and a linear map to the expert scores; that output layer starts at zero.
 Expert selection takes the top-k of ``s + delta``, and the selected expert's
@@ -125,7 +129,7 @@ def _require_int(value, name):
 
 
 def parse_corr_router_config(corr_router_config):
-    """Validate three required settings and the optional previous-state mode."""
+    """Validate required settings, reference construction and input ablations."""
     if corr_router_config is None:
         raise ValueError(
             "corr_router models need DiT_*_config.corr_router_config with keys "
@@ -133,7 +137,8 @@ def parse_corr_router_config(corr_router_config):
         )
     config = dict(corr_router_config)
     missing = [key for key in CORR_ROUTER_CONFIG_KEYS if key not in config]
-    unknown = sorted(set(config) - set(CORR_ROUTER_CONFIG_KEYS) - {"previous_state_mode"})
+    optional = {"previous_state_mode", "use_reference_embedding", "use_score_input"}
+    unknown = sorted(set(config) - set(CORR_ROUTER_CONFIG_KEYS) - optional)
     if missing or unknown:
         raise ValueError(f"corr_router_config: missing keys {missing}, unknown keys {unknown}")
 
@@ -156,11 +161,18 @@ def parse_corr_router_config(corr_router_config):
     previous_state_mode = config.get("previous_state_mode", "model_velocity")
     if not isinstance(previous_state_mode, str) or previous_state_mode not in ("model_velocity", "same_noise"):
         raise ValueError("corr_router_config.previous_state_mode must be 'model_velocity' or 'same_noise'")
+    input_flags = {}
+    for name in ("use_reference_embedding", "use_score_input"):
+        value = config.get(name, True)
+        if not isinstance(value, bool):
+            raise ValueError(f"corr_router_config.{name} must be a boolean")
+        input_flags[name] = value
     return {
         "hidden_dim": hidden_dim,
         "skip_intervals": skip_intervals,
         "no_reference_prob": no_reference_prob,
         "previous_state_mode": previous_state_mode,
+        **input_flags,
     }
 
 
@@ -177,8 +189,11 @@ class RoutingCorrector(nn.Module):
     zeroes that output layer, so a fresh corrector returns exactly zero.
     """
 
-    def __init__(self, hidden_size, num_routed_experts, hidden_dim):
+    def __init__(self, hidden_size, num_routed_experts, hidden_dim,
+                 use_reference_embedding=True, use_score_input=True):
         super().__init__()
+        self.use_reference_embedding = use_reference_embedding
+        self.use_score_input = use_score_input
         self.reference_proj = nn.Linear(hidden_size, hidden_dim)
         self.score_proj = nn.Linear(num_routed_experts, hidden_dim, bias=False)
         self.condition_proj = nn.Linear(hidden_size, hidden_dim, bias=False)
@@ -203,6 +218,13 @@ class RoutingCorrector(nn.Module):
         return self.condition_proj(condition) + self.reference_sigma_proj(reference_sigma_embed)
 
     def forward(self, reference_embed, scores, sample_hidden):
+        # Mask the entire input, including reference positional information.
+        # Keep the projections in the graph (zero weight gradients) for DDP;
+        # their parameters, initialization and the reference bias stay intact.
+        if not self.use_reference_embedding:
+            reference_embed = torch.zeros_like(reference_embed)
+        if not self.use_score_input:
+            scores = torch.zeros_like(scores)
         hidden = self.reference_proj(reference_embed) + self.score_proj(scores) + sample_hidden
         return self.out(F.silu(hidden))
 
@@ -222,7 +244,7 @@ class CorrRouterBlockMixin:
     _corr_delta = None
     last_corr_bins = None
 
-    def init_corr_router(self, hidden_dim, generator):
+    def init_corr_router(self, hidden_dim, generator, use_reference_embedding=True, use_score_input=True):
         if self.router_weight_mode != "identity":
             raise ValueError("corr_router needs router_weight_mode: identity (the gate is the corrected score)")
         if self.phase_metric is not None:
@@ -237,7 +259,10 @@ class CorrRouterBlockMixin:
         # corrector leaves the global RNG, and with it every later draw,
         # exactly as the conference model leaves it.
         with torch.random.fork_rng(devices=[]):
-            self.corrector = RoutingCorrector(self.hidden_size, self.num_routed_experts, hidden_dim)
+            self.corrector = RoutingCorrector(
+                self.hidden_size, self.num_routed_experts, hidden_dim,
+                use_reference_embedding=use_reference_embedding, use_score_input=use_score_input,
+            )
         self.corrector.reset_parameters(generator)
 
     def set_corr_context(self, context, record=False):
@@ -443,7 +468,11 @@ class DiT(nn.Module):
         # draws exactly what it draws in ProMoE_TC_B.
         generator = torch.Generator().manual_seed(CORRECTOR_INIT_SEED)
         for block in self.moe_blocks():
-            block.init_corr_router(settings["hidden_dim"], generator)
+            block.init_corr_router(
+                settings["hidden_dim"], generator,
+                use_reference_embedding=settings["use_reference_embedding"],
+                use_score_input=settings["use_score_input"],
+            )
         self.skip_intervals = settings["skip_intervals"]
         self.no_reference_prob = settings["no_reference_prob"]
         self.previous_state_mode = settings["previous_state_mode"]

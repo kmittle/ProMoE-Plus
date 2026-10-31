@@ -1,5 +1,68 @@
 # design-todo：ProMoE_TC 改进计划（MoE 主线）
 
+## 当前已确认实验列表（2026-10-31，继续补充中）
+
+用户指定的完整方法锚点是 `B_clean_route_student_ratio0_corr_router_cfg_ref`：
+B（Base）规模，student 侧路由对比学习、干净 teacher（`teacher_sigma_ratio: 0.0`）、
+KL 路由蒸馏与路由矫正。当前 `align_lam: 0.0005`，从第 0 步启用且没有 warmup；
+参考构造使用 `model_velocity`，采样显式使用 `corr_reference_velocity: cfg`。
+这里的 `_cfg_ref` 是已有权重的评估入口；后续训练实验应继承其对应训练模型与超参数。
+
+| 项目 | 规模 | KL 蒸馏设置 | 当前决定 |
+|---|---|---|---|
+| 完整方法对照 | B | 从第 0 步固定 5e-4，无延迟、无 warmup | 已有结果，直接复用 |
+| 完整方法规模扩展 | L | 沿用当前 B 完整方案的超参数；固定 5e-4，无延迟、无 warmup | 必做；网络结构按 L 规模扩展 |
+| 完整方法规模扩展 | XL | 沿用当前 B 完整方案的超参数；固定 5e-4，无延迟、无 warmup | 必做；网络结构按 XL 规模扩展 |
+| clean teacher 蒸馏延迟消融 | B | `align_start_step: 100000`、`align_warmup_steps: 0`，开启后固定 5e-4 | 在完整组合模型上新增 |
+| clean teacher 蒸馏 warmup 消融 | B | `align_start_step: 0`、`align_warmup_steps: 200000`，最终达到 5e-4 | 在完整组合模型上新增 |
+| KL 系数消融：1e-4 | B | `align_lam: 0.0001`，从第 0 步起恒定，无延迟、无 warmup | 新增 |
+| KL 系数消融：1e-3 | B | `align_lam: 0.001`，从第 0 步起恒定，无延迟、无 warmup | 新增 |
+| KL 系数消融：5e-3 | B | `align_lam: 0.005`，从第 0 步起恒定，无延迟、无 warmup | 新增 |
+| 矫正器不读取参考图 | B | 从第 0 步固定 5e-4，无延迟、无 warmup | 屏蔽参考图 embedding，保留其他输入与矫正 MLP |
+| 矫正器不读取原始路由分数 | B | 从第 0 步固定 5e-4，无延迟、无 warmup | 屏蔽送入矫正器的原始余弦分数；最终仍用原始分数加修正量路由 |
+| KL 对修正量停止直接梯度 | B | 从第 0 步固定 5e-4，无延迟、无 warmup | 仅在 KL 分支对本层修正量 `detach()`；实际路由与 FM 路径保持可导 |
+
+**当前合计 10 个新增实验**：L、XL 各 1 个，B 延迟与 warmup 各 1 个，
+B 固定 KL 系数 3 个，B 矫正器输入与梯度路径消融 3 个。
+已有完整方法对照及系数为 0 的对照不计入新增数量。
+
+**单因素约定：时间调度与系数幅度是不同的实验因素。** 系数扫描不叠加延迟或 warmup，
+保持 teacher、路由矫正、对比学习位置、温度与其他训练设置一致。
+L/XL 首先复用当前已验证 B 版本的超参数，不采用尚未确定的调度或系数变体。
+
+新增的三个机制消融分别从头训练，每项只改变指定输入或梯度路径，
+均在完整 B 模型上固定 `align_lam: 0.0005`、`align_start_step: 0`、
+`align_warmup_steps: 0`；输入屏蔽在训练和推理中一致生效。
+不读取参考图的消融仍保留原始路由分数、时间步、类别等输入及矫正器；
+不读取原始分数的消融仍保留参考图和其他条件，最终路由仍为原始分数加修正量。
+梯度消融中，KL 仍对齐矫正后的学生分布与干净 teacher 分布，
+仅将 KL 使用的学生分数改成 `base_scores + correction.detach()`。
+同一参数与输入下 KL 的前向值保持一致；实际路由与 FM 损失仍使用可导的
+`base_scores + correction`。切断的是本层 KL 经本层修正量的直接梯度，
+不意味着后续层 KL 经网络传回的间接影响全部消失。
+所有采样评估继续显式使用 `corr_reference_velocity: cfg`。
+
+已有 `B_clean_route_student_ratio0_align_delay100k` 和
+`B_clean_route_student_ratio0_align_warmup200k` 是单独 clean_route 模型的实验；
+它们不包含 corr_router，不能代替本列表的完整组合模型调度消融。
+记录本列表不改变这些已有实验的定义、权重或运行状态。
+
+系数对照可复用两个已有端点：`align_lam: 5e-4` 对应完整方法锚点；
+`align_lam: 0`、student 侧对比学习对应仅路由矫正的 `B_corr_router_cfg_ref`。
+这两项是已有对照，不据此自动新增重复训练。
+
+这 10 项已实现模型开关、L/XL 注册、独立配置与启动脚本；启动索引见
+[`scripts/_run_times/2026_10_31/commands.md`](../scripts/_run_times/2026_10_31/commands.md)。
+每项使用 4 卡自动匹配，从头训练到 300K，完成 CFG 1.0/1.5 各 50K 样本评估，
+从本实验的权重续训到 500K 后再次评估；不设置 300K FID 优劣门槛，
+但缺失或无效的 FID/IS 必须阻止进入下一阶段。定义已生成，不代表已启动训练。
+输入开关是 `corr_router_config.use_reference_embedding` 与 `use_score_input`
+（默认均为 `True`）；梯度开关是完整组合专用的
+`clean_route_config.align_detach_correction`（默认 `False`）。
+本节之外尚未确认的诊断或消融候选，不计入已确认列表。
+
+---
+
 > **基线（固定，2026-09-21）**：所有对比一律使用结果页上的 ProMoE-TC B 基线——300K 为 FID/IS `30.86 / 48.35`（CFG 1.0）、`9.73 / 121.25`（CFG 1.5）；500K 为 `24.44 / 60.38`、`6.39 / 154.21`。Codex 另训的 fresh routing baseline（300K `30.58 / 9.59`）作废，不再引用、不作门禁。
 >
 > **执行顺序（2026-09-06）**：所有候选先 training from scratch 到 300K，并完成 CFG 1.0/1.5 的 OpenAI evaluator。以基线 ProMoE-TC 的 300K FID（CFG 1.0 为 30.86、CFG 1.5 为 9.73）为门禁（FID 必须在两个 CFG 都更低）；未通过的方案立即停止并放弃，不再续训 500K。通过门禁的方案才做 500K 和路由/专家分工分析。不得用中途 checkpoint 代替独立实验，也不得在 300K 前凭主观判断停止。一次性的 200K 窗口交接不再复制到新实验。

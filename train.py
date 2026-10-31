@@ -155,6 +155,8 @@ model_dict = {
     "ProMoE_TC_B_clean_route": (ProMoE_TC_clean_route, "DiT_B_config"),
     "ProMoE_TC_B_corr_router": (ProMoE_TC_corr_router, "DiT_B_config"),
     "ProMoE_TC_B_clean_route_corr_router": (ProMoE_TC_clean_route_corr_router, "DiT_B_config"),
+    "ProMoE_TC_L_clean_route_corr_router": (ProMoE_TC_clean_route_corr_router, "DiT_L_config"),
+    "ProMoE_TC_XL_clean_route_corr_router": (ProMoE_TC_clean_route_corr_router, "DiT_XL_config"),
 }
 
 DENOISING_REGRET_MODELS = {"ProMoE_TC_B_FDRR"}
@@ -221,8 +223,12 @@ REGCOMBO_STAT_NAMES = (
     for index in range(REGCOMBO_NUM_LOGGED_BLOCKS)
     for field in ("loss_log10", "dist_min")
 )
-CLEAN_ROUTE_MODELS = {"ProMoE_TC_B_clean_route", "ProMoE_TC_B_clean_route_corr_router"}
-CLEAN_ROUTE_NUM_LOGGED_BLOCKS = 6
+CLEAN_ROUTE_MODELS = {
+    "ProMoE_TC_B_clean_route", "ProMoE_TC_B_clean_route_corr_router",
+    "ProMoE_TC_L_clean_route_corr_router", "ProMoE_TC_XL_clean_route_corr_router",
+}
+# Interleaved B / L / XL have 6 / 12 / 14 MoE blocks. Keep a fixed DDP schema.
+CLEAN_ROUTE_NUM_LOGGED_BLOCKS = 14
 CLEAN_ROUTE_STAT_NAMES = (
     "clean_route_align_loss",
     "clean_route_align_weight",
@@ -243,8 +249,11 @@ CLEAN_ROUTE_STAT_NAMES = (
 ) + tuple(
     f"clean_route_kl_b{index}" for index in range(CLEAN_ROUTE_NUM_LOGGED_BLOCKS)
 )
-CORR_ROUTER_MODELS = {"ProMoE_TC_B_corr_router", "ProMoE_TC_B_clean_route_corr_router"}
-CORR_ROUTER_NUM_LOGGED_BLOCKS = 6
+CORR_ROUTER_MODELS = {
+    "ProMoE_TC_B_corr_router", "ProMoE_TC_B_clean_route_corr_router",
+    "ProMoE_TC_L_clean_route_corr_router", "ProMoE_TC_XL_clean_route_corr_router",
+}
+CORR_ROUTER_NUM_LOGGED_BLOCKS = 14
 CORR_ROUTER_STAT_NAMES = (
     "corr_router_delta_abs",
     "corr_router_switch_ref",

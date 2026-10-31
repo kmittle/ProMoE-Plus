@@ -1,0 +1,8 @@
+实验 / Experiment: B_clean_route_student_ratio0_corr_router_kl_detach_corr
+model_name: ProMoE_TC_B_clean_route_corr_router  |  config: configs/004_ProMoE_B_clean_route_student_ratio0_corr_router_kl_detach_corr.yaml
+基线 / Baseline: 基础 ProMoE-TC（原型 token 路由、shared/uncond 专家与路由对比学习）；直接父变体 / Parent: B_clean_route_student_ratio0_corr_router_cfg_ref 完整方法。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. KL 梯度路径消融：clean_route_config.align_detach_correction=True，仅在 KL 的学生分数使用 base_scores + correction.detach()。KL 的对齐对象仍是矫正后的分布，实际路由及 FM 使用可导修正量；切断本层直接路径，后续层 KL 的间接影响仍可能存在。
+2. 相对基础 ProMoE-TC，完整组合保留 cond/uncond 分支、共享专家及 student 路由对比学习；新增同模型 no-grad 干净 teacher（teacher_sigma_ratio=0）的路由 KL 与参考图矫正器。参考构造为 model_velocity；采样显式 corr_reference_velocity=cfg，使用 CFG fusion 后速度。
+3. 4 卡自动匹配，global batch=256、seed=0、lr=1e-4、latent_data_path=/mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz。align_lam=0.0005，无延迟与 warmup。独立从头训练 300K -> CFG 1.0/1.5 各 50K 评估 -> 续训本实验权重至 500K -> 再评估；无 300K FID 优劣门槛，缺失/无效指标会停止流程。

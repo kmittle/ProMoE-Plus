@@ -11,7 +11,9 @@ blocks also carry the corr_router corrector (models_ProMoE_TC_corr_router.py):
 * the student routes, weights its experts and groups its contrastive clusters
   by the corrected scores ``s + delta``, and its alignment term uses
   ``p = softmax((cos(h_S, P) + delta) / tau)``, so the KL trains the corrector
-  directly, for every expert;
+  directly, for every expert by default. ``align_detach_correction: True``
+  stops only this local KL-to-correction gradient, while retaining the
+  corrected distribution and the differentiable FM routing path;
 * a training step runs the corr_router reference passes, then the teacher
   pass, then the student pass. With ``previous_state_mode: same_noise``, the
   reference reuses ``clean_route_z`` and ``clean_route_noise`` and needs one
@@ -45,6 +47,7 @@ class SparseMoeBlock(CorrRouterBlockMixin, CleanRouteSparseMoeBlock):
     records exactly as the clean-route block does.  The student pass routes by
     ``s + delta`` (CorrRouterBlockMixin) and aligns the corrected scores.
     """
+    align_detach_correction = False
 
     def _student_losses(self, conference_loss, indices, weights, cosines, routed, seq_len):
         delta = self._corr_delta
@@ -54,6 +57,8 @@ class SparseMoeBlock(CorrRouterBlockMixin, CleanRouteSparseMoeBlock):
                 raise RuntimeError("clean_route student pass ran without the routing correction")
             # The float32 alignment cosines plus the correction: the student's
             # distribution is that of the scores it actually routes by.
+            if self.align_detach_correction:
+                delta = delta.detach()
             cosines = cosines + delta.float()
         return super()._student_losses(conference_loss, indices, weights, cosines, routed, seq_len)
 
@@ -69,7 +74,13 @@ class DiT(CorrRouterDiT):
     moe_block_class = SparseMoeBlock
 
     def __init__(self, *args, clean_route_config=None, **kwargs):
-        settings = parse_clean_route_config(clean_route_config)
+        # This flag belongs only to the combination: standalone clean_route
+        # has no correction to detach and continues to reject this key.
+        route_config = None if clean_route_config is None else dict(clean_route_config)
+        detach_correction = False if route_config is None else route_config.pop("align_detach_correction", False)
+        if not isinstance(detach_correction, bool):
+            raise ValueError("clean_route_config.align_detach_correction must be a boolean")
+        settings = parse_clean_route_config(route_config)
         if settings["teacher_sigma_ratio"] != 0.0:
             raise ValueError(
                 "clean_route_corr_router supports only teacher_sigma_ratio 0: how a noisy teacher "
@@ -80,6 +91,7 @@ class DiT(CorrRouterDiT):
         self.align_start_step = settings["align_start_step"]
         self.align_warmup_steps = settings["align_warmup_steps"]
         for block in self.moe_blocks():
+            block.align_detach_correction = detach_correction
             block.configure_clean_route(
                 settings["contrastive_source"], settings["align_lam"], settings["align_temperature"]
             )

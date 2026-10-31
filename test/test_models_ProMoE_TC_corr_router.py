@@ -997,7 +997,8 @@ class SamplingCheckpointTests(unittest.TestCase):
                 sample.resolve_sampling_checkpoints(cfg)
 
 
-def _ddp_worker(rank, world_size, init_file, output_dir, kind, previous_state_mode):
+def _ddp_worker(rank, world_size, init_file, output_dir, kind, previous_state_mode,
+                input_ablation=None, detach_correction=False):
     """Two DDP steps as train.py runs them: bf16 forward, the stat collectives, backward, update.
 
     Rank 1 starts with a batch of uncond images only, so its first step trains
@@ -1008,7 +1009,11 @@ def _ddp_worker(rank, world_size, init_file, output_dir, kind, previous_state_mo
         import train  # the generator, stat collectors and reducer under test
 
         config = dict(previous_state_mode=previous_state_mode)
-        model = build_corr(**config) if kind == "corr" else build_clean_corr(corr_overrides=config, align_lam=1.0)
+        if input_ablation is not None:
+            config[input_ablation] = False
+        model = build_corr(**config) if kind == "corr" else build_clean_corr(
+            corr_overrides=config, align_lam=1.0, align_detach_correction=detach_correction
+        )
         model = perturb_correctors(perturb(model))
         ddp_model = DistributedDataParallel(model)
         optimizer = torch.optim.SGD(ddp_model.parameters(), lr=1e-2)
@@ -1108,13 +1113,17 @@ class TrainingIntegrationTests(unittest.TestCase):
 
     def test_the_models_are_registered_with_their_inputs(self):
         import train
+        import sample
 
         self.assertIs(train.model_dict["ProMoE_TC_B_corr_router"][0], corr_router.DiT)
-        self.assertIs(train.model_dict["ProMoE_TC_B_clean_route_corr_router"][0], clean_corr.DiT)
-        self.assertEqual(
-            train.CORR_ROUTER_MODELS, {"ProMoE_TC_B_corr_router", "ProMoE_TC_B_clean_route_corr_router"}
-        )
-        self.assertIn("ProMoE_TC_B_clean_route_corr_router", train.CLEAN_ROUTE_MODELS)
+        expected = {"ProMoE_TC_B_corr_router"}
+        for size in ("B", "L", "XL"):
+            name = f"ProMoE_TC_{size}_clean_route_corr_router"
+            expected.add(name)
+            self.assertEqual(train.model_dict[name], (clean_corr.DiT, f"DiT_{size}_config"))
+            self.assertEqual(sample.model_dict[name], train.model_dict[name])
+            self.assertIn(name, train.CLEAN_ROUTE_MODELS)
+        self.assertEqual(train.CORR_ROUTER_MODELS, expected)
         self.assertNotIn("ProMoE_TC_B_corr_router", train.CLEAN_ROUTE_MODELS)
 
     def test_the_reference_generator_depends_only_on_the_position(self):

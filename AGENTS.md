@@ -95,6 +95,47 @@ with:
 
 ## Current Research Scope and Storage Policy
 
+**Current user-confirmed experiment list (2026-10-31; still being extended).**
+The user reopened the complete `B_clean_route_student_ratio0_corr_router_cfg_ref`
+method for scale-up and ablations. Keep the maintained list in
+[`doc/design-todo.md`](doc/design-todo.md), under its 2026-10-31 section.
+L and XL are required scale-up runs using the current B method/training
+hyperparameters, with standard backbone dimensions for each scale and no
+distillation delay or warmup. Delay-at-100K and warmup-to-200K ablations belong
+to the **B-scale complete clean-route + corr_router model**, with final KL
+coefficient 5e-4. The existing standalone clean-route schedule runs do not
+substitute for those combination ablations. KL coefficient ablations also use
+the complete B model: vary only `clean_route_config.align_lam`, with
+`align_start_step: 0` and `align_warmup_steps: 0` throughout the coefficient
+sweep. Time scheduling and coefficient magnitude are separate factors.
+The three new coefficient values are 1e-4, 1e-3, and 5e-3; reuse the existing
+5e-4 complete-method control and the zero-KL corr_router control. Three further
+B-scale complete-model ablations are confirmed: mask the corrector's reference
+image embedding; mask only its raw cosine-score input while retaining
+raw-plus-correction routing; and detach the current layer's correction only
+inside the student KL scores. These three train fresh with fixed 5e-4 from
+step 0 and no delay/warmup. Input masks apply consistently in training and
+inference. The gradient ablation still aligns the corrected student
+distribution: `base_scores + correction.detach()` in KL, versus differentiable
+`base_scores + correction` in actual routing and the FM path. It removes only
+the local KL-to-correction direct gradient, not all possible downstream KL
+effects through the network. The confirmed list has ten new runs: L, XL,
+B delay, B warmup, three B coefficients, and these three mechanism ablations.
+All correction-router evaluation uses CFG-fused reference velocity. This list
+is implemented in `scripts/_run_times/2026_10_31/commands.md`: ten independent
+four-GPU launch definitions, not running jobs. Each trains fresh to 300K,
+evaluates CFG 1.0/1.5 with 50K samples each, resumes its own weights to 500K,
+then evaluates again. The requested sequential pipeline has no 300K FID
+performance gate; missing or invalid FID/IS prevents progression.
+The input flags are `corr_router_config.use_reference_embedding` and
+`use_score_input` (both default True). The KL flag is combination-only
+`clean_route_config.align_detach_correction` (default False). The masked
+projections remain in the graph with zero weight gradients for DDP; their
+parameters and checkpoint keys remain present. The full reference embedding,
+including position information, is masked. L/XL combinations are registered
+as `ProMoE_TC_L_clean_route_corr_router` and
+`ProMoE_TC_XL_clean_route_corr_router`; diagnostics cover all 14 XL MoE blocks.
+
 The active research line is the factorial combination of the four validated
 MoE mechanisms:
 

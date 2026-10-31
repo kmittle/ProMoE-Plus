@@ -325,10 +325,10 @@ Core parameters: `num_routed_experts` (typically 12), `top_k` (experts per token
 - `ecmix_config` (ecmix variant only): `mode` (`loss` / `step`), `schedule` (`constant` / `cosine`), `ratio` (EC loss weight or EC-step share; the start value of the cosine schedule), `anneal_steps` (cosine only; the ratio reaches 0 there). A constant share spaces EC steps exactly evenly (5% = one step in every 20). train.py logs `ecmix_ratio`, `ecmix_ec_step`, the TC-assignment load CV / max share / active experts, and both contrastive losses.
 - capacity_combo factors (capacity_combo variant only): **H** `hetero_expert` + `hetero_min_ratio`/`hetero_max_ratio`; **R** `ls_balance_mode` (`"off"` or `"token"` = historical diagonal LS-Reg) + `ls_diag_sign`/`ls_diag_strength`/`ls_ema_beta`; **O/P** `expert_output_blocks`/`expert_param_blocks` choose the blocks for each view (a block in both lists runs `dual_additive`, a block only in the param list runs `param_signature`), with `expert_contrastive_output_lam`/`_param_lam` (0.5/0.5), independent `expert_contrastive_output_temperature`/`_param_temperature` (0.5/0.7), and `expert_contrastive_signature_bins` for the P signature length.
 
-- `clean_route_config` (both clean_route models; under `DiT_*_config`, next to `MoE_config`): four keys are required -- `contrastive_source` (`student` / `teacher`), `teacher_sigma_ratio` (in [0, 1); 0 = clean teacher at t = 0), `align_lam` (>= 0) and `align_temperature` (> 0, the tau of both softmaxes). Optional nonnegative integer `align_start_step` and `align_warmup_steps` default to zero, preserving the fixed coefficient. Before start the KL weight is zero; with zero warmup it switches to `align_lam` at start, otherwise it rises linearly from zero at start to `align_lam` at start + warmup. `train.py` passes the absolute optimizer `training_step` (shared across accumulation micro-batches and restored on resume); scheduled training requires it, eval ignores it. Only KL is scheduled: FM and student contrastive remain active, and teacher passes still provide diagnostics while the weight is zero. `clean_route_align_weight` logs the effective coefficient. No model parameters/buffers are added. Unknown keys are refused, as are `load_balance_loss_coef > 0`, `phase_metric_config.enabled` and `init_MoeMLP`.
+- `clean_route_config` (both clean_route models; under `DiT_*_config`, next to `MoE_config`): four keys are required -- `contrastive_source` (`student` / `teacher`), `teacher_sigma_ratio` (in [0, 1); 0 = clean teacher at t = 0), `align_lam` (>= 0) and `align_temperature` (> 0, the tau of both softmaxes). Optional nonnegative integer `align_start_step` and `align_warmup_steps` default to zero, preserving the fixed coefficient. Before start the KL weight is zero; with zero warmup it switches to `align_lam` at start, otherwise it rises linearly from zero at start to `align_lam` at start + warmup. `train.py` passes the absolute optimizer `training_step` (shared across accumulation micro-batches and restored on resume); scheduled training requires it, eval ignores it. Only KL is scheduled: FM and student contrastive remain active, and teacher passes still provide diagnostics while the weight is zero. `clean_route_align_weight` logs the effective coefficient. No model parameters/buffers are added. The complete clean-route + corr_router model additionally accepts boolean `align_detach_correction` (default False): only its KL uses `base_scores + correction.detach()`, while routing/FM keep differentiable corrections; standalone clean_route rejects that key. Unknown keys are refused, as are `load_balance_loss_coef > 0`, `phase_metric_config.enabled` and `init_MoeMLP`.
   The 2026-10-30 standalone clean-route student_ratio0 ablations use final `align_lam: 0.0005`: `align_delay100k` sets start=100000, warmup=0; `align_warmup200k` sets start=0, warmup=200000. Both train fresh on four GPUs to 300K, evaluate, resume to 500K, then evaluate again. Each checkpoint uses CFG 1.0/1.5 with 50K images each, against the existing fixed-weight control.
 
-- `corr_router_config` (corr_router variants only; under `DiT_*_config`, next to `MoE_config`): three keys are required -- `hidden_dim` (int >= 1, the corrector's hidden width), `skip_intervals` (distinct ints in [1, 1000), the training gaps in thousandths of sigma: one Euler step of a `1000 / k`-step sampler) and `no_reference_prob` (in [0, 1), the share of prototype-routed training images without a reference). Optional `previous_state_mode` is `model_velocity` (default, two no-grad reference passes) or `same_noise` (reuse the current latent/noise pair at the selected higher noise level, then one no-grad reference pass; this leaks the clean end by construction and exists only as an ablation). The plain model receives `corr_router_z` / `corr_router_noise` from train.py; the combo reuses `clean_route_z` / `clean_route_noise`. Unknown keys are refused, as are `router_weight_mode` other than `identity`, `use_uncond_expert: False` (sampling gives the uncond pass no reference), `load_balance_loss_coef > 0`, `phase_metric_config.enabled` and `init_MoeMLP`.
+- `corr_router_config` (corr_router variants only; under `DiT_*_config`, next to `MoE_config`): three keys are required -- `hidden_dim` (int >= 1, the corrector's hidden width), `skip_intervals` (distinct ints in [1, 1000), the training gaps in thousandths of sigma: one Euler step of a `1000 / k`-step sampler) and `no_reference_prob` (in [0, 1), the share of prototype-routed training images without a reference). Optional `previous_state_mode` is `model_velocity` (default, two no-grad reference passes) or `same_noise` (reuse the current latent/noise pair at the selected higher noise level, then one no-grad reference pass; this leaks the clean end by construction and exists only as an ablation). The plain model receives `corr_router_z` / `corr_router_noise` from train.py; the combo reuses `clean_route_z` / `clean_route_noise`. Optional boolean `use_reference_embedding` and `use_score_input` default to True; setting either False feeds zeros into that projection in both training and sampling, preserving the projection graph and raw-plus-correction routing. Unknown keys are refused, as are `router_weight_mode` other than `identity`, `use_uncond_expert: False` (sampling gives the uncond pass no reference), `load_balance_loss_coef > 0`, `phase_metric_config.enabled` and `init_MoeMLP`.
 
 - regcombo knobs (regcombo variant only): `global_center` (bool); `ls_diag_strength` / `ls_diag_sign` / `ls_ema_beta` and `ls_count_scope` (`local` = source behaviour, `global` = all-reduced counts; needs a strength > 0); `expert_contrastive_mode` (`param` / `output`), `expert_contrastive_lam`, `expert_contrastive_temperature`, `expert_contrastive_include_bias`, `expert_contrastive_blocks` (0-based DiT block indices that must be MoE blocks; a weight without blocks, or blocks without a weight, is an error) and `expert_output_scope` (`local` / `global`, output mode only).
 
@@ -566,6 +566,42 @@ If the ablation is controlled by an existing config flag (e.g., `router_norm_typ
 - **A push request implicitly authorizes a commit of the current WIP.** When the user asks to push (any phrasing — `push`, `推送`, `最后 push 所有改动`, etc.), treat it as one combined instruction: commit any uncommitted WIP relevant to the conversation first, then push. Do not ask for a separate commit confirmation. All other git-safety rules still apply: no `--no-verify`, no force-push to `main`/`master`, never stage secrets or `*.local.json` files, never `git add -A`/`.` (stage explicit paths only).
 
 ## Companion Documentation
+
+**Current experiment decisions (2026-10-31):** see the maintained confirmed list
+at the start of `doc/design-todo.md`. The anchor is the complete
+`B_clean_route_student_ratio0_corr_router_cfg_ref` method. L/XL scale-up first
+uses its current B hyperparameters with no delay/warmup. Distillation delay
+(100K), warmup (to 200K), and KL coefficient ablations all belong to the
+**B-scale complete clean-route + corr_router model**. The coefficient sweep
+changes only `align_lam`, starting at step 0 with no warmup
+(`align_start_step: 0`, `align_warmup_steps: 0`). New values are 1e-4, 1e-3,
+and 5e-3; reuse the existing 5e-4 and zero-KL controls. Three more complete-B
+ablations are confirmed: mask the corrector's reference image embedding;
+mask its raw cosine-score input while retaining raw-plus-correction routing;
+and detach the current layer's correction only in the student KL scores.
+These three train fresh with fixed 5e-4 from step 0, no delay/warmup, and
+consistent training/inference input masks. The gradient ablation keeps KL
+aligned to the corrected student distribution using
+`base_scores + correction.detach()`; actual routing and the FM path retain
+differentiable `base_scores + correction`. Only the local direct KL gradient
+through the correction is removed; downstream indirect KL effects can remain.
+The confirmed list now has ten new experiments: L, XL, B delay, B warmup,
+three B coefficients, and three mechanism ablations. All correction-router
+evaluation uses CFG-fused reference velocity.
+Do not combine timing and magnitude changes in that sweep or treat the existing
+standalone clean-route schedule runs as these combination-model ablations.
+The ten definitions are implemented under `scripts/_run_times/2026_10_31/`;
+`commands.md` lists their independent output buckets and four-GPU launchers.
+Each trains fresh to 300K, evaluates CFG 1.0/1.5 (50K samples each), resumes
+its own weights to 500K, then evaluates again. There is no 300K FID performance
+gate, but missing/invalid FID/IS stops progression. Defining these experiments
+does not launch them. Input flags are `corr_router_config.use_reference_embedding`
+and `use_score_input` (default True); the gradient flag is combination-only
+`clean_route_config.align_detach_correction` (default False). Masked projections
+remain in the DDP graph with zero weight gradients; reference masking includes
+positional information. L/XL use `ProMoE_TC_L_clean_route_corr_router` and
+`ProMoE_TC_XL_clean_route_corr_router`, with diagnostics through the 14th MoE block.
+
 - `doc/ProMoE-REPA.md` — Detailed guide for all REPA variant workflows, configuration reference, and FAQ.
 - `AGENTS.md` — Full project structure reference, output layout, testing guidelines, and commit conventions.
 - `analyses/README.md` — Overview of analysis entrypoints; per-script usage in `analyses/<basename>.md` files.

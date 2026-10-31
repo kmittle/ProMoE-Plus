@@ -16,7 +16,13 @@ ARMS = (
     ("base", "top3"),
     ("clean_route", "clean_route_student_ratio0_align_delay100k"),
     ("clean_route", "clean_route_student_ratio0_align_warmup200k"),
-)
+) + tuple(
+    ("corr_router", "clean_route_student_ratio0_corr_router_" + suffix)
+    for suffix in (
+        "align_delay100k", "align_warmup200k", "align_lam0p0001", "align_lam0p001", "align_lam0p005",
+        "no_ref_embed", "no_score_input", "kl_detach_corr",
+    )
+) + tuple(("corr_router", "clean_route_student_ratio0_corr_router", size) for size in ("L", "XL"))
 
 STUB = '''import argparse, json, os
 from pathlib import Path
@@ -38,6 +44,8 @@ if kind == "run_eval":
     Path(str(images) + "_eval_openai.txt").write_text("FID: " + fid + "\\nInception Score: 100.0\\n")
 else:
     cfg = yaml.safe_load(Path(args.config).read_text())
+    if "corr_router" in cfg["model_name"]:
+        assert cfg["corr_reference_velocity"] == "cfg"
     output = root / "outputs" / cfg["model_name"] / Path(args.config).stem
     ckpts = output / "checkpoints"
     if kind == "train":
@@ -56,6 +64,8 @@ else:
             if os.getenv("MISSING_IMAGES") == "1" and scale == 1.5:
                 continue
             folder = f"img256_cfg{scale}_seed0_FID50K_bs128_ema"
+            if "corr_router" in cfg["model_name"]:
+                folder += "_corr_ref_cfg"
             images = output / "sample" / f"step{step}" / folder / "images"
             images.mkdir(parents=True, exist_ok=True)
             (images / "stub.png").write_bytes(b"stub image")
@@ -66,11 +76,12 @@ with (root / "events.jsonl").open("a") as file:
 
 @contextlib.contextmanager
 def pipeline(arm):
-    family, tag = arm
+    family, tag = arm[:2]
+    size = arm[2] if len(arm) == 3 else "B"
     with tempfile.TemporaryDirectory(dir=REPO / "test", prefix=".train_schedule_") as directory:
         root = Path(directory)
-        script = f"scripts/{family}/run_B_{tag}_train_sample_eval.sh"
-        for path in (script, f"configs/004_ProMoE_B_{tag}.yaml", "scripts/_eval_metric_helpers.sh"):
+        script = f"scripts/{family}/run_{size}_{tag}_train_sample_eval.sh"
+        for path in (script, f"configs/004_ProMoE_{size}_{tag}.yaml", "scripts/_eval_metric_helpers.sh"):
             target = root / path
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(REPO / path, target)
@@ -120,8 +131,9 @@ class TrainingScheduleScriptTests(unittest.TestCase):
                 self.assertEqual(events(), log)
 
     def test_missing_or_invalid_300k_result_stops_then_resume_finishes_evaluation_first(self):
-        for flag in ("BAD_METRICS", "MISSING_IMAGES"):
-            with self.subTest(flag=flag), pipeline(ARMS[0]) as (run, events):
+        for flag, arm in ((flag, arm) for flag in ("BAD_METRICS", "MISSING_IMAGES")
+                          for arm in (ARMS[0], ARMS[-1])):
+            with self.subTest(flag=flag, arm=arm), pipeline(arm) as (run, events):
                 result = run(**{flag: "1"})
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("missing or invalid FID/IS", result.stderr)
