@@ -261,12 +261,19 @@ def denoise_latents(model_val, noise, y, y_null, cfg, current_guide_scale, gpu, 
     corr_router models (``uses_corr_reference``) route the cond pass of every step after the
     first with the previous step's clean-latent estimate. ``corr_reference_velocity``
     chooses the conditional velocity (default) or the CFG-fused sampling velocity.
+    A model configured with reference_mode=current instead makes a fresh
+    preliminary prediction and CFG-fused reference at the current x,t. This
+    takes two cond predictions per step; the uncond prediction is reused.
     """
     reference_velocity = getattr(cfg, 'corr_reference_velocity', 'conditional')
     if reference_velocity not in ('conditional', 'cfg'):
         raise ValueError('corr_reference_velocity must be conditional or cfg')
     if reference_velocity == 'cfg' and not uses_corr_reference:
         raise ValueError('corr_reference_velocity=cfg requires a correction-router model')
+    module = getattr(model_val, 'module', model_val)
+    current_reference = uses_corr_reference and getattr(module, 'reference_mode', 'previous') == 'current'
+    if current_reference and reference_velocity != 'cfg':
+        raise ValueError('current reference sampling requires corr_reference_velocity=cfg')
     sample_scheduler = FlowMatchEulerDiscreteScheduler(num_train_timesteps=cfg.num_train_timesteps, shift=cfg.shift)
     sampling_sigmas = get_sampling_sigmas(cfg.sample_steps, cfg.sample_shift)
 
@@ -282,18 +289,34 @@ def denoise_latents(model_val, noise, y, y_null, cfg, current_guide_scale, gpu, 
         timestep = [t] * len(latents)
         timestep = torch.stack(timestep)
 
+        noise_pred_uncond = None
+        if current_reference:
+            # A fresh preliminary prediction at THIS x,t, with no reference.
+            # Reuse the unconditional prediction: its input and path are the
+            # same in the preliminary and final CFG fusions.
+            preliminary = model_val(latent_model_input, timestep, **arg_c)
+            if isinstance(preliminary, tuple):
+                preliminary = preliminary[0]
+            if current_guide_scale > 1.0:
+                noise_pred_uncond = model_val(latent_model_input, timestep, **arg_null)
+                if isinstance(noise_pred_uncond, tuple):
+                    noise_pred_uncond = noise_pred_uncond[0]
+                preliminary = noise_pred_uncond + current_guide_scale * (preliminary - noise_pred_uncond)
+            corr_reference = corr_router_sampling_reference(latents, preliminary, sample_scheduler.sigmas[i_t])
+
         noise_pred_cond = model_val(latent_model_input, timestep, **arg_c, **corr_reference)
         if isinstance(noise_pred_cond, tuple):
             noise_pred_cond = noise_pred_cond[0]
         if current_guide_scale > 1.0:
-            noise_pred_uncond = model_val(latent_model_input, timestep, **arg_null)
+            if noise_pred_uncond is None:
+                noise_pred_uncond = model_val(latent_model_input, timestep, **arg_null)
             if isinstance(noise_pred_uncond, tuple):
                 noise_pred_uncond = noise_pred_uncond[0]
             noise_pred = noise_pred_uncond + current_guide_scale * (noise_pred_cond - noise_pred_uncond)
         else:
             noise_pred = noise_pred_cond
 
-        if uses_corr_reference:
+        if uses_corr_reference and not current_reference:
             # Use the pre-update x and sigma. This reference is consumed by the
             # NEXT conditional pass; the uncond pass receives no reference.
             reference_pred = noise_pred if reference_velocity == 'cfg' else noise_pred_cond

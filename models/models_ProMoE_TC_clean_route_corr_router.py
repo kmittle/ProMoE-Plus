@@ -13,17 +13,26 @@ blocks also carry the corr_router corrector (models_ProMoE_TC_corr_router.py):
   ``p = softmax((cos(h_S, P) + delta) / tau)``, so the KL trains the corrector
   directly, for every expert by default. ``align_detach_correction: True``
   stops only this local KL-to-correction gradient, while retaining the
-  corrected distribution and the differentiable FM routing path;
+  corrected distribution and the differentiable FM routing path. Its symmetric
+  ablation ``align_detach_base: True`` uses stop_grad(s)+delta only in KL.
+  These two flags are mutually exclusive;
 * a training step runs the corr_router reference passes, then the teacher
   pass, then the student pass. With ``previous_state_mode: same_noise``, the
   reference reuses ``clean_route_z`` and ``clean_route_noise`` and needs one
   auxiliary pass; the teacher pass is unchanged.
 
-The teacher is the clean latents at t = 0 (``teacher_sigma_ratio: 0``): how a
+By default the teacher uses real clean latents at t = 0 (``teacher_sigma_ratio: 0``): how a
 noisy teacher should use the correction is left open (user decision,
 2026-10-22), so other ratios are refused.  Eval and sampling route with the
 correction, fed the reference that sample.py carries over from the previous
-step.  The corrector outputs zero at step 0, so the first training step of a
+step, or the current-step reference when explicitly configured. With
+``teacher_input: estimated`` every conditional image gets a valid model
+estimate, including images whose student reference is dropped. Only the
+student reference is masked; the teacher always receives the unmasked
+estimate at t=0 and routes without correction. This adds reference-generation
+work, but no additional teacher pass.
+The corrector outputs zero at step 0, so with the default clean teacher and
+default KL gradients the first training step of a
 fresh model matches clean_route with the same ``clean_route_config`` bit for
 bit (and so ``ProMoE_TC_B`` when ``align_lam`` is 0 and ``contrastive_source``
 is ``student``); from then on the corrector learns.
@@ -48,6 +57,7 @@ class SparseMoeBlock(CorrRouterBlockMixin, CleanRouteSparseMoeBlock):
     ``s + delta`` (CorrRouterBlockMixin) and aligns the corrected scores.
     """
     align_detach_correction = False
+    align_detach_base = False
 
     def _student_losses(self, conference_loss, indices, weights, cosines, routed, seq_len):
         delta = self._corr_delta
@@ -59,6 +69,8 @@ class SparseMoeBlock(CorrRouterBlockMixin, CleanRouteSparseMoeBlock):
             # distribution is that of the scores it actually routes by.
             if self.align_detach_correction:
                 delta = delta.detach()
+            if self.align_detach_base:
+                cosines = cosines.detach()
             cosines = cosines + delta.float()
         return super()._student_losses(conference_loss, indices, weights, cosines, routed, seq_len)
 
@@ -78,8 +90,16 @@ class DiT(CorrRouterDiT):
         # has no correction to detach and continues to reject this key.
         route_config = None if clean_route_config is None else dict(clean_route_config)
         detach_correction = False if route_config is None else route_config.pop("align_detach_correction", False)
+        detach_base = False if route_config is None else route_config.pop("align_detach_base", False)
+        teacher_input = "clean" if route_config is None else route_config.pop("teacher_input", "clean")
         if not isinstance(detach_correction, bool):
             raise ValueError("clean_route_config.align_detach_correction must be a boolean")
+        if not isinstance(detach_base, bool):
+            raise ValueError("clean_route_config.align_detach_base must be a boolean")
+        if detach_base and detach_correction:
+            raise ValueError("cannot detach both base scores and correction from the KL")
+        if teacher_input not in ("clean", "estimated"):
+            raise ValueError("clean_route_config.teacher_input must be 'clean' or 'estimated'")
         settings = parse_clean_route_config(route_config)
         if settings["teacher_sigma_ratio"] != 0.0:
             raise ValueError(
@@ -87,11 +107,13 @@ class DiT(CorrRouterDiT):
                 "should use the routing correction is undecided"
             )
         super().__init__(*args, **kwargs)
+        self.teacher_input = teacher_input
         self.teacher_sigma_ratio = settings["teacher_sigma_ratio"]
         self.align_start_step = settings["align_start_step"]
         self.align_warmup_steps = settings["align_warmup_steps"]
         for block in self.moe_blocks():
             block.align_detach_correction = detach_correction
+            block.align_detach_base = detach_base
             block.configure_clean_route(
                 settings["contrastive_source"], settings["align_lam"], settings["align_temperature"]
             )
@@ -144,9 +166,15 @@ class DiT(CorrRouterDiT):
         try:
             # The reference passes run with no phase set: a teacher record set
             # before them would be dropped by their phase changes.
-            reference = self._training_reference(
-                x, timestep, sigma, y, labels, corr_router_generator, z=clean_route_z, noise=clean_route_noise
-            )
+            if self.teacher_input == "estimated":
+                reference, teacher_estimate = self._training_reference_with_estimate(
+                    x, timestep, sigma, y, labels, corr_router_generator,
+                    z=clean_route_z, noise=clean_route_noise, estimate_all=True,
+                )
+            else:
+                reference = self._training_reference(
+                    x, timestep, sigma, y, labels, corr_router_generator, z=clean_route_z, noise=clean_route_noise
+                )
             if bool(routed_images.any()):
                 ratio = self.teacher_sigma_ratio
                 teacher_sigma = (ratio * sigma)[routed_images]
@@ -155,6 +183,8 @@ class DiT(CorrRouterDiT):
                     (1.0 - teacher_sigma).view(shape) * clean_route_z[routed_images]
                     + teacher_sigma.view(shape) * clean_route_noise[routed_images]
                 )
+                if self.teacher_input == "estimated":
+                    teacher_x = teacher_estimate[routed_images]
                 teacher_t = timestep[routed_images] * ratio
                 with torch.no_grad():
                     self._set_phase("teacher")

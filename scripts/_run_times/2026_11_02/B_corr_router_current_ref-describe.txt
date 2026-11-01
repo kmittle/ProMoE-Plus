@@ -1,0 +1,8 @@
+实验 / Experiment: B_corr_router_current_ref
+model_name: ProMoE_TC_B_corr_router  |  config: configs/004_ProMoE_B_corr_router_current_ref.yaml
+基线 / Baseline: 基础 ProMoE-TC（原型余弦 token-choice、shared expert、uncond 专家与路由对比学习）；直接父变体 / Parent: 矫正器 only（B_corr_router，使用 CFG-fused 参考评估）
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 当前参考 / current-step reference：corr_router_config.reference_mode=current。训练先在同一 x_t、t 上无参考预测速度，再直接估计干净 latent；选中样本只需一次 no_grad 辅助前向。保留 no_reference_prob=0.5；间隔仍抽取以保持随机数流，但不影响 current 模式。无 clean teacher KL。
+2. 对应采样 / matching sampling：每个采样步（包括首步）先预测当前 conditional 速度，CFG>1 时与当前 unconditional 速度合成，得到当前参考，再跑 corrected conditional 前向并更新 latent。corr_reference_velocity=cfg；unconditional 预测复用于两次 CFG。CFG=1.0 每步 2 次前向，CFG=1.5 每步 3 次，参考不跨步缓存。
+3. 共同设置 / pipeline：基础 ProMoE-TC 的 conditional/unconditional 分离、共享专家和学生路由对比学习保留。4 卡自动匹配，global batch=256、seed=0、lr=1e-4、img_num_workers=16，从零训练至 300K，CFG=1.0/1.5 各 50K 评估，续训本实验至 500K 再评估；没有 FID 性能门槛，缺失或无效 FID/IS 会阻止续训。无 KL 延迟或 warmup。latent 路径 /mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz。

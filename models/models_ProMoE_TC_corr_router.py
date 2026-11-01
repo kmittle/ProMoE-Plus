@@ -55,6 +55,13 @@ This uses one no-grad pass instead of two. Only the previous-state construction
 changes: the gap and no-reference draws, the reference formula
 ``x0_hat = x_prev - sigma_ref * v(x_prev)``, and the sampling path stay the same.
 
+``reference_mode: current`` instead predicts a no-reference velocity at x_t
+and extrapolates directly to the clean endpoint, with one auxiliary training
+pass. It retains the image-wise reference dropout. Sampling computes a fresh
+preliminary CFG-fused velocity at every current x,t, then runs the corrected
+conditional prediction. Its unconditional prediction can be reused in both
+CFG fusions. Gap draws are retained for RNG parity but do not affect this mode.
+
 The coin and the gaps come from a generator train.py seeds from the run's
 seed and the micro-batch's position (step, micro-step, rank) alone, so the
 global RNG stream (data, noise, sigma and label dropout) is the conference
@@ -122,6 +129,39 @@ def sampling_reference(latents, prediction, sigma):
     }
 
 
+def draw_reference_plan(sigma, labels, skip_intervals, no_reference_prob, generator):
+    """Draw image-wise dropout and gaps without advancing the global RNG."""
+    batch, device = labels.shape[0], labels.device
+    coin = torch.rand(batch, generator=generator, device=generator.device).to(device)
+    gap_index = torch.randint(
+        len(skip_intervals), (batch,), generator=generator, device=generator.device
+    ).to(device)
+    gaps = torch.tensor(skip_intervals, dtype=torch.float32, device=device)[gap_index] / NUM_TRAIN_TIMESTEPS
+    use_reference = (labels != UNCOND_LABEL) & (coin >= no_reference_prob)
+    return use_reference, (sigma + gaps).clamp(max=1.0)
+
+
+@torch.no_grad()
+def estimate_clean_latent(predict_velocity, x, timestep, sigma, reference_sigma, y, labels,
+                          *, reference_mode="previous", previous_state_mode="model_velocity",
+                          z=None, noise=None):
+    """Estimate clean latents from model velocities; inputs already select valid images.
+
+    The callable predicts a velocity with no reference. Neither the teacher
+    nor the student backpropagates through these auxiliary predictions.
+    """
+    shape = (-1,) + (1,) * (x.dim() - 1)
+    if reference_mode == "current":
+        return x - sigma.view(shape) * predict_velocity(x, timestep, y, labels)
+    if previous_state_mode == "same_noise":
+        previous = (1.0 - reference_sigma).view(shape) * z + reference_sigma.view(shape) * noise
+    else:
+        velocity = predict_velocity(x, timestep, y, labels)
+        previous = x + (reference_sigma - sigma).view(shape) * velocity
+    previous_velocity = predict_velocity(previous, reference_sigma * NUM_TRAIN_TIMESTEPS, y, labels)
+    return previous - reference_sigma.view(shape) * previous_velocity
+
+
 def _require_int(value, name):
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"corr_router_config.{name} must be an integer, got {value!r}")
@@ -137,7 +177,7 @@ def parse_corr_router_config(corr_router_config):
         )
     config = dict(corr_router_config)
     missing = [key for key in CORR_ROUTER_CONFIG_KEYS if key not in config]
-    optional = {"previous_state_mode", "use_reference_embedding", "use_score_input"}
+    optional = {"previous_state_mode", "reference_mode", "use_reference_embedding", "use_score_input"}
     unknown = sorted(set(config) - set(CORR_ROUTER_CONFIG_KEYS) - optional)
     if missing or unknown:
         raise ValueError(f"corr_router_config: missing keys {missing}, unknown keys {unknown}")
@@ -161,6 +201,11 @@ def parse_corr_router_config(corr_router_config):
     previous_state_mode = config.get("previous_state_mode", "model_velocity")
     if not isinstance(previous_state_mode, str) or previous_state_mode not in ("model_velocity", "same_noise"):
         raise ValueError("corr_router_config.previous_state_mode must be 'model_velocity' or 'same_noise'")
+    reference_mode = config.get("reference_mode", "previous")
+    if reference_mode not in ("previous", "current"):
+        raise ValueError("corr_router_config.reference_mode must be 'previous' or 'current'")
+    if reference_mode == "current" and previous_state_mode != "model_velocity":
+        raise ValueError("current reference_mode requires previous_state_mode: model_velocity")
     input_flags = {}
     for name in ("use_reference_embedding", "use_score_input"):
         value = config.get(name, True)
@@ -172,6 +217,7 @@ def parse_corr_router_config(corr_router_config):
         "skip_intervals": skip_intervals,
         "no_reference_prob": no_reference_prob,
         "previous_state_mode": previous_state_mode,
+        "reference_mode": reference_mode,
         **input_flags,
     }
 
@@ -476,6 +522,7 @@ class DiT(nn.Module):
         self.skip_intervals = settings["skip_intervals"]
         self.no_reference_prob = settings["no_reference_prob"]
         self.previous_state_mode = settings["previous_state_mode"]
+        self.reference_mode = settings["reference_mode"]
         # [reference images, prototype-routed images, summed sigma_ref - sigma
         # of the reference images] of the latest training step, for train.py.
         self.last_corr_reference = None
@@ -600,6 +647,22 @@ class DiT(nn.Module):
 
     def _training_reference(self, x, timestep, sigma, y, labels, generator, *, z=None, noise=None):
         """The reference of every image of a training batch (see the module docstring)."""
+        reference, _ = self._training_reference_with_estimate(
+            x, timestep, sigma, y, labels, generator, z=z, noise=noise
+        )
+        return reference
+
+    def _reference_velocity(self, x, timestep, y, labels):
+        return self._velocity(self._run(x, timestep, y, labels, self._no_reference(x)), x)
+
+    def _training_reference_with_estimate(self, x, timestep, sigma, y, labels, generator,
+                                         *, z=None, noise=None, estimate_all=False):
+        """Return (student reference, unmasked estimate).
+
+        With estimate_all, every conditional image gets a meaningful teacher
+        estimate. Only the student's reference is then masked by the original
+        dropout draw; absent references still have sigma_ref=1.
+        """
         batch = x.shape[0]
         device = x.device
         if not torch.allclose(timestep.float(), sigma * NUM_TRAIN_TIMESTEPS, rtol=1e-4, atol=1e-3):
@@ -611,53 +674,36 @@ class DiT(nn.Module):
                 if value.shape != x.shape or value.device != x.device:
                     raise ValueError(f"corr_router same_noise {name} must match x's shape and device")
         routed = labels != UNCOND_LABEL
-        # One coin and one gap per image, routed or not, so the draws do not
-        # depend on the label dropout.
-        coin = torch.rand(batch, generator=generator, device=generator.device).to(device)
-        gap_index = torch.randint(
-            len(self.skip_intervals), (batch,), generator=generator, device=generator.device
-        ).to(device)
-        gaps = torch.tensor(self.skip_intervals, dtype=torch.float32, device=device)[gap_index] / NUM_TRAIN_TIMESTEPS
-        use_reference = routed & (coin >= self.no_reference_prob)
+        use_reference, previous_sigmas = draw_reference_plan(
+            sigma, labels, self.skip_intervals, self.no_reference_prob, generator
+        )
+        if self.reference_mode == "current":
+            previous_sigmas = sigma
 
         reference_x0 = torch.zeros_like(x)
         reference_sigma = torch.ones(batch, device=device)
-        if bool(use_reference.any()):
-            index = torch.where(use_reference)[0]
+        estimate_mask = routed if estimate_all else use_reference
+        if bool(estimate_mask.any()):
+            index = torch.where(estimate_mask)[0]
             current_sigma = sigma[index]
-            previous_sigma = (current_sigma + gaps[index]).clamp(max=1.0)
-            shape = (-1,) + (1,) * (x.dim() - 1)
-            with torch.no_grad():
-                if self.previous_state_mode == "same_noise":
-                    previous = (
-                        (1.0 - previous_sigma).view(shape) * z[index]
-                        + previous_sigma.view(shape) * noise[index]
-                    )
-                else:
-                    current = x[index]
-                    velocity = self._velocity(
-                        self._run(current, timestep[index], y[index], labels[index], self._no_reference(current)),
-                        current,
-                    )
-                    previous = current + (previous_sigma - current_sigma).view(shape) * velocity
-                previous_velocity = self._velocity(
-                    self._run(
-                        previous,
-                        previous_sigma * NUM_TRAIN_TIMESTEPS,
-                        y[index],
-                        labels[index],
-                        self._no_reference(previous),
-                    ),
-                    previous,
-                )
-                reference_x0[index] = (previous - previous_sigma.view(shape) * previous_velocity).to(reference_x0.dtype)
-            reference_sigma[index] = previous_sigma
+            estimate = estimate_clean_latent(
+                self._reference_velocity, x[index], timestep[index], current_sigma, previous_sigmas[index],
+                y[index], labels[index], reference_mode=self.reference_mode,
+                previous_state_mode=self.previous_state_mode,
+                z=None if z is None else z[index], noise=None if noise is None else noise[index],
+            )
+            reference_x0[index] = estimate.to(reference_x0.dtype)
+        full_estimate = reference_x0
+        if estimate_all:
+            mask_shape = (-1,) + (1,) * (x.dim() - 1)
+            reference_x0 = torch.where(use_reference.view(mask_shape), full_estimate, 0.0)
+        reference_sigma[use_reference] = previous_sigmas[use_reference]
         self.last_corr_reference = torch.stack([
             use_reference.sum().float(),
             routed.sum().float(),
             (reference_sigma - sigma)[use_reference].sum(),
         ]).detach()
-        return reference_x0, reference_sigma, use_reference, sigma
+        return (reference_x0, reference_sigma, use_reference, sigma), full_estimate
 
     def _eval_reference(self, x, reference_x0, reference_sigma):
         """Sampling: the previous step's estimate from sample.py, or none at the first step."""

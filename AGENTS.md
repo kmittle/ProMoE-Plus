@@ -95,6 +95,54 @@ with:
 
 ## Current Research Scope and Storage Policy
 
+**Six teacher/corrector mechanism experiments (2026-11-02, user-confirmed).**
+Definitions are in `scripts/_run_times/2026_11_02/commands.md`; none are launched
+by the implementation workflow. All are B-scale, fresh, four-GPU automatic
+allocation, global batch 256, seed 0, lr 1e-4, workers 16. They follow the existing
+ablation pipeline: 300K -> CFG 1.0/1.5 evaluation (50K each) -> resume the same
+run to 500K -> evaluation, without a 300K performance gate. Missing/invalid
+FID/IS blocks progress. No distillation delay or warmup is included.
+
+1. `B_clean_route_dual_teacher`: no corrector. Real and estimated clean teachers
+   supervise raw student routing with KL weights 2.5e-4 each, temperature 0.07.
+   All conditional images receive a valid estimate; no reference dropout.
+   Teachers run at t=0 with raw routing, batched together without gradients.
+   Model `ProMoE_TC_B_clean_route_dual_teacher` has training reference inputs
+   (`CORR_REFERENCE_MODELS`) but no sampling corrector (`CORR_ROUTER_MODELS`).
+2. `B_clean_route_student_ratio0_align_projector`: real-clean teacher only;
+   training-only MLP + Sigmoid, then the existing temperature softmax, before
+   student KL (5e-4). Raw student scores still select and weight experts and
+   define contrastive assignments. Projector hidden size 256; input differentiable.
+3. `B_clean_route_student_ratio0_token_corrector`: real-clean teacher only;
+   `d = MLP(sg(current_MoE_token), sg(raw_scores))`, hidden size 256 and zero
+   output initialization. Actual routing and KL both use differentiable `s+d`.
+   No estimated reference or reference dropout. Only MLP inputs are detached.
+4. `B_corr_router_current_ref`: corrector only, `reference_mode: current`.
+   Training uses one no-grad current-point prediction for each referenced image;
+   50% reference dropout is retained. Sampling first obtains a preliminary
+   CFG-fused current-point velocity, forms its clean estimate, then reruns the
+   conditional prediction at the same x,t. Unconditional prediction is reused:
+   two forwards per step at CFG 1.0, three at CFG 1.5. Gaps are drawn for RNG
+   parity but ignored. `corr_reference_velocity: cfg` is required for this sampler.
+5. `B_estimated_route_student_corr_router`: combo `teacher_input: estimated`.
+   Estimate clean latents for ALL conditional images. Only the student's
+   reference uses the original 50% dropout (and sigma_ref=1 when absent);
+   the teacher always gets an unmasked estimate at t=0, routes uncorrected,
+   and supervises s+d with KL 5e-4. Dropped-reference images still receive KL.
+   FM targets, student contrastive, previous-step sampling and other settings
+   remain the parent's. Reference-generation work increases, teacher count does not.
+6. `B_clean_route_student_ratio0_corr_router_kl_detach_base`: combo-only
+   `align_detach_base: True`, KL on `sg(s)+d`, actual routing/FM on `s+d`.
+   This is symmetric to the October 31 `align_detach_correction` arm; flags
+   are mutually exclusive. Only the local direct KL-to-raw-score gradient
+   stops, not FM, contrastive, or all indirect gradients from later layers.
+
+The original combo defaults remain `teacher_input: clean`,
+`align_detach_base: False`; reference mode defaults to `previous`. Experiments
+4-6 explicitly sample with CFG-fused reference velocity; 1-3 have no external
+sampling reference. All teachers share current model weights and use no-grad
+targets. The three new classes are registered in train.py and merged by sample.py.
+
 **Current user-confirmed experiment list (2026-10-31; still being extended).**
 The user reopened the complete `B_clean_route_student_ratio0_corr_router_cfg_ref`
 method for scale-up and ablations. Keep the maintained list in

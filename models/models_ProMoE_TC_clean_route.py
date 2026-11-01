@@ -289,7 +289,7 @@ class SparseMoeBlock(ConferenceSparseMoeBlock):
             )
 
         log_p = F.log_softmax(cosines / self.align_temperature, dim=1)
-        kl_per_token = (log_q.exp() * (log_q - log_p)).sum(dim=1)
+        kl_per_token = self._alignment_kl(log_p, teacher)
         kl = kl_per_token.mean()
         align_loss = align_weight * kl
 
@@ -338,6 +338,11 @@ class SparseMoeBlock(ConferenceSparseMoeBlock):
                 self.last_token_sigma = token_sigma
         return loss
 
+    def _alignment_kl(self, log_p, teacher):
+        """Per-token KL; subclasses may combine separately recorded teachers."""
+        log_q = teacher["log_q"]
+        return (log_q.exp() * (log_q - log_p)).sum(dim=1)
+
     def _token_sigma(self, routed, seq_len, device):
         if self._sample_sigma is None:
             raise RuntimeError("clean_route student pass needs the per-sample sigma")
@@ -370,7 +375,7 @@ class DiTBlock(nn.Module):
     """
     def __init__(self, hidden_size, num_heads, head_dim=None, mlp_ratio=4.0,
                  use_swiglu=False, MoE_config=None,
-                 use_moe=False,
+                 use_moe=False, moe_block_class=SparseMoeBlock,
                  **block_kwargs):
         super().__init__()
         self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
@@ -379,7 +384,7 @@ class DiTBlock(nn.Module):
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         self.use_moe = use_moe
         if use_moe:
-            self.mlp = SparseMoeBlock(hidden_size=hidden_size, **MoE_config)
+            self.mlp = moe_block_class(hidden_size=hidden_size, **MoE_config)
         elif use_swiglu:
             self.mlp = MoeMLP(hidden_size=hidden_size, intermediate_size=mlp_hidden_dim)
         else:
@@ -406,6 +411,8 @@ class DiT(nn.Module):
     """
     Diffusion model with a Transformer backbone and clean-route routing distillation.
     """
+    moe_block_class = SparseMoeBlock
+
     def __init__(
         self,
         input_size=32,
@@ -450,7 +457,8 @@ class DiT(nn.Module):
 
         self.blocks = nn.ModuleList([
             DiTBlock(hidden_size, num_heads, head_dim=head_dim, mlp_ratio=mlp_ratio, qk_norm=qk_norm,
-                     use_swiglu=use_swiglu, MoE_config=MoE_config, use_moe=use_moe_flag[i]) for i in range(depth)
+                     use_swiglu=use_swiglu, MoE_config=MoE_config, use_moe=use_moe_flag[i],
+                     moe_block_class=self.moe_block_class) for i in range(depth)
         ])
         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
         self.initialize_weights()

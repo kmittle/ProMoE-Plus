@@ -1,5 +1,34 @@
 # design-todo：ProMoE_TC 改进计划（MoE 主线）
 
+## 六个机制消融（2026-11-02，设计已确认并实现）
+
+启动索引：[`scripts/_run_times/2026_11_02/commands.md`](../scripts/_run_times/2026_11_02/commands.md)。
+这六项是新增独立实验，复用已有父实验作为对照。定义生成不代表已启动训练。
+统一 B 模型、4 卡自动匹配、global batch 256、seed 0、lr 1e-4、workers 16；
+300K 评估后续训本实验到 500K，再评估，均为 CFG 1.0/1.5 各 50K 样本。
+沿用既有消融流水线，不设置 300K FID 性能门槛，缺失或无效 FID/IS 阻止续训。
+所有 KL 从第 0 步恒定启用，没有延迟或 warmup，温度 0.07。
+
+记号：s 是原路由分数，d 是矫正量，sg 是 stop-gradient。
+
+| # | 实验 | 父实验与精确改动 |
+|---|---|---|
+| 1 | B_clean_route_dual_teacher | 完整组合上删除矫正器；真实干净 teacher 与估计干净 teacher 的 KL 各 2.5e-4，共同监督学生原路由。全部 conditional 样本生成有效估计，不做参考置零。两种 teacher 拼 batch，在 t=0 无梯度前向并提供原路由分布。推理只用原路由器。 |
+| 2 | B_clean_route_student_ratio0_align_projector | 真实干净 teacher only 上，学生原分数通过 MLP + Sigmoid 后，再用原有 temperature softmax 归一化计算 KL；系数 5e-4。投影头 hidden_dim=256，只用于对齐，输入可导；实际路由、门控和学生对比学习仍用原分数。 |
+| 3 | B_clean_route_student_ratio0_token_corrector | 真实干净 teacher only 上增加 d=MLP(sg(token),sg(s))；token 是当前 MoE 层输入，hidden_dim=256、输出零初始化。实际路由与 KL 均用 s+d，本层 KL 仍同时训练原 router 和矫正器。没有估计参考、没有参考置零；KL 5e-4。 |
+| 4 | B_corr_router_current_ref | 矫正器 only 上改为当前点预测速度、直接估计干净图、再矫正同一当前点。训练保留 50% 无参考，选中样本只需一次辅助前向。采样每步先做初步 CFG fusion 形成参考，再做 corrected conditional；复用 unconditional 输出，CFG 1.0/1.5 每步分别 2/3 次前向。 |
+| 5 | B_estimated_route_student_corr_router | 完整组合把 teacher 输入改成估计干净图。所有 conditional 样本都生成有效估计；teacher 总用未置零估计，学生矫正器仍按 50% 掩码置零参考，缺参考时 sigma_ref=1，且仍参与 KL。teacher 使用 t=0 原路由；KL 5e-4，FM 真值目标不变。 |
+| 6 | B_clean_route_student_ratio0_corr_router_kl_detach_base | 完整组合的对称梯度消融：KL 使用 sg(s)+d，实际路由用 s+d。本层 KL 直接监督交给矫正器，原 router 仍由 FM/对比学习更新；KL 5e-4。 |
+
+实验 1、5 的估计沿用 model_velocity 的两个 no_grad 辅助前向，不能把零占位
+送入 estimated teacher。实验 5 相比父实验需要给原先省略估计的那一半条件样本
+补算参考；只有参考生成工作量约翻倍，teacher/正式学生前向次数不变。
+实验 1 的两个 KL 总系数为 5e-4；相同 teacher 时恢复单 KL 梯度，不能据此
+宣称不同 teacher 的实际梯度强度相等或系数已达到最优。
+实验 4-6 的外部参考采样均显式使用 CFG fusion 后的速度；实验 1-3 无外部参考。
+实验 6 与 10 月 31 日的 s+sg(d) 实验对称，切断的是本层直接梯度，
+不排除后续层 KL 经主干产生的间接影响。
+
 ## 当前已确认实验列表（2026-10-31，继续补充中）
 
 用户指定的完整方法锚点是 `B_clean_route_student_ratio0_corr_router_cfg_ref`：

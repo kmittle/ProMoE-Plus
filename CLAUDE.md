@@ -386,7 +386,43 @@ When extending one, preserve the lock — do not loosen a gate to make a result 
 - No formatter or linter is configured — match surrounding style in the file you edit.
 - Validate changes with `python -m py_compile <file>` for syntax, the relevant `unittest` module(s) (see "Unit Tests"), then a targeted smoke test (short training run, sample pass). Analysis-helper subpackages carry their own `test_*.py` — extend them rather than adding an ad-hoc script.
 
+### Teacher/corrector mechanism ablations (2026-11-02)
+The six 2026-11-02 teacher/corrector mechanism ablations follow the same
+four-GPU 300K-eval-500K-eval contract as the October 31 ablations, without a
+300K FID performance gate. Their authoritative definitions and gradient
+contracts are in `AGENTS.md` and `doc/design-todo.md`; launch table:
+`scripts/_run_times/2026_11_02/commands.md`.
+
+- `models_ProMoE_TC_clean_route_dual_teacher.py`: real/estimated clean teachers
+  at t=0, KL weights `align_lam: 0.00025` and `estimated_align_lam: 0.00025`,
+  raw student router, no corrector/dropout. All conditional images get valid
+  two-pass model-velocity estimates; `reference_config.skip_intervals` fixes
+  the gaps. It belongs to CLEAN_ROUTE_MODELS and CORR_REFERENCE_MODELS, not
+  CORR_ROUTER_MODELS. Real/estimated KL values are logged separately.
+- `models_ProMoE_TC_clean_route_projector.py`: training-only MLP + Sigmoid
+  followed by the existing temperature softmax; `alignment_projector_config.hidden_dim=256`.
+  Raw selection/gates/contrastive remain unchanged. KL flows through the head.
+- `models_ProMoE_TC_clean_route_token_corrector.py`: `d=MLP(sg(token),sg(s))`,
+  `token_corrector_config.hidden_dim=256`, zero output initialization. Actual
+  routing and KL both use s+d; teacher stays uncorrected. No external reference.
+- corr_router adds `reference_mode: current` (default `previous`). Current
+  training uses one no-grad prediction per referenced image, keeping 50%
+  dropout. Sampling requires CFG-fused current-point preliminary velocity,
+  then corrected conditional prediction; reuse unconditional prediction.
+  CFG 1.0/1.5 use 2/3 forwards per step. Drawn gaps do not affect current mode;
+  `same_noise` is incompatible with current mode.
+- The combo adds `teacher_input: estimated` (default `clean`): generate valid
+  estimates for ALL conditional images, mask only the student's reference,
+  and feed the unmasked estimate to the uncorrected t=0 teacher. Missing
+  student references retain sigma_ref=1 and their KL supervision.
+- The combo adds boolean `align_detach_base` (default False): KL on sg(s)+d,
+  routing/FM on s+d. Mutually exclusive with `align_detach_correction`.
+  Standalone clean_route rejects both flags. All single-teacher new KL runs
+  use 5e-4, temperature 0.07, no delay/warmup; all external-reference sampling
+  explicitly uses `corr_reference_velocity: cfg`.
+
 ### Shell Script Convention
+
 - **Latent deployment path (2026-10-26):** `scripts/template.sh` defaults `PROMOE_LATENT_PATH` to `/mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz` and writes it into the temporary training YAML's `latent_data_path`, overriding stale source-YAML paths. An explicit environment override is preserved. The three 2026-10-26 continuation configs record the same path.
 - **All new three-in-one (train + sample + eval) `.sh` experiment scripts must follow the `scripts/template.sh` pattern** — otherwise the other experiment server cannot run them. (Legacy split-purpose scripts under `scripts/repa/` such as `train_repa_B.sh` / `sample_and_eval_repa_B.sh` predate the template and are exempt; new work should not introduce more of them.)
 - **Sequential pipeline pattern**: The template implements a train→stop→sample+eval→resume loop. For each step in `step_list_for_sample`: (1) generate a temp config with `num_steps` set to the checkpoint step + 1 and `resume_checkpoint: True` (every phase; the script's empty-bucket check is what guarantees a launch starts from step 0, and a constant value keeps the strict-provenance config hash identical across phases), (2) train until that step then exit, (3) sample + eval with GPUs fully free, (4) resume for the next step. The final step uses the original `num_steps` from config. This avoids concurrent training + sampling, which can exceed GPU memory for XL-scale models.

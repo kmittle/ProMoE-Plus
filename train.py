@@ -98,6 +98,9 @@ from models.models_ProMoE_TC_corr_router import DiT as ProMoE_TC_corr_router
 from models.models_ProMoE_TC_corr_router import CORR_BIN_ROWS
 from models.models_ProMoE_TC_corr_router import NUM_SIGMA_BINS as CORR_ROUTER_NUM_SIGMA_BINS
 from models.models_ProMoE_TC_clean_route_corr_router import DiT as ProMoE_TC_clean_route_corr_router
+from models.models_ProMoE_TC_clean_route_dual_teacher import DiT as ProMoE_TC_clean_route_dual_teacher
+from models.models_ProMoE_TC_clean_route_projector import DiT as ProMoE_TC_clean_route_projector
+from models.models_ProMoE_TC_clean_route_token_corrector import DiT as ProMoE_TC_clean_route_token_corrector
 
 model_dict = {
     "DiT_B": (DiT, "DiT_B_config"),
@@ -153,6 +156,9 @@ model_dict = {
     "ProMoE_TC_B_dualreg": (ProMoE_TC_dualreg, "DiT_B_config"),
     "ProMoE_TC_B_regcombo": (ProMoE_TC_regcombo, "DiT_B_config"),
     "ProMoE_TC_B_clean_route": (ProMoE_TC_clean_route, "DiT_B_config"),
+    "ProMoE_TC_B_clean_route_dual_teacher": (ProMoE_TC_clean_route_dual_teacher, "DiT_B_config"),
+    "ProMoE_TC_B_clean_route_projector": (ProMoE_TC_clean_route_projector, "DiT_B_config"),
+    "ProMoE_TC_B_clean_route_token_corrector": (ProMoE_TC_clean_route_token_corrector, "DiT_B_config"),
     "ProMoE_TC_B_corr_router": (ProMoE_TC_corr_router, "DiT_B_config"),
     "ProMoE_TC_B_clean_route_corr_router": (ProMoE_TC_clean_route_corr_router, "DiT_B_config"),
     "ProMoE_TC_L_clean_route_corr_router": (ProMoE_TC_clean_route_corr_router, "DiT_L_config"),
@@ -224,6 +230,8 @@ REGCOMBO_STAT_NAMES = (
     for field in ("loss_log10", "dist_min")
 )
 CLEAN_ROUTE_MODELS = {
+    "ProMoE_TC_B_clean_route_dual_teacher", "ProMoE_TC_B_clean_route_projector",
+    "ProMoE_TC_B_clean_route_token_corrector",
     "ProMoE_TC_B_clean_route", "ProMoE_TC_B_clean_route_corr_router",
     "ProMoE_TC_L_clean_route_corr_router", "ProMoE_TC_XL_clean_route_corr_router",
 }
@@ -234,6 +242,8 @@ CLEAN_ROUTE_STAT_NAMES = (
     "clean_route_align_weight",
     "clean_route_contrastive_loss",
     "clean_route_kl",
+    "clean_route_real_kl",
+    "clean_route_estimated_kl",
     "clean_route_agreement",
     "clean_route_student_entropy",
     "clean_route_teacher_entropy",
@@ -253,6 +263,9 @@ CORR_ROUTER_MODELS = {
     "ProMoE_TC_B_corr_router", "ProMoE_TC_B_clean_route_corr_router",
     "ProMoE_TC_L_clean_route_corr_router", "ProMoE_TC_XL_clean_route_corr_router",
 }
+# Dual-teacher distillation estimates clean latents during training only;
+# it has no sampling corrector and must not enter CORR_ROUTER_MODELS.
+CORR_REFERENCE_MODELS = CORR_ROUTER_MODELS | {"ProMoE_TC_B_clean_route_dual_teacher"}
 CORR_ROUTER_NUM_LOGGED_BLOCKS = 14
 CORR_ROUTER_STAT_NAMES = (
     "corr_router_delta_abs",
@@ -1434,6 +1447,8 @@ def _collect_clean_route_stats(model):
         "clean_route_align_weight": _per_block("last_align_weight").mean(),
         "clean_route_contrastive_loss": _per_block("last_contrastive_loss").sum(),
         "clean_route_kl": kl.mean(),
+        "clean_route_real_kl": _per_block("last_real_kl").mean() if getattr(module, "is_dual_route_model", False) else zero.clone(),
+        "clean_route_estimated_kl": _per_block("last_estimated_kl").mean() if getattr(module, "is_dual_route_model", False) else zero.clone(),
         "clean_route_agreement": _per_block("last_agreement").mean(),
         "clean_route_student_entropy": _per_block("last_student_entropy").mean(),
         "clean_route_teacher_entropy": _per_block("last_teacher_entropy").mean(),
@@ -3267,7 +3282,7 @@ def worker(gpu, cfg):
             # Absolute optimizer step: all micro-batches share it, and resume
             # restores it from trainer_state rather than restarting the schedule.
             arg_c['training_step'] = step
-        if cfg.model_name in CORR_ROUTER_MODELS:
+        if cfg.model_name in CORR_REFERENCE_MODELS:
             # Reuse the exact latent/noise pair if the reference is built by
             # same-noise interpolation. The combo already receives this pair
             # through clean_route_*; model_velocity ignores the pair.

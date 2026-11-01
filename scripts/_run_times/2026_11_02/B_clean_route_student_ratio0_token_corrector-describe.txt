@@ -1,0 +1,8 @@
+实验 / Experiment: B_clean_route_student_ratio0_token_corrector
+model_name: ProMoE_TC_B_clean_route_token_corrector  |  config: configs/004_ProMoE_B_clean_route_student_ratio0_token_corrector.yaml
+基线 / Baseline: 基础 ProMoE-TC（原型余弦 token-choice、shared expert、uncond 专家与路由对比学习）；直接父变体 / Parent: 真实干净 teacher only（B_clean_route_student_ratio0）；矫正梯度约定对齐完整组合模型
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 当前 token 矫正 / token corrector：每个 MoE 层 d=MLP(sg(token),sg(s))，token 是当前层 adaLN 调制后的输入，s 是原余弦分数。两路投到 256 维相加，经过 SiLU 和输出 Linear，输出层零初始化；不读估计干净图，不生成参考，也不做参考置零。
+2. 路由与监督 / routing and KL：实际选专家、门控和学生对比学习分组使用 s+d；KL 对 s+d 整体与 t=0 真实干净 teacher 的原路由分布对齐，align_lam=0.0005、temperature=0.07。本层 KL 同时训练原 router 和矫正器，只有送入 MLP 的输入停止梯度。uncond 仍走专用专家。
+3. 共同设置 / pipeline：基础 ProMoE-TC 的 conditional/unconditional 分离、共享专家和学生路由对比学习保留。4 卡自动匹配，global batch=256、seed=0、lr=1e-4、img_num_workers=16，从零训练至 300K，CFG=1.0/1.5 各 50K 评估，续训本实验至 500K 再评估；没有 FID 性能门槛，缺失或无效 FID/IS 会阻止续训。无 KL 延迟或 warmup。latent 路径 /mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz。

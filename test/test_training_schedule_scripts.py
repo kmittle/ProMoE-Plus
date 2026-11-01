@@ -22,7 +22,14 @@ ARMS = (
         "align_delay100k", "align_warmup200k", "align_lam0p0001", "align_lam0p001", "align_lam0p005",
         "no_ref_embed", "no_score_input", "kl_detach_corr",
     )
-) + tuple(("corr_router", "clean_route_student_ratio0_corr_router", size) for size in ("L", "XL"))
+) + tuple(("corr_router", "clean_route_student_ratio0_corr_router", size) for size in ("L", "XL")) + (
+    ("clean_route", "clean_route_dual_teacher"),
+    ("clean_route", "clean_route_student_ratio0_align_projector"),
+    ("clean_route", "clean_route_student_ratio0_token_corrector"),
+    ("corr_router", "corr_router_current_ref"),
+    ("corr_router", "estimated_route_student_corr_router"),
+    ("corr_router", "clean_route_student_ratio0_corr_router_kl_detach_base"),
+)
 
 STUB = '''import argparse, json, os
 from pathlib import Path
