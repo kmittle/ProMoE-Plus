@@ -1,5 +1,5 @@
 # 矫正器 only：当前步速度估计参考，推理增加前向
-# Fresh 300K -> CFG 1.0/1.5 eval -> own-run 500K -> eval; no FID performance gate.
+# Fresh 300K -> CFG 1.0/1.5 eval -> both FIDs < 30.86/9.73 -> own-run 500K -> eval; otherwise stop.
 model_name: ProMoE_TC_B_corr_router
 gpu_ids: [0, 1, 2, 3]  # placeholder: the wrapper claims idle GPUs at launch
 image_size: 256

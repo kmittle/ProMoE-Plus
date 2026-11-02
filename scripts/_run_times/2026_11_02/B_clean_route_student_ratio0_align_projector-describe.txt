@@ -5,4 +5,4 @@ model_name: ProMoE_TC_B_clean_route_projector  |  config: configs/004_ProMoE_B_c
 核心改动 / Core changes（相对基线，重点优先）:
 1. 仅对齐头 / alignment-only projector：每个 MoE 层把学生原分数送入 Linear→SiLU→Linear→Sigmoid（hidden_dim=256），随后沿用 temperature=0.07 的 softmax 归一化，与真实干净 teacher 的原路由分布计算 KL，align_lam=0.0005。投影头输入不 detach，KL 可以通过投影头训练原 router。
 2. 实际路由 / actual routing：专家选择、门控与学生对比学习仍用原始路由分数，推理不调用投影头。teacher 在 t=0 无梯度前向；无估计参考、无参考置零。投影头在主干初始化之后用独立 RNG 初始化，保留共享主干的初始化与全局随机数流。
-3. 共同设置 / pipeline：基础 ProMoE-TC 的 conditional/unconditional 分离、共享专家和学生路由对比学习保留。4 卡自动匹配，global batch=256、seed=0、lr=1e-4、img_num_workers=16，从零训练至 300K，CFG=1.0/1.5 各 50K 评估，续训本实验至 500K 再评估；没有 FID 性能门槛，缺失或无效 FID/IS 会阻止续训。无 KL 延迟或 warmup。latent 路径 /mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz。
+3. 共同设置 / pipeline：基础 ProMoE-TC 的 conditional/unconditional 分离、共享专家和学生路由对比学习保留。4 卡自动匹配，global batch=256、seed=0、lr=1e-4、img_num_workers=16，从零训练至 300K，CFG=1.0/1.5 各 50K 评估；两项 FID 必须分别严格小于基线 30.86/9.73，才续训本实验至 500K 再评估，否则在 300K 停止。等于基线也不续训；缺失、无效或歧义评估报错。恢复运行同样检查 300K 门槛。无 KL 延迟或 warmup。latent 路径 /mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz。

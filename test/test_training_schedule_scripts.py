@@ -31,6 +31,8 @@ ARMS = (
     ("corr_router", "clean_route_student_ratio0_corr_router_kl_detach_base"),
 )
 
+GATED_ARMS = ARMS[-6:]  # The 2026-11-02 batch requires the canonical 300K gate.
+
 STUB = '''import argparse, json, os
 from pathlib import Path
 import yaml
@@ -47,7 +49,9 @@ if kind == "run_eval":
     step = int(images.parent.parent.name.removeprefix("step"))
     scale = float(images.parent.name.split("_cfg")[1].split("_")[0])
     event = dict(kind="eval", step=step, scale=scale, count=args.count)
-    fid = "nan" if os.getenv("BAD_METRICS") == "1" and scale == 1.5 else "100.0"
+    fid = os.environ["FID_CFG1" if scale == 1.0 else "FID_CFG15"]
+    if os.getenv("BAD_METRICS") == "1" and scale == 1.5:
+        fid = "nan"
     Path(str(images) + "_eval_openai.txt").write_text("FID: " + fid + "\\nInception Score: 100.0\\n")
 else:
     cfg = yaml.safe_load(Path(args.config).read_text())
@@ -104,6 +108,8 @@ def pipeline(arm):
         env = dict(os.environ, PIPELINE_TEST_ROOT=str(root), PROMOE_RESUME="0",
                    PROMOE_GPU_IDS_OVERRIDE="4,5,6,7", TMPDIR=str(root),
                    BAD_METRICS="0", MISSING_IMAGES="0",
+                   FID_CFG1="30.0" if arm in GATED_ARMS else "100.0",
+                   FID_CFG15="9.0" if arm in GATED_ARMS else "100.0",
                    PATH=str(root / "bin") + os.pathsep + os.environ["PATH"])
 
         def run(**overrides):
@@ -133,7 +139,8 @@ class TrainingScheduleScriptTests(unittest.TestCase):
                 self.assertEqual(log[4]["previous"], [300000])
                 self.assertEqual([(e["scale"], e["count"]) for e in log if e["kind"] == "eval"],
                                  [(1.0, 50000), (1.5, 50000)] * 2)
-                # FID 100 is valid: these experiments have no FID threshold gate.
+                # The older arms still accept FID 100; November 2 arms must
+                # pass their 30.86/9.73 gate before entering the 500K phase.
                 self.assert_success(run(PROMOE_RESUME="1"))
                 self.assertEqual(events(), log)
 
@@ -153,6 +160,22 @@ class TrainingScheduleScriptTests(unittest.TestCase):
                                   ("train", 500000), ("sample", 500000),
                                   ("eval", 500000), ("eval", 500000)])
                 self.assertEqual(added[3]["previous"], [300000])
+
+    def test_each_november_arm_stops_at_failed_gate_and_resume_cannot_bypass_it(self):
+        for arm in GATED_ARMS:
+            with self.subTest(arm=arm), pipeline(arm) as (run, events):
+                result = run(FID_CFG1="31.0", FID_CFG15="9.0")
+                self.assert_success(result)  # Scientific failure is a normal stop.
+                self.assertIn("300K gate STOP", result.stdout)
+                before = events()
+                self.assertEqual([(e["kind"], e["step"]) for e in before],
+                                 [(kind, 300000) for kind in ("train", "sample", "eval", "eval")])
+                # Existing valid-but-worse metrics must still stop a resume.
+                # The stub's default passing values are not a reason to resample.
+                resumed = run(PROMOE_RESUME="1")
+                self.assert_success(resumed)
+                self.assertIn("300K gate STOP", resumed.stdout)
+                self.assertEqual(events(), before)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 # 估计干净 teacher＋路由矫正：仅学生参考保留 50% 置零
-# Fresh 300K -> CFG 1.0/1.5 eval -> own-run 500K -> eval; no FID performance gate.
+# Fresh 300K -> CFG 1.0/1.5 eval -> both FIDs < 30.86/9.73 -> own-run 500K -> eval; otherwise stop.
 model_name: ProMoE_TC_B_clean_route_corr_router
 gpu_ids: [0, 1, 2, 3]  # placeholder: the wrapper claims idle GPUs at launch
 image_size: 256

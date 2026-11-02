@@ -98,10 +98,14 @@ with:
 **Six teacher/corrector mechanism experiments (2026-11-02, user-confirmed).**
 Definitions are in `scripts/_run_times/2026_11_02/commands.md`; none are launched
 by the implementation workflow. All are B-scale, fresh, four-GPU automatic
-allocation, global batch 256, seed 0, lr 1e-4, workers 16. They follow the existing
-ablation pipeline: 300K -> CFG 1.0/1.5 evaluation (50K each) -> resume the same
-run to 500K -> evaluation, without a 300K performance gate. Missing/invalid
-FID/IS blocks progress. No distillation delay or warmup is included.
+allocation, global batch 256, seed 0, lr 1e-4, workers 16. The user requires
+300K -> CFG 1.0/1.5 evaluation (50K each) -> canonical FID gate -> resume the
+same run to 500K -> evaluation. BOTH FIDs must be strictly lower than 30.86
+(CFG 1.0) and 9.73 (CFG 1.5). Equality or a worse FID stops normally at 300K;
+missing/invalid/ambiguous metrics are errors. Resuming must recheck the 300K
+gate before any later phase, including already-saved checkpoints. This change
+applies only to the November 2 batch; older no-gate experiments are unchanged.
+No distillation delay or warmup is included.
 
 1. `B_clean_route_dual_teacher`: no corrector. Real and estimated clean teachers
    supervise raw student routing with KL weights 2.5e-4 each, temperature 0.07.

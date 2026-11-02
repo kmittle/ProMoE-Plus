@@ -5,4 +5,4 @@ model_name: ProMoE_TC_B_clean_route_corr_router  |  config: configs/004_ProMoE_B
 核心改动 / Core changes（相对基线，重点优先）:
 1. 对称梯度消融 / symmetric KL detach：clean_route_config.align_detach_base=True，使 KL 使用 sg(s)+d。矫正器输入继续 detach；本层 KL 的直接监督交给矫正器，真实干净 teacher 使用 t=0 的原路由分布，align_lam=0.0005、temperature=0.07。
 2. 保留实际路由 / preserve routing：实际专家选择、门控与学生对比学习分组仍使用可导的 s+d，FM 与对比学习继续更新原 router。只切断本层 KL 经本层原分数的直接梯度，不冻结 router，也不排除后续层 KL 的间接影响；与 align_detach_correction=True 互斥。
-3. 共同设置 / pipeline：基础 ProMoE-TC 的 conditional/unconditional 分离、共享专家和学生路由对比学习保留。4 卡自动匹配，global batch=256、seed=0、lr=1e-4、img_num_workers=16，从零训练至 300K，CFG=1.0/1.5 各 50K 评估，续训本实验至 500K 再评估；没有 FID 性能门槛，缺失或无效 FID/IS 会阻止续训。无 KL 延迟或 warmup。latent 路径 /mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz。
+3. 共同设置 / pipeline：基础 ProMoE-TC 的 conditional/unconditional 分离、共享专家和学生路由对比学习保留。4 卡自动匹配，global batch=256、seed=0、lr=1e-4、img_num_workers=16，从零训练至 300K，CFG=1.0/1.5 各 50K 评估；两项 FID 必须分别严格小于基线 30.86/9.73，才续训本实验至 500K 再评估，否则在 300K 停止。等于基线也不续训；缺失、无效或歧义评估报错。恢复运行同样检查 300K 门槛。无 KL 延迟或 warmup。latent 路径 /mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz。

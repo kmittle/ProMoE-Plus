@@ -387,9 +387,11 @@ When extending one, preserve the lock — do not loosen a gate to make a result 
 - Validate changes with `python -m py_compile <file>` for syntax, the relevant `unittest` module(s) (see "Unit Tests"), then a targeted smoke test (short training run, sample pass). Analysis-helper subpackages carry their own `test_*.py` — extend them rather than adding an ad-hoc script.
 
 ### Teacher/corrector mechanism ablations (2026-11-02)
-The six 2026-11-02 teacher/corrector mechanism ablations follow the same
-four-GPU 300K-eval-500K-eval contract as the October 31 ablations, without a
-300K FID performance gate. Their authoritative definitions and gradient
+The six 2026-11-02 teacher/corrector mechanism ablations use four GPUs and
+300K-eval-gate-500K-eval: BOTH 300K FIDs must be strictly below the canonical
+30.86 (CFG 1.0) and 9.73 (CFG 1.5). Equality or worse stops; missing, invalid,
+or ambiguous metrics fail. PROMOE_RESUME rechecks the gate before any later
+phase. The older October 31 no-gate scripts are unchanged. Definitions and gradient
 contracts are in `AGENTS.md` and `doc/design-todo.md`; launch table:
 `scripts/_run_times/2026_11_02/commands.md`.
 
