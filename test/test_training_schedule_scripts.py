@@ -31,7 +31,7 @@ ARMS = (
     ("corr_router", "clean_route_student_ratio0_corr_router_kl_detach_base"),
 )
 
-GATED_ARMS = ARMS[-6:]  # The 2026-11-02 batch requires the canonical 300K gate.
+GATED_ARMS = ARMS[3:]  # The October 31 and November 2 batches use the same 300K gate.
 
 STUB = '''import argparse, json, os
 from pathlib import Path
@@ -139,8 +139,8 @@ class TrainingScheduleScriptTests(unittest.TestCase):
                 self.assertEqual(log[4]["previous"], [300000])
                 self.assertEqual([(e["scale"], e["count"]) for e in log if e["kind"] == "eval"],
                                  [(1.0, 50000), (1.5, 50000)] * 2)
-                # The older arms still accept FID 100; November 2 arms must
-                # pass their 30.86/9.73 gate before entering the 500K phase.
+                # The three older controls still accept FID 100; October 31
+                # and November 2 arms must pass the 30.86/9.73 gate before 500K.
                 self.assert_success(run(PROMOE_RESUME="1"))
                 self.assertEqual(events(), log)
 
@@ -161,10 +161,13 @@ class TrainingScheduleScriptTests(unittest.TestCase):
                                   ("eval", 500000), ("eval", 500000)])
                 self.assertEqual(added[3]["previous"], [300000])
 
-    def test_each_november_arm_stops_at_failed_gate_and_resume_cannot_bypass_it(self):
-        for arm in GATED_ARMS:
+    def test_each_gated_arm_stops_at_failed_gate_and_resume_cannot_bypass_it(self):
+        for index, arm in enumerate(GATED_ARMS):
             with self.subTest(arm=arm), pipeline(arm) as (run, events):
-                result = run(FID_CFG1="31.0", FID_CFG15="9.0")
+                # Alternate which CFG fails to exercise both sides of the AND.
+                failing_fids = ({"FID_CFG1": "31.0", "FID_CFG15": "9.0"} if index % 2 == 0
+                                else {"FID_CFG1": "30.0", "FID_CFG15": "10.0"})
+                result = run(**failing_fids)
                 self.assert_success(result)  # Scientific failure is a normal stop.
                 self.assertIn("300K gate STOP", result.stdout)
                 before = events()

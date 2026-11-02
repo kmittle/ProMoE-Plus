@@ -391,7 +391,7 @@ The six 2026-11-02 teacher/corrector mechanism ablations use four GPUs and
 300K-eval-gate-500K-eval: BOTH 300K FIDs must be strictly below the canonical
 30.86 (CFG 1.0) and 9.73 (CFG 1.5). Equality or worse stops; missing, invalid,
 or ambiguous metrics fail. PROMOE_RESUME rechecks the gate before any later
-phase. The older October 31 no-gate scripts are unchanged. Definitions and gradient
+phase. The October 31 batch now uses the same gate. Definitions and gradient
 contracts are in `AGENTS.md` and `doc/design-todo.md`; launch table:
 `scripts/_run_times/2026_11_02/commands.md`.
 
@@ -630,10 +630,13 @@ Do not combine timing and magnitude changes in that sweep or treat the existing
 standalone clean-route schedule runs as these combination-model ablations.
 The ten definitions are implemented under `scripts/_run_times/2026_10_31/`;
 `commands.md` lists their independent output buckets and four-GPU launchers.
-Each trains fresh to 300K, evaluates CFG 1.0/1.5 (50K samples each), resumes
-its own weights to 500K, then evaluates again. There is no 300K FID performance
-gate, but missing/invalid FID/IS stops progression. Defining these experiments
-does not launch them. Input flags are `corr_router_config.use_reference_embedding`
+Each trains fresh to 300K and evaluates CFG 1.0/1.5 (50K samples each).
+All ten, including L/XL, resume their own weights to 500K and evaluate again
+only when BOTH FIDs are strictly below 30.86 (CFG 1.0) and 9.73 (CFG 1.5),
+the canonical B baseline. Equality or worse stops normally at 300K;
+missing/invalid/ambiguous metrics are errors. PROMOE_RESUME rechecks the gate
+before any later phase, including already-saved checkpoints. Defining these
+experiments does not launch them. Input flags are `corr_router_config.use_reference_embedding`
 and `use_score_input` (default True); the gradient flag is combination-only
 `clean_route_config.align_detach_correction` (default False). Masked projections
 remain in the DDP graph with zero weight gradients; reference masking includes

@@ -103,8 +103,8 @@ allocation, global batch 256, seed 0, lr 1e-4, workers 16. The user requires
 same run to 500K -> evaluation. BOTH FIDs must be strictly lower than 30.86
 (CFG 1.0) and 9.73 (CFG 1.5). Equality or a worse FID stops normally at 300K;
 missing/invalid/ambiguous metrics are errors. Resuming must recheck the 300K
-gate before any later phase, including already-saved checkpoints. This change
-applies only to the November 2 batch; older no-gate experiments are unchanged.
+gate before any later phase, including already-saved checkpoints. The October 31
+batch now uses this same gate; other documented no-gate studies are unchanged.
 No distillation delay or warmup is included.
 
 1. `B_clean_route_dual_teacher`: no corrector. Real and estimated clean teachers
@@ -175,10 +175,13 @@ effects through the network. The confirmed list has ten new runs: L, XL,
 B delay, B warmup, three B coefficients, and these three mechanism ablations.
 All correction-router evaluation uses CFG-fused reference velocity. This list
 is implemented in `scripts/_run_times/2026_10_31/commands.md`: ten independent
-four-GPU launch definitions, not running jobs. Each trains fresh to 300K,
-evaluates CFG 1.0/1.5 with 50K samples each, resumes its own weights to 500K,
-then evaluates again. The requested sequential pipeline has no 300K FID
-performance gate; missing or invalid FID/IS prevents progression.
+four-GPU launch definitions, not running jobs. Each trains fresh to 300K and
+evaluates CFG 1.0/1.5 with 50K samples each. All ten, including L/XL, resume
+their own weights to 500K and evaluate again only when BOTH 300K FIDs are
+strictly below the canonical B baseline, 30.86 (CFG 1.0) and 9.73 (CFG 1.5).
+Equality or worse stops normally at 300K; missing/invalid/ambiguous metrics
+are errors. PROMOE_RESUME must recheck the gate before any later phase,
+including already-saved checkpoints.
 The input flags are `corr_router_config.use_reference_embedding` and
 `use_score_input` (both default True). The KL flag is combination-only
 `clean_route_config.align_detach_correction` (default False). The masked

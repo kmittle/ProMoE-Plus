@@ -1,6 +1,7 @@
 # KL 系数固定 5e-3; parent: B_clean_route_student_ratio0_corr_router_cfg_ref.
-# Fresh training: 300K -> CFG 1.0/1.5 evaluation -> own-checkpoint resume to 500K -> evaluation.
-# All sample references use the CFG-fused velocity; no 300K performance threshold.
+# Fresh training: 300K -> CFG 1.0/1.5 evaluation -> FID gate -> own-checkpoint resume to 500K -> evaluation.
+# Continue only if both 300K FIDs beat 30.86 / 9.73; resume also rechecks the gate.
+# All sample references use the CFG-fused velocity.
 model_name: "ProMoE_TC_B_clean_route_corr_router"
 
 gpu_ids: [0, 1, 2, 3]  # placeholder: the wrapper claims idle GPUs at launch
