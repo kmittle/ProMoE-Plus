@@ -2,7 +2,9 @@
 #
 # Template for ProMoE train + sample + eval end-to-end scripts.
 #
-# 300K continuation gate: FID < 30.86 (CFG 1.0) AND FID < 9.73 (CFG 1.5).
+# L: evaluate at 300K, then continue to 500K without a FID performance gate.
+# No same-scale 300K baseline is available. Missing/invalid metrics still fail.
+# ICLR 2026 Table 3 reports L FIDs 11.61 / 2.79 at 500K (CFG 1.0 / 1.5).
 # Pipeline (sequential, safe for XL-scale models):
 #   For each checkpoint step in step_list_for_sample:
 #     1. Train (or resume) up to that step, then stop.
@@ -164,17 +166,6 @@ step_already_evaluated() {
     done
 }
 
-# Recheck measured 300K results on fresh and resumed runs. A valid result
-# that fails the scientific gate ends normally; malformed results are errors.
-check_300k_gate_or_stop() {
-    local gate_output gate_status=0
-    gate_output="$(promoe_300k_fid_gate "$SAMPLE_BASE" 2>&1)" || gate_status=$?
-    printf '%s\n' "$gate_output" | tee -a "$LOG"
-    if [[ "$gate_status" == "1" ]]; then
-        exit 0
-    fi
-    return "$gate_status"
-}
 
 # ── Helper: record which code this phase runs ────────────────────────────────
 # Without strict provenance nothing else records it, and a pull between two
@@ -240,11 +231,6 @@ for i in "${!ALL_STEPS[@]}"; do
     step="${ALL_STEPS[$i]}"
     phase=$((i + 1))
 
-    # This precedes the resume/skip branch: saved checkpoints cannot bypass
-    # the 300K gate, even if only a later phase is requested in the YAML.
-    if (( step > 300000 )); then
-        check_300k_gate_or_stop
-    fi
 
     # For intermediate steps: num_steps = step + 1 (train through step, save, exit).
     # For the final step: use original num_steps from config.

@@ -1,6 +1,7 @@
 # 完整方法 XL 扩展; parent: B_clean_route_student_ratio0_corr_router_cfg_ref.
-# Fresh training: 300K -> CFG 1.0/1.5 evaluation -> FID gate -> own-checkpoint resume to 500K -> evaluation.
-# Continue only if both 300K FIDs beat 30.86 / 9.73; resume also rechecks the gate.
+# Fresh training: 300K -> CFG 1.0/1.5 evaluation -> own-checkpoint resume to 500K -> evaluation.
+# No 300K performance gate: no same-scale 300K baseline is available.
+# ICLR 2026 Table 3: XL 500K FIDs = 9.44 / 2.59 (CFG 1.0 / 1.5); not 300K thresholds.
 # All sample references use the CFG-fused velocity.
 model_name: "ProMoE_TC_XL_clean_route_corr_router"
 

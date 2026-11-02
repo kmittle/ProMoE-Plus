@@ -391,7 +391,9 @@ The six 2026-11-02 teacher/corrector mechanism ablations use four GPUs and
 300K-eval-gate-500K-eval: BOTH 300K FIDs must be strictly below the canonical
 30.86 (CFG 1.0) and 9.73 (CFG 1.5). Equality or worse stops; missing, invalid,
 or ambiguous metrics fail. PROMOE_RESUME rechecks the gate before any later
-phase. The October 31 batch now uses the same gate. Definitions and gradient
+phase. The eight B-scale October 31 arms use the same gate. L/XL always
+continue to 500K after valid 300K evaluation, without a FID performance gate.
+Definitions and gradient
 contracts are in `AGENTS.md` and `doc/design-todo.md`; launch table:
 `scripts/_run_times/2026_11_02/commands.md`.
 
@@ -452,7 +454,7 @@ contracts are in `AGENTS.md` and `doc/design-todo.md`; launch table:
 The project enforces a scientific protocol in code, not just in docs. `doc/design-todo.md`
 is the live roadmap and states the current rules; the mechanisms below implement them.
 
-**The baseline is fixed (user rule, 2026-09-21).** Every comparison uses one ProMoE-TC B
+**The B-scale baseline is fixed (user rule, 2026-09-21).** B-scale comparisons use one ProMoE-TC B
 baseline, the one on the archived results page — 300K FID/IS `30.86 / 48.35` (CFG 1.0) and
 `9.73 / 121.25` (CFG 1.5); 500K `24.44 / 60.38` and `6.39 / 154.21`. The separately trained
 "fresh routing baseline" under `outputs/archived_outputs/2026-09-03/` (300K `30.58 / 9.59`)
@@ -462,12 +464,18 @@ Base-equivalent runs (`param`, `param_b4`, `param_shared` — their regularizer 
 zero) scored 500K 25.51 and 23.80 and 300K 30.58 against this baseline, i.e. the measured
 run-to-run spread is ≈1.7 FID at 500K; a claimed gain smaller than that is not evidence.
 
-**The 300K dual-CFG FID gate.** Every candidate trains **from scratch (step 0, empty output
+**The 300K dual-CFG FID gate for B-scale candidates.** Every candidate trains **from scratch (step 0, empty output
 dir)** to 300K, then samples 50K images at CFG 1.0 **and** 1.5 and scores them with the
 OpenAI evaluator. It must beat the canonical ProMoE-TC baseline's 300K FID (30.86 at CFG 1.0, 9.73 at
 CFG 1.5) at **both** CFG values; a candidate that fails is abandoned on the spot and never continued to 500K. Only a
 gate-passing arm earns 500K plus routing/expert-specialization analysis. Corollaries that
 matter when writing scripts:
+- L/XL are exempt by the user's decision: evaluate at 300K, then always continue
+  to 500K because no same-scale 300K baseline is available. Missing/invalid
+  evaluator metrics still stop progression. Do not apply B thresholds or
+  a 500K baseline to their 300K FIDs. For 500K comparisons, the
+  [ICLR 2026 conference paper, Table 3](https://proceedings.iclr.cc/paper_files/paper/2026/file/2847043899e1171183ceadf86bdbb280-Paper-Conference.pdf#page=7)
+  gives L FIDs `11.61 / 2.79` and XL FIDs `9.44 / 2.59` (CFG 1.0 / 1.5).
 - A mid-training checkpoint continuation is **not** a substitute for an independent
   experiment, and cannot be reported as a method result.
 - Arms in a factorial study are **independent hypotheses**: a full-combination failure does
@@ -631,11 +639,13 @@ standalone clean-route schedule runs as these combination-model ablations.
 The ten definitions are implemented under `scripts/_run_times/2026_10_31/`;
 `commands.md` lists their independent output buckets and four-GPU launchers.
 Each trains fresh to 300K and evaluates CFG 1.0/1.5 (50K samples each).
-All ten, including L/XL, resume their own weights to 500K and evaluate again
-only when BOTH FIDs are strictly below 30.86 (CFG 1.0) and 9.73 (CFG 1.5),
-the canonical B baseline. Equality or worse stops normally at 300K;
-missing/invalid/ambiguous metrics are errors. PROMOE_RESUME rechecks the gate
-before any later phase, including already-saved checkpoints. Defining these
+The eight B-scale arms resume their own weights to 500K and evaluate again
+only when BOTH FIDs are strictly below 30.86 (CFG 1.0) and 9.73 (CFG 1.5);
+equality or worse stops normally. Their gate rejects missing/invalid/ambiguous
+metrics and is rechecked before every later phase, including resume/skip.
+L/XL always continue to 500K after valid 300K evaluation, regardless of FID,
+because same-scale 300K baselines are unavailable. Missing/invalid evaluator
+metrics remain errors for every arm. Defining these
 experiments does not launch them. Input flags are `corr_router_config.use_reference_embedding`
 and `use_score_input` (default True); the gradient flag is combination-only
 `clean_route_config.align_detach_correction` (default False). Masked projections

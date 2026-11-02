@@ -103,8 +103,10 @@ allocation, global batch 256, seed 0, lr 1e-4, workers 16. The user requires
 same run to 500K -> evaluation. BOTH FIDs must be strictly lower than 30.86
 (CFG 1.0) and 9.73 (CFG 1.5). Equality or a worse FID stops normally at 300K;
 missing/invalid/ambiguous metrics are errors. Resuming must recheck the 300K
-gate before any later phase, including already-saved checkpoints. The October 31
-batch now uses this same gate; other documented no-gate studies are unchanged.
+gate before any later phase, including already-saved checkpoints. The eight B-scale
+October 31 arms use this same gate; L/XL always continue to 500K after valid
+300K evaluation because same-scale 300K baselines are unavailable. Other
+documented no-gate studies are unchanged.
 No distillation delay or warmup is included.
 
 1. `B_clean_route_dual_teacher`: no corrector. Real and estimated clean teachers
@@ -176,12 +178,14 @@ B delay, B warmup, three B coefficients, and these three mechanism ablations.
 All correction-router evaluation uses CFG-fused reference velocity. This list
 is implemented in `scripts/_run_times/2026_10_31/commands.md`: ten independent
 four-GPU launch definitions, not running jobs. Each trains fresh to 300K and
-evaluates CFG 1.0/1.5 with 50K samples each. All ten, including L/XL, resume
+evaluates CFG 1.0/1.5 with 50K samples each. The eight B-scale arms resume
 their own weights to 500K and evaluate again only when BOTH 300K FIDs are
-strictly below the canonical B baseline, 30.86 (CFG 1.0) and 9.73 (CFG 1.5).
-Equality or worse stops normally at 300K; missing/invalid/ambiguous metrics
-are errors. PROMOE_RESUME must recheck the gate before any later phase,
-including already-saved checkpoints.
+strictly below 30.86 (CFG 1.0) and 9.73 (CFG 1.5); equality or worse stops
+normally. Their gate rejects missing/invalid/ambiguous results and is rechecked
+before every later phase, including already-saved checkpoints. L/XL have no
+300K performance gate: the user requires both to continue to 500K regardless
+of their valid 300K FIDs, because same-scale 300K baselines are unavailable.
+Missing/invalid evaluator metrics remain errors for every arm.
 The input flags are `corr_router_config.use_reference_embedding` and
 `use_score_input` (both default True). The KL flag is combination-only
 `clean_route_config.align_detach_correction` (default False). The masked
@@ -240,15 +244,21 @@ The canonical ProMoE-TC B baseline is fixed (user rule, 2026-09-21): at 300K,
 FID/IS are `30.86 / 48.35` for CFG 1.0 and `9.73 / 121.25` for CFG 1.5;
 at 500K, they are `24.44 / 60.38` and `6.39 / 154.21`, respectively. The
 separately trained "fresh routing baseline" is void and must not be used for
-comparisons or gates.
+comparisons or gates. These B baselines do not apply to L/XL. The
+[ICLR 2026 conference paper, Table 3](https://proceedings.iclr.cc/paper_files/paper/2026/file/2847043899e1171183ceadf86bdbb280-Paper-Conference.pdf#page=7)
+reports Rectified Flow 500K FIDs (CFG 1.0 / 1.5) of `11.61 / 2.79` for L
+and `9.44 / 2.59` for XL. No L/XL 300K baseline is provided; never use these
+500K values as 300K thresholds. By user decision L/XL are evaluated at 300K
+and 500K and are never stopped by their 300K FID.
 
 Every active combination experiment must be training-from-scratch with
 `global_seed: 0`, global batch `256`, learning rate `1e-4`, and
 `img_num_workers: 16`, using four GPUs (the 2026-10-03 `regcombo` batch above is
 the user-approved exception: 2 GPUs for its combination arms and the LS-Reg
 global-count run, and 300K + 500K evaluation without a gate). It must evaluate 300K at CFG 1.0 and
-1.5 with 50K samples. Only a candidate whose two 300K FIDs are both strictly
-better than the canonical Base gate (`30.86`/`9.73`) may continue to 500K.
+1.5 with 50K samples. For B-scale candidates without a documented exception,
+both 300K FIDs must strictly beat the canonical Base gate (`30.86`/`9.73`)
+to continue to 500K. L/XL are explicitly exempt as described above.
 Do not infer success or failure from 50K/200K checkpoints, training loss, or
 an auxiliary loss alone.
 

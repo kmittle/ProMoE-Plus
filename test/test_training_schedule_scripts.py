@@ -31,7 +31,9 @@ ARMS = (
     ("corr_router", "clean_route_student_ratio0_corr_router_kl_detach_base"),
 )
 
-GATED_ARMS = ARMS[3:]  # The October 31 and November 2 batches use the same 300K gate.
+SCALE_UP_ARMS = tuple(arm for arm in ARMS if len(arm) == 3 and arm[2] in ("L", "XL"))
+# Only B-scale October 31 and November 2 arms have a matched 300K baseline.
+GATED_ARMS = tuple(arm for arm in ARMS[3:] if arm not in SCALE_UP_ARMS)
 
 STUB = '''import argparse, json, os
 from pathlib import Path
@@ -130,7 +132,10 @@ class TrainingScheduleScriptTests(unittest.TestCase):
     def test_each_arm_evaluates_before_resuming_its_own_300k_checkpoint(self):
         for arm in ARMS:
             with self.subTest(arm=arm), pipeline(arm) as (run, events):
-                self.assert_success(run())
+                result = run()
+                self.assert_success(result)
+                if arm in SCALE_UP_ARMS:
+                    self.assertNotIn("300K gate", result.stdout)
                 log = events()
                 self.assertEqual([(e["kind"], e["step"]) for e in log],
                                  [(kind, step) for step in (300000, 500000)
@@ -139,14 +144,14 @@ class TrainingScheduleScriptTests(unittest.TestCase):
                 self.assertEqual(log[4]["previous"], [300000])
                 self.assertEqual([(e["scale"], e["count"]) for e in log if e["kind"] == "eval"],
                                  [(1.0, 50000), (1.5, 50000)] * 2)
-                # The three older controls still accept FID 100; October 31
-                # and November 2 arms must pass the 30.86/9.73 gate before 500K.
+                # L/XL and three older controls still continue with FID 100.
+                # Only the B-scale gated arms compare with 30.86/9.73.
                 self.assert_success(run(PROMOE_RESUME="1"))
                 self.assertEqual(events(), log)
 
     def test_missing_or_invalid_300k_result_stops_then_resume_finishes_evaluation_first(self):
         for flag, arm in ((flag, arm) for flag in ("BAD_METRICS", "MISSING_IMAGES")
-                          for arm in (ARMS[0], ARMS[-1])):
+                          for arm in (ARMS[0], ARMS[-1], *SCALE_UP_ARMS)):
             with self.subTest(flag=flag, arm=arm), pipeline(arm) as (run, events):
                 result = run(**{flag: "1"})
                 self.assertNotEqual(result.returncode, 0)
