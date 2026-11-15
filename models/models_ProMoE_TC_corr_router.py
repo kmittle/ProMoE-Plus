@@ -38,6 +38,13 @@ no-grad passes without reference then step back along the model's own velocity:
     v = model(x_t, sigma);   x_prev = x_t + (sigma_ref - sigma) * v
     x0_hat = x_prev - sigma_ref * model(x_prev, sigma_ref)
 
+The optional training flag ``zero_reference_at_t1000`` (default False) also
+zeros the student's reference at exactly t=1000, irrespective of the dropout
+draw. With ``no_reference_prob: 0`` all other conditional images keep their
+reference, including those whose reference sigma was clamped to 1. This does
+not mask the estimated teacher input or change the timestep distribution.
+Previous-step sampling already starts with no reference at t=1000.
+
 ``x_prev`` is a function of ``x_t`` alone, as the previous point of a sampling
 trajectory is a function of the current one.  Building it from the clean
 latent with the same noise instead would put both points on the straight
@@ -177,7 +184,10 @@ def parse_corr_router_config(corr_router_config):
         )
     config = dict(corr_router_config)
     missing = [key for key in CORR_ROUTER_CONFIG_KEYS if key not in config]
-    optional = {"previous_state_mode", "reference_mode", "use_reference_embedding", "use_score_input"}
+    optional = {
+        "previous_state_mode", "reference_mode", "use_reference_embedding", "use_score_input",
+        "zero_reference_at_t1000",
+    }
     unknown = sorted(set(config) - set(CORR_ROUTER_CONFIG_KEYS) - optional)
     if missing or unknown:
         raise ValueError(f"corr_router_config: missing keys {missing}, unknown keys {unknown}")
@@ -198,6 +208,9 @@ def parse_corr_router_config(corr_router_config):
     no_reference_prob = float(config["no_reference_prob"])
     if not (math.isfinite(no_reference_prob) and 0.0 <= no_reference_prob < 1.0):
         raise ValueError("corr_router_config.no_reference_prob must lie in [0, 1)")
+    zero_reference_at_t1000 = config.get("zero_reference_at_t1000", False)
+    if not isinstance(zero_reference_at_t1000, bool):
+        raise ValueError("corr_router_config.zero_reference_at_t1000 must be a boolean")
     previous_state_mode = config.get("previous_state_mode", "model_velocity")
     if not isinstance(previous_state_mode, str) or previous_state_mode not in ("model_velocity", "same_noise"):
         raise ValueError("corr_router_config.previous_state_mode must be 'model_velocity' or 'same_noise'")
@@ -216,6 +229,7 @@ def parse_corr_router_config(corr_router_config):
         "hidden_dim": hidden_dim,
         "skip_intervals": skip_intervals,
         "no_reference_prob": no_reference_prob,
+        "zero_reference_at_t1000": zero_reference_at_t1000,
         "previous_state_mode": previous_state_mode,
         "reference_mode": reference_mode,
         **input_flags,
@@ -521,6 +535,7 @@ class DiT(nn.Module):
             )
         self.skip_intervals = settings["skip_intervals"]
         self.no_reference_prob = settings["no_reference_prob"]
+        self.zero_reference_at_t1000 = settings["zero_reference_at_t1000"]
         self.previous_state_mode = settings["previous_state_mode"]
         self.reference_mode = settings["reference_mode"]
         # [reference images, prototype-routed images, summed sigma_ref - sigma
@@ -660,8 +675,8 @@ class DiT(nn.Module):
         """Return (student reference, unmasked estimate).
 
         With estimate_all, every conditional image gets a meaningful teacher
-        estimate. Only the student's reference is then masked by the original
-        dropout draw; absent references still have sigma_ref=1.
+        estimate. Only the student's reference is then masked by the dropout
+        draw and optional t=1000 rule; absent references still have sigma_ref=1.
         """
         batch = x.shape[0]
         device = x.device
@@ -677,6 +692,10 @@ class DiT(nn.Module):
         use_reference, previous_sigmas = draw_reference_plan(
             sigma, labels, self.skip_intervals, self.no_reference_prob, generator
         )
+        if self.zero_reference_at_t1000:
+            # Test the current timestep, not the reference's clamped sigma.
+            # Keep the draws unchanged and leave estimate_all's teacher intact.
+            use_reference = use_reference & (timestep.reshape(-1) != NUM_TRAIN_TIMESTEPS)
         if self.reference_mode == "current":
             previous_sigmas = sigma
 

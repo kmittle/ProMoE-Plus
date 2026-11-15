@@ -272,6 +272,75 @@ class MechanismTests(unittest.TestCase):
             h.build_corr(reference_mode="invalid")
 
 
+class ReferenceDropoutAblationTests(unittest.TestCase):
+    def build_model(self, **corr_overrides):
+        settings = dict(no_reference_prob=0.0, zero_reference_at_t1000=True)
+        settings.update(corr_overrides)
+        return h.perturb_correctors(h.perturb(h.build_clean_corr(
+            corr_overrides=settings, teacher_input="estimated", align_detach_base=True, align_lam=5e-4,
+        )))
+
+    def test_only_exact_current_t1000_is_masked_and_teacher_estimates_are_preserved(self):
+        # t just below 1000, and t=996 with sigma_ref=1, must retain references.
+        _, _, z, noise, _ = h.batch()
+        t = torch.tensor([1000.0, 1000.0, 999.9999, 996.0, 500.0, 950.0])
+        sigma = t / 1000
+        scale = sigma.view(-1, 1, 1, 1, 1)
+        x = (1 - scale) * z + scale * noise
+        outcomes = []
+        for enabled in (False, True):
+            model = self.build_model(zero_reference_at_t1000=enabled, skip_intervals=[50])
+            y, labels = model.y_embedder(h.LABELS, False)
+            generator = torch.Generator().manual_seed(h.GENERATOR_SEED)
+            global_rng = torch.get_rng_state().clone()
+            reference, estimate = model._training_reference_with_estimate(
+                x, t, sigma, y, labels, generator, estimate_all=True,
+            )
+            self.assertFalse(estimate.requires_grad)
+            torch.testing.assert_close(torch.get_rng_state(), global_rng, rtol=0, atol=0)
+            outcomes.append((reference, estimate, generator.get_state()))
+        (old_ref, old_estimate, old_rng), (reference, estimate, rng) = outcomes
+        torch.testing.assert_close(estimate, old_estimate, rtol=0, atol=0)
+        torch.testing.assert_close(rng, old_rng, rtol=0, atol=0)
+        latent, ref_sigma, mask, _ = reference
+        torch.testing.assert_close(mask, torch.tensor([False, False, True, True, False, True]))
+        torch.testing.assert_close(old_ref[2], h.LABELS != 1000)
+        torch.testing.assert_close(latent[mask], estimate[mask], rtol=0, atol=0)
+        self.assertEqual(int(torch.count_nonzero(latent[~mask])), 0)
+        self.assertGreater(float(estimate[0].abs().sum()), 0)
+        torch.testing.assert_close(ref_sigma, torch.ones(h.BATCH), rtol=0, atol=0)
+
+    def test_endpoint_teacher_and_student_still_train_in_fp32_and_bf16(self):
+        for autocast in (False, True):
+            with self.subTest(autocast=autocast):
+                model = self.build_model()
+                with record_runs(model) as calls:
+                    output, grads = h.train_step(model, "clean_corr", autocast=autocast, sigma_value=1.0)
+                self.assertEqual(len(calls), 4)  # two estimates, teacher, student
+                self.assertEqual([c["grad"] for c in calls], [False, False, False, True])
+                teacher, student = calls[2:]
+                self.assertEqual(int(torch.count_nonzero(teacher["t"])), 0)
+                self.assertTrue(bool((teacher["x"].flatten(1).abs().sum(1) > 0).all()))
+                self.assertIsNone(teacher["reference"])
+                latent, ref_sigma, mask, _ = student["reference"]
+                self.assertEqual(int(torch.count_nonzero(latent)), 0)
+                self.assertFalse(bool(mask.any()))
+                torch.testing.assert_close(ref_sigma, torch.ones(h.BATCH), rtol=0, atol=0)
+                self.assertTrue(bool(torch.isfinite(output).all()))
+                for name, parameter in model.named_parameters():
+                    if parameter.requires_grad:
+                        self.assertIn(name, grads)
+                        self.assertTrue(bool(torch.isfinite(grads[name]).all()), name)
+                # Zero latent reference does not disable the correction MLP.
+                self.assertGreater(float(grads["blocks.3.mlp.corrector.out.weight"].abs().sum()), 0)
+
+    def test_flag_defaults_off_and_requires_a_boolean(self):
+        self.assertFalse(h.build_corr().zero_reference_at_t1000)
+        for value in (0, 1, None, "true"):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "zero_reference_at_t1000"):
+                self.build_model(zero_reference_at_t1000=value)
+
+
 class CurrentReferenceSamplingTests(unittest.TestCase):
     def test_current_reference_is_cfg_fused_and_recomputed_at_every_step(self):
         for guide in (1.0, 1.5):

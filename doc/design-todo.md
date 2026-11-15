@@ -1,5 +1,28 @@
 # design-todo：ProMoE_TC 改进计划（MoE 主线）
 
+## 取消随机参考 dropout（2026-11-15，实验 2）
+
+启动索引：[`scripts/_run_times/2026_11_15/commands.md`](../scripts/_run_times/2026_11_15/commands.md)。已生成实验定义，尚未启动。
+
+| 实验 | 直接对照 | 改动 | 要检验的问题 |
+|---|---|---|---|
+| B_estimated_route_student_corr_router_kl_detach_base_no_ref_drop | B_estimated_route_student_corr_router_kl_detach_base | no_reference_prob=0，zero_reference_at_t1000=True；仅当前 timestep 精确等于 1000 时将学生参考 latent 置零 | 取消随机 50% 参考丢弃、保留推理首步的零参考规则，对生成效果有什么影响？ |
+
+六个 skip_intervals=[1,4,5,10,20,50] 保留；均匀 sigma 调度下分别对应
+1000/250/200/100/50/20 步的一步跨度，首步 timestep 均为 1000。
+判断的是当前 timestep，不能按参考 timestep 或 sigma_ref 是否被截断到 1 来置零。
+t<1000 的 conditional 学生样本均保留估计参考；unconditional 仍走原有专用专家。
+零参考时 sigma_ref=1、has_reference=False，矫正器 MLP 继续运行。
+估计 teacher 始终使用全部 conditional 样本的未掩码估计，在 t=0 用原路由提供 KL 目标；
+KL 仍为 sg(s)+d，实际路由/FM 仍为 s+d，其他参数与直接对照一致。
+
+不改变 logit-normal 时间采样，也不增加 t=1000 训练样本。
+因此训练几乎不会采到精确端点；本实验保留这项首步分布差异，不能宣称已训练覆盖首步。
+采样保持首步零参考、后续使用上一时刻 CFG-fused 速度形成参考，不增加前向次数；
+辅助参考生成的 no-grad 前向仍使用无参考路径。保留私有 RNG 的 coin/gap 抽取顺序。
+新开关默认 False，已有实验行为不变；新配置独立从零训练，沿用 4 卡及 300K 双 CFG 门槛，
+通过后续训自身至 500K，评估仍为 250 步、CFG 1.0/1.5 各 50K 样本。
+
 ## 估计 teacher 的 KL 梯度分工（2026-11-15，实验 1）
 
 启动索引：[`scripts/_run_times/2026_11_15/commands.md`](../scripts/_run_times/2026_11_15/commands.md)。已生成实验定义，尚未启动。

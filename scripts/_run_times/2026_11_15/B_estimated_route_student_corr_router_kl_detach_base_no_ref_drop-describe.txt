@@ -1,0 +1,8 @@
+实验 / Experiment: B_estimated_route_student_corr_router_kl_detach_base_no_ref_drop
+model_name: ProMoE_TC_B_clean_route_corr_router  |  config: configs/004_ProMoE_B_estimated_route_student_corr_router_kl_detach_base_no_ref_drop.yaml
+基线 / Baseline: 基础 ProMoE-TC（conditional/unconditional 分流、原型余弦 token-choice、shared expert 和路由对比学习）；直接父变体 / Parent: B_estimated_route_student_corr_router_kl_detach_base（估计干净 teacher＋路由矫正，KL 使用 sg(s)+d，学生参考随机丢弃概率 0.5）。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 取消随机参考丢弃 / no random reference dropout：父实验上仅改变学生参考策略，corr_router_config.no_reference_prob 从 0.5 改为 0.0，并启用 zero_reference_at_t1000=True。仅当前 timestep 精确等于 1000 时学生参考 latent 置零、sigma_ref=1、has_reference=False；其他 conditional 样本保留估计参考，即使其参考 sigma_ref 被截断到 1。unconditional 继续走原有专用专家。零参考不会关闭矫正 MLP。新开关默认 False，已有实验行为不变；不增加模型参数。
+2. 参考与蒸馏 / reference and distillation：相对基础 ProMoE-TC，继承模型估计干净参考、路由矫正 MLP、estimated teacher 和 KL 梯度分工。全部 conditional 样本仍通过 model_velocity 的两次 no_grad 前向生成估计，teacher 始终读取未掩码估计，在 t=0 使用无矫正的原路由；只有学生参考应用端点掩码，仍参与 KL。KL 为 sg(s)+d，实际路由/FM 为 s+d，学生路由对比学习保持；KL=5e-4、温度 0.07，无延迟/warmup。skip_intervals=[1,4,5,10,20,50] 和私有 RNG 的 coin/gap 抽取顺序保留。不改变连续 logit-normal 时间采样、不插入端点样本，因此训练几乎不会采到精确 t=1000，不能宣称首步条件已被训练覆盖。辅助参考前向仍无参考；正式采样首步零参考、后续沿用上一时刻 CFG-fused 速度形成参考，不额外增加前向。
+3. 训练评估 / pipeline：复用模型注册项，独立空输出目录从零训练，不加载父实验权重。4 卡自动匹配，global batch=256、seed=0、lr=1e-4、img_num_workers=16；输出 outputs/ProMoE_TC_B_clean_route_corr_router/004_ProMoE_B_estimated_route_student_corr_router_kl_detach_base_no_ref_drop/。先训练至 300K，CFG 1.0/1.5 各 50K 样本、250 步采样评估；两项 FID 分别严格小于 30.86/9.73 才续训自身 checkpoint 至 500K 并再次评估。持平或更差正常停止，缺失/无效/歧义指标报错，恢复时在 500K 阶段前重新核对门槛。latent 默认 /mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz，可由 PROMOE_LATENT_PATH 覆盖。
