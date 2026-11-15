@@ -1,0 +1,8 @@
+实验 / Experiment: B_corr_router_previous_gap4
+model_name: ProMoE_TC_B_corr_router  |  config: configs/004_ProMoE_B_corr_router_previous_gap4.yaml
+基线 / Baseline: 基础 ProMoE-TC（conditional/unconditional 分流、原型余弦 token-choice、shared expert 和路由对比学习）；直接父变体 / Parent: B_corr_router，采用 B_corr_router_cfg_ref 的 CFG-reference 采样作为对照（上一参考、多间隔、无 KL teacher）。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 单一训练间隔 / fixed previous-reference gap：reference_mode=previous、previous_state_mode=model_velocity，仅将 skip_intervals 从 [1,4,5,10,20,50] 改为 [4]。仍通过当前零参考预测回推到较高噪声点，再预测一次速度并外推干净参考；两次辅助前向均 no_grad，未使用真实干净 latent 构造历史。名义间隔 4/1000 对应 250 步均匀 sigma 采样的一步，靠近 sigma=1 时保留截断。要验证原上一参考方案是否受益于多间隔训练，而非只依赖非零间隔本身。
+2. 保留矫正器 only / unchanged corrector-only setting：相对基础 ProMoE-TC，沿用原有路由矫正 MLP、全部输入 detach、s+d 路由与门控，不含 KL teacher、不增加参数。no_reference_prob=0.5，缺参考时 latent 置零、sigma_ref=1，但 MLP 继续运行。采样保留首步无参考，随后使用上一采样步正式 CFG-fused 速度形成参考；CFG 1.0/1.5 每步分别 1/2 次前向，不增加采样开销。没有叠加当前点精化、estimated teacher、KL detach-base 或 no-drop 消融。
+3. 训练评估 / pipeline：4 卡自动匹配，global batch=256、seed=0、lr=1e-4、img_num_workers=16，独立空目录从零训练。输出 outputs/ProMoE_TC_B_corr_router/004_ProMoE_B_corr_router_previous_gap4/；先到 300K，250 步采样、CFG 1.0/1.5 各 50K 样本。FID 必须分别严格低于 30.86/9.73 才续训自身 checkpoint 到 500K 并再评估；持平或更差正常停止，无效/缺失/歧义指标报错，恢复运行同样核对门槛。YAML、shell 默认与临时训练配置的 latent 路径统一为 /mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz。由用户在另一台 A100 服务器启动。

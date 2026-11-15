@@ -69,6 +69,18 @@ preliminary CFG-fused velocity at every current x,t, then runs the corrected
 conditional prediction. Its unconditional prediction can be reused in both
 CFG fusions. Gap draws are retained for RNG parity but do not affect this mode.
 
+``reference_mode: current_history`` first builds the previous-mode reference
+in training, then uses it in a no-grad prediction at the current x,t to form
+the final current-point reference (three auxiliary passes). Sampling instead
+seeds this current prediction with the previous step's final CFG estimate.
+``reference_mode: current_refined`` makes a no-reference current prediction,
+then one more current prediction conditioned on that estimate (two auxiliary
+passes). Sampling follows the same two-round construction at unchanged x,t.
+Both modes retain student reference dropout, detach all auxiliary estimates,
+and run a final student prediction. All current modes use sigma_ref=sigma for
+the final reference. Their sampling starts from an empty seed at the first
+step, then builds a current reference as the original current mode does.
+
 The coin and the gaps come from a generator train.py seeds from the run's
 seed and the micro-batch's position (step, micro-step, rank) alone, so the
 global RNG stream (data, noise, sigma and label dropout) is the conference
@@ -94,6 +106,7 @@ from .modules import get_2d_sincos_pos_embed, Attention, modulate, TimestepEmbed
 
 
 CORR_ROUTER_CONFIG_KEYS = ("hidden_dim", "skip_intervals", "no_reference_prob")
+CURRENT_REFERENCE_MODES = ("current", "current_history", "current_refined")
 # The conference block sends the dropped class label to the unconditional expert.
 UNCOND_LABEL = 1000
 # train.py and sample.py both use t = 1000 * sigma.
@@ -215,9 +228,12 @@ def parse_corr_router_config(corr_router_config):
     if not isinstance(previous_state_mode, str) or previous_state_mode not in ("model_velocity", "same_noise"):
         raise ValueError("corr_router_config.previous_state_mode must be 'model_velocity' or 'same_noise'")
     reference_mode = config.get("reference_mode", "previous")
-    if reference_mode not in ("previous", "current"):
-        raise ValueError("corr_router_config.reference_mode must be 'previous' or 'current'")
-    if reference_mode == "current" and previous_state_mode != "model_velocity":
+    if reference_mode not in ("previous", *CURRENT_REFERENCE_MODES):
+        raise ValueError(
+            "corr_router_config.reference_mode must be 'previous', 'current', "
+            "'current_history' or 'current_refined'"
+        )
+    if reference_mode in CURRENT_REFERENCE_MODES and previous_state_mode != "model_velocity":
         raise ValueError("current reference_mode requires previous_state_mode: model_velocity")
     input_flags = {}
     for name in ("use_reference_embedding", "use_score_input"):
@@ -696,7 +712,7 @@ class DiT(nn.Module):
             # Test the current timestep, not the reference's clamped sigma.
             # Keep the draws unchanged and leave estimate_all's teacher intact.
             use_reference = use_reference & (timestep.reshape(-1) != NUM_TRAIN_TIMESTEPS)
-        if self.reference_mode == "current":
+        if self.reference_mode in ("current", "current_refined"):
             previous_sigmas = sigma
 
         reference_x0 = torch.zeros_like(x)
@@ -705,18 +721,34 @@ class DiT(nn.Module):
         if bool(estimate_mask.any()):
             index = torch.where(estimate_mask)[0]
             current_sigma = sigma[index]
+            seed_mode = "current" if self.reference_mode in ("current", "current_refined") else "previous"
             estimate = estimate_clean_latent(
                 self._reference_velocity, x[index], timestep[index], current_sigma, previous_sigmas[index],
-                y[index], labels[index], reference_mode=self.reference_mode,
+                y[index], labels[index], reference_mode=seed_mode,
                 previous_state_mode=self.previous_state_mode,
                 z=None if z is None else z[index], noise=None if noise is None else noise[index],
             )
+            if self.reference_mode in ("current_history", "current_refined"):
+                # Refine at the unchanged current input, with either a simulated
+                # past reference or the first current-point estimate as seed.
+                with torch.no_grad():
+                    current = x[index]
+                    seed = (
+                        estimate.to(x.dtype), previous_sigmas[index],
+                        torch.ones(index.numel(), dtype=torch.bool, device=device), current_sigma,
+                    )
+                    velocity = self._velocity(
+                        self._run(current, timestep[index], y[index], labels[index], seed), current
+                    )
+                    shape = (-1,) + (1,) * (x.dim() - 1)
+                    estimate = current - current_sigma.view(shape) * velocity
             reference_x0[index] = estimate.to(reference_x0.dtype)
         full_estimate = reference_x0
         if estimate_all:
             mask_shape = (-1,) + (1,) * (x.dim() - 1)
             reference_x0 = torch.where(use_reference.view(mask_shape), full_estimate, 0.0)
-        reference_sigma[use_reference] = previous_sigmas[use_reference]
+        final_sigmas = sigma if self.reference_mode in CURRENT_REFERENCE_MODES else previous_sigmas
+        reference_sigma[use_reference] = final_sigmas[use_reference]
         self.last_corr_reference = torch.stack([
             use_reference.sum().float(),
             routed.sum().float(),

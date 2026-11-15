@@ -1,0 +1,8 @@
+实验 / Experiment: B_corr_router_current_refined
+model_name: ProMoE_TC_B_corr_router  |  config: configs/004_ProMoE_B_corr_router_current_refined.yaml
+基线 / Baseline: 基础 ProMoE-TC（conditional/unconditional 分流、原型余弦 token-choice、shared expert 和路由对比学习）；直接父变体 / Parent: B_corr_router_current_ref（一次当前点零参考预估，再进行正式前向，无 KL teacher）。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 当前点两轮参考估计 / two-round current refinement：reference_mode=current_refined。训练先以零参考在当前 x,t 预测速度，生成第一份 x-sigma*v 估计；再将它作为参考，在同一当前 x,t 做第二次 no_grad 预测，生成正式学生参考。两个参考都标记为当前 sigma，不移动 latent 或 timestep，也不输入真实干净 latent。推理每步同样从零参考开始两轮估计，再做正式前向，最后才更新 latent。要检验没有历史信息时，仅增加一轮参考修正是否足以恢复 current_ref 的效果；与 current_history 配对区分同点迭代和历史信息的作用。
+2. 保留矫正器 only / unchanged corrector-only setting：相对基础 ProMoE-TC，沿用原有路由矫正 MLP、全部输入 detach、s+d 路由与门控，无 KL teacher、不增加参数。保留 no_reference_prob=0.5 和类别 dropout，drop 仅作用于正式学生参考；零参考时 sigma_ref=1 且 MLP 继续运行。每个需参考的 conditional 样本使用两次辅助训练前向，全部停止梯度；skip_intervals 仍抽取但当前点模式不使用这些间隔。采样 CFG 1.0/1.5 每步分别 3/4 次前向，同一当前点复用 unconditional 输出做全部 CFG fusion。首步也按原 current_ref 的规则从零种子构造当前参考，不叠加首步置零评估或 no-drop 消融。
+3. 训练评估 / pipeline：4 卡自动匹配，global batch=256、seed=0、lr=1e-4、img_num_workers=16，独立空目录从零训练。输出 outputs/ProMoE_TC_B_corr_router/004_ProMoE_B_corr_router_current_refined/；先到 300K，250 步采样、CFG 1.0/1.5 各 50K 样本。FID 必须分别严格低于 30.86/9.73 才续训自身 checkpoint 到 500K 并再评估；持平或更差正常停止，无效/缺失/歧义指标报错，恢复运行同样核对门槛。YAML、shell 默认与临时训练配置的 latent 路径统一为 /mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz。由用户在另一台 A100 服务器启动。

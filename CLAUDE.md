@@ -421,6 +421,23 @@ contracts are in `AGENTS.md` and `doc/design-todo.md`; launch table:
   then corrected conditional prediction; reuse unconditional prediction.
   CFG 1.0/1.5 use 2/3 forwards per step. Drawn gaps do not affect current mode;
   `same_noise` is incompatible with current mode.
+- `reference_mode: current_history` builds a simulated previous reference with
+  the original two no-grad passes, then predicts current velocity conditioned
+  on it to form the final current reference (three auxiliary training passes).
+  Sampling seeds the preliminary current prediction with the previous formal
+  CFG estimate, so CFG 1.0/1.5 still use 2/3 forwards per step.
+  `reference_mode: current_refined` instead uses two no-grad current-point
+  reference passes, seeding the second with the first estimate; sampling uses
+  3/4 forwards at CFG 1.0/1.5 and starts from an empty seed each step.
+  Both modes require `previous_state_mode: model_velocity`, preserve reference
+  dropout, stop all reference-generation gradients, and set the final reference
+  noise level to the current sigma. They preserve the original current mode's
+  first-step behavior: an empty seed is used to build a current reference for
+  the formal prediction. The unconditional prediction is reused in every CFG
+  fusion at the unchanged x,t. The current-reference attribution batch in
+  `scripts/_run_times/2026_11_15/commands.md` contains these two fresh plain
+  corr_router runs and a `previous_gap4` control (`skip_intervals: [4]`), all
+  with 50% reference dropout, no KL teacher, and the B-scale 300K dual-FID gate.
 - The combo adds `teacher_input: estimated` (default `clean`): generate valid
   estimates for ALL conditional images, mask only the student's reference,
   and feed the unmasked estimate to the uncorrected t=0 teacher. Missing
@@ -434,6 +451,7 @@ contracts are in `AGENTS.md` and `doc/design-todo.md`; launch table:
 ### Shell Script Convention
 
 - **Latent deployment path (2026-10-26):** `scripts/template.sh` defaults `PROMOE_LATENT_PATH` to `/mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz` and writes it into the temporary training YAML's `latent_data_path`, overriding stale source-YAML paths. An explicit environment override is preserved. The three 2026-10-26 continuation configs record the same path.
+- **Future latent path (user rule, 2026-11-15):** every new or rerun experiment must explicitly set YAML `latent_data_path` and its shell default to `/mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz`. Keep source and temporary YAML paths consistent with the template; copied historical paths must not become new defaults. Use this path until the user specifies a different one.
 - **All new three-in-one (train + sample + eval) `.sh` experiment scripts must follow the `scripts/template.sh` pattern** — otherwise the other experiment server cannot run them. (Legacy split-purpose scripts under `scripts/repa/` such as `train_repa_B.sh` / `sample_and_eval_repa_B.sh` predate the template and are exempt; new work should not introduce more of them.)
 - **Sequential pipeline pattern**: The template implements a train→stop→sample+eval→resume loop. For each step in `step_list_for_sample`: (1) generate a temp config with `num_steps` set to the checkpoint step + 1 and `resume_checkpoint: True` (every phase; the script's empty-bucket check is what guarantees a launch starts from step 0, and a constant value keeps the strict-provenance config hash identical across phases), (2) train until that step then exit, (3) sample + eval with GPUs fully free, (4) resume for the next step. The final step uses the original `num_steps` from config. This avoids concurrent training + sampling, which can exceed GPU memory for XL-scale models.
 - Key template patterns: `set -euo pipefail`, locate repo root via `SCRIPT_DIR`/`REPO_ROOT`, parse `model_name`/`gpu_ids`/`num_fid_samples`/`step_list_for_sample`/`orig_num_steps` from YAML using inline Python, call training/sampling/evaluation with absolute python paths, and `find ... -name images | sort -V` for evaluation directory traversal. Never use `conda activate`.

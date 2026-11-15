@@ -1,5 +1,38 @@
 # design-todo：ProMoE_TC 改进计划（MoE 主线）
 
+## 当前步参考退化的训练对照（2026-11-15）
+
+启动索引：[`scripts/_run_times/2026_11_15/commands.md`](../scripts/_run_times/2026_11_15/commands.md)。
+用户在另一台 A100 服务器启动；本地只准备实现、配置和模板脚本，不启动作业。
+本批优先准备需要重新训练的实验；已有 checkpoint 的交叉采样、首步置零评估等无需重训的分析留待之后。
+
+| 实验 | 直接对照 | 训练参考生成 | 推理方式 | 要检验的问题 |
+|---|---|---|---|---|
+| B_corr_router_current_history | B_corr_router_current_ref | 沿原 model_velocity 方法用两次 no_grad 前向构造上一参考，再带着它在当前 x,t 预测一次速度，生成正式学生的当前参考 | 当前预估前向读取上一采样步正式 CFG 输出形成的参考，再以新当前参考进行正式前向；只用正式速度更新 latent | 当前步方案退化是否与每步丢弃历史矫正信息有关？ |
+| B_corr_router_current_refined | B_corr_router_current_ref | 当前 x,t 零参考预测形成第一份估计，再用它条件化同一当前点的第二次 no_grad 预测，形成正式学生参考 | 每步从零参考开始，做两轮当前参考生成，再进行正式前向；只在最后更新 latent | 没有历史信息时，多一轮参考修正是否足以恢复效果？ |
+| B_corr_router_previous_gap4 | B_corr_router（以 B_corr_router_cfg_ref 的 CFG-reference 采样为对照） | 保留原两次 model_velocity 辅助前向，仅将 skip_intervals 从 [1,4,5,10,20,50] 改为 [4] | 保留上一采样步正式 CFG 输出形成的参考，250 步采样 | 原方案是否主要受益于多间隔参考训练？ |
+
+三项复用 `ProMoE_TC_B_corr_router`，均为矫正器 only，不含 KL teacher，保留
+`no_reference_prob: 0.5`，不叠加新近 estimated teacher、KL detach-base 或 no-drop 消融。
+参考生成全部停止梯度，不改变 FM 真值目标、时间分布或参数数量；drop 只作用于正式学生参考。
+`current_history` 的训练历史来自模拟回推，推理历史来自真实缓存，不能宣称完全消除了训练/推理差异。
+当前点两种新模式的最终参考均标记为当前 sigma，history 的中间参考才使用较高的 reference_sigma。
+零参考仍运行矫正 MLP；辅助前向共享同一次类别 dropout，私有 coin/gap 抽取流程保留。
+
+按每个需参考的 conditional 样本计，history/refined/gap4 分别使用 3/2/2 次辅助训练前向，
+正式学生仍各一次。推理每步的 conditional 前向数分别为 2/3/1；CFG 1.5 各额外一次
+unconditional 前向并在同一当前点的所有 CFG fusion 中复用，所以总数为 3/4/2。
+history 首步无缓存，以零参考生成当前估计；refined 每步均以零参考开始。
+两者保留原 current_ref 的首步行为，正式首步使用生成的当前参考；gap4 首步仍没有参考。
+首步策略不是本批新增训练因素，单独的首步推理对照暂不执行。
+
+固定 global seed=0、global batch=256、lr=1e-4、workers=16 和 4 卡，从新输出目录独立训练。
+300K 时以 250 步、CFG 1.0/1.5 各 50K 样本评估；两项 FID 严格低于 30.86/9.73
+才续训自身 checkpoint 至 500K 并再评估。持平或更差正常停止，无效/缺失/歧义指标报错；
+恢复时同样重新检查门槛。报告质量时需同时区分上述前向次数和计算开销。
+三份 YAML、shell 默认和临时训练 YAML 均使用用户指定的 latent 路径
+`/mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz`。
+
 ## 取消随机参考 dropout（2026-11-15，实验 2）
 
 启动索引：[`scripts/_run_times/2026_11_15/commands.md`](../scripts/_run_times/2026_11_15/commands.md)。已生成实验定义，尚未启动。
