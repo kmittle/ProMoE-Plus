@@ -1,0 +1,8 @@
+实验 / Experiment: B_estimated_route_student_corr_router_kl_detach_base
+model_name: ProMoE_TC_B_clean_route_corr_router  |  config: configs/004_ProMoE_B_estimated_route_student_corr_router_kl_detach_base.yaml
+基线 / Baseline: 基础 ProMoE-TC（conditional/unconditional 分流、原型余弦 token-choice、shared expert 和路由对比学习）；直接父变体 / Parent: B_estimated_route_student_corr_router（估计干净 teacher＋路由矫正，KL 使用 s+d）；辅助对照 / Sibling: B_clean_route_student_ratio0_corr_router_kl_detach_base（真实干净 teacher，KL 使用 sg(s)+d）。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. KL 梯度分工 / local KL gradient allocation：在父实验的 teacher_input=estimated 上开启 clean_route_config.align_detach_base=True，并显式保持 align_detach_correction=False。仅 KL 学生分数变为 sg(s)+d，其中 s 是原始余弦分数、d 是矫正量；实际 Top-1 选择、门控与学生对比学习分组仍用 s+d。本层 KL 直接监督矫正器，FM 和学生路由对比学习仍训练原 router；后续层辅助损失的间接梯度仍可能到达前面层。这是复用现有模型和注册项的配置消融，不增加参数；独立从零训练，不加载父实验 checkpoint。
+2. 估计 teacher 与参考 / estimated teacher and reference：相对基础 ProMoE-TC，继承父实验的模型估计干净参考、路由矫正 MLP 和路由蒸馏。为全部 conditional 样本沿 model_velocity 的两次 no_grad 辅助前向生成估计，teacher 始终读取未置零估计，在 t=0 无梯度前向并使用无矫正的原路由分布；仅学生参考按 no_reference_prob=0.5 置零，缺参考时 sigma_ref=1，这些样本仍参与 KL。矫正器输入保持 detach；teacher/参考前向工作量与 estimated-teacher 父实验一致。KL 系数 5e-4、温度 0.07，从第 0 步固定启用，无延迟或 warmup；采样继续使用上一采样步 CFG-fused 速度形成参考。
+3. 训练评估 / pipeline：4 卡自动匹配，global batch=256、seed=0、lr=1e-4、img_num_workers=16。独立输出 outputs/ProMoE_TC_B_clean_route_corr_router/004_ProMoE_B_estimated_route_student_corr_router_kl_detach_base/；默认启动要求空目录，先训练至 300K，CFG 1.0/1.5 各 50K 样本、250 步采样评估。两项 FID 分别严格小于 30.86/9.73 才续训自身 checkpoint 至 500K 并再评估；任一持平或更差则在 300K 正常停止，缺失、无效或歧义指标报错。PROMOE_RESUME=1 仅恢复本实验，并在进入 500K 阶段前重新检查门槛。latent 默认 /mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz，可由 PROMOE_LATENT_PATH 覆盖。

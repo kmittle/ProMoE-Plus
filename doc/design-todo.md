@@ -1,5 +1,28 @@
 # design-todo：ProMoE_TC 改进计划（MoE 主线）
 
+## 估计 teacher 的 KL 梯度分工（2026-11-15，实验 1）
+
+启动索引：[`scripts/_run_times/2026_11_15/commands.md`](../scripts/_run_times/2026_11_15/commands.md)。已生成实验定义，尚未启动。
+
+| 实验 | 直接对照 | 唯一有效改动 | 要检验的问题 |
+|---|---|---|---|
+| B_estimated_route_student_corr_router_kl_detach_base | B_estimated_route_student_corr_router | 保留 teacher_input=estimated，启用 align_detach_base=True，显式保持 align_detach_correction=False；KL 使用 sg(s)+d，实际路由仍用 s+d | estimated teacher 下，将本层 KL 的直接优化职责交给矫正器是否更有效？ |
+
+模型复用 `ProMoE_TC_B_clean_route_corr_router`，不新增参数。所有 conditional 样本生成有效估计，
+teacher 读取未掩码估计，在 t=0 无梯度前向、使用原路由分布；仅学生参考保留 50% 置零，
+缺参考时 sigma_ref=1，仍参与 KL。参考采用两次 model_velocity 辅助前向，采样使用上一采样步
+CFG-fused 速度形成参考。teacher 与参考生成的计算量沿用 estimated-teacher 父实验。
+
+这里的 detach 仅切断本层 KL 经本层原始路由分数 s 的直接梯度，矫正量 d 保持可导；
+实际路由/FM 使用 s+d，学生路由对比学习保留，后续层辅助损失仍可能产生间接梯度。
+辅助对照为 `B_clean_route_student_ratio0_corr_router_kl_detach_base`，用来比较相同梯度分工下
+真实与估计干净 teacher 的影响；这两个已有对照均不重复创建。
+
+沿用 KL=5e-4、温度 0.07、无延迟/warmup，以及 4 卡、global batch=256、seed=0、lr=1e-4、workers=16。
+新输出目录独立从零训练，300K 完成 CFG 1.0/1.5 各 50K 样本评估，FID 必须分别严格低于
+30.86/9.73 才续训自身权重至 500K 并再次评估。等于或更差则正常停止，缺失/无效/歧义指标报错；
+恢复运行同样在所有 300K 之后的阶段前核对门槛。
+
 ## 六个机制消融（2026-11-02，设计已确认并实现）
 
 启动索引：[`scripts/_run_times/2026_11_02/commands.md`](../scripts/_run_times/2026_11_02/commands.md)。
