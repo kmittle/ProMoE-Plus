@@ -1,17 +1,17 @@
 ---
 name: check
-description: Review all current staged, unstaged, and untracked changes in PromeMoE++ (ProMoE-Plus) with three independent Codex subagents using one project-specific criterion. Use for pre-commit hygiene, code/config/script consistency checks, explicit $check requests, or requests to check uncommitted changes. The check passes after n consecutive clean rounds (n from the request, default 2). Report findings by default; repair only when the user explicitly asks for fixes. Never stage or commit.
+description: Review and fix current uncommitted ProMoE-Plus changes. Run three independent reviewers and repair verified bugs until n consecutive rounds pass (default 2). Use for explicit $check requests and review-and-fix workflows. Never stage or commit within the skill.
 ---
 
 # Check Uncommitted ProMoE-Plus Changes
 
-Inspect only the current uncommitted changes in `/mnt/cubefs/caoboyuan/ProMoE-Plus`. Include staged, unstaged, and untracked files of every type. Run proportional static checks and honor the authorization mode below. Never perform a Git write operation.
+Work from the ProMoE-Plus repository root. Include staged, unstaged, and untracked changes. Run proportional static checks. Never perform a Git write operation within this skill.
 
 ## Select the Authorization Mode
 
-- **Report-only mode is the default.** A request to check, review, audit, or perform pre-commit hygiene does not authorize file edits. Run three-inspector rounds plus parent checks without changing files: stop and report after the first round that is not clean, or report a pass after `n` consecutive clean rounds.
-- **Repair mode requires an explicit request to fix or repair the findings.** Make only verified corrections, rerun the checks, and iterate until `n` consecutive rounds are clean.
-- A request to commit or push after the review does not by itself authorize repairs. Keep Git staging and commits outside this skill in every mode.
+- **An invocation of `$check` or `$check <n>` authorizes repair by default.** Fix verified blockers and errors and repeat independent review rounds until the requested threshold is reached. For example, `$check 1` means review, fix verified bugs as needed, and keep checking until one complete round passes.
+- Use report-only mode only when the user explicitly asks for findings without edits. The three subagents are read-only in both modes; the main agent makes the fixes.
+- If the user requests a commit or push after a pass, do it separately after the skill has passed.
 
 ## Read the Pass Threshold `n`
 
