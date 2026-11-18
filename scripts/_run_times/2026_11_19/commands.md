@@ -1,0 +1,10 @@
+| 实验描述 | git分支 | 启动命令 | 输出位置 |
+|---|---|---|---|
+| 续训：KL 系数 1e-4，300K 双 FID 达标才补 500K（4 卡） | repa | bash scripts/_run_times/2026_11_19/B_clean_route_student_ratio0_corr_router_align_lam0p0001_resume.sh | outputs/ProMoE_TC_B_clean_route_corr_router/004_ProMoE_B_clean_route_student_ratio0_corr_router_align_lam0p0001/ |
+| 续训：KL 系数 1e-3，300K 双 FID 达标才补 500K（4 卡） | repa | bash scripts/_run_times/2026_11_19/B_clean_route_student_ratio0_corr_router_align_lam0p001_resume.sh | outputs/ProMoE_TC_B_clean_route_corr_router/004_ProMoE_B_clean_route_student_ratio0_corr_router_align_lam0p001/ |
+| 续训：KL warmup 至 200K，300K 双 FID 达标才补 500K（4 卡） | repa | bash scripts/_run_times/2026_11_19/B_clean_route_student_ratio0_corr_router_align_warmup200k_resume.sh | outputs/ProMoE_TC_B_clean_route_corr_router/004_ProMoE_B_clean_route_student_ratio0_corr_router_align_warmup200k/ |
+| 续训：真实干净 teacher，KL 原路由分数 detach，300K 双 FID 达标才补 500K（4 卡） | repa | bash scripts/_run_times/2026_11_19/B_clean_route_student_ratio0_corr_router_kl_detach_base_resume.sh | outputs/ProMoE_TC_B_clean_route_corr_router/004_ProMoE_B_clean_route_student_ratio0_corr_router_kl_detach_base/ |
+| 续训：矫正器不读取原始路由分数，300K 双 FID 达标才补 500K（4 卡） | repa | bash scripts/_run_times/2026_11_19/B_clean_route_student_ratio0_corr_router_no_score_input_resume.sh | outputs/ProMoE_TC_B_clean_route_corr_router/004_ProMoE_B_clean_route_student_ratio0_corr_router_no_score_input/ |
+| 从零启动：估计 teacher＋KL detach-base，取消随机参考丢弃（4 卡） | repa | bash scripts/_run_times/2026_11_19/B_estimated_route_student_corr_router_kl_detach_base_no_ref_drop.sh | outputs/ProMoE_TC_B_clean_route_corr_router/004_ProMoE_B_estimated_route_student_corr_router_kl_detach_base_no_ref_drop/ |
+| 续训：完整组合 L，补齐 300K 和 500K 两阶段（4 卡） | repa | bash scripts/_run_times/2026_11_19/L_clean_route_student_ratio0_corr_router_resume.sh | outputs/ProMoE_TC_L_clean_route_corr_router/004_ProMoE_L_clean_route_student_ratio0_corr_router/ |
+| 续训：完整组合 XL，补齐 300K 和 500K 两阶段（4 卡） | repa | bash scripts/_run_times/2026_11_19/XL_clean_route_student_ratio0_corr_router_resume.sh | outputs/ProMoE_TC_XL_clean_route_corr_router/004_ProMoE_XL_clean_route_student_ratio0_corr_router/ |

@@ -1,0 +1,8 @@
+实验 / Experiment: L_clean_route_student_ratio0_corr_router_resume
+model_name: ProMoE_TC_L_clean_route_corr_router  |  config: configs/004_ProMoE_L_clean_route_student_ratio0_corr_router.yaml
+基线 / Baseline: 基础 ProMoE-TC（原型 token 路由、shared/uncond 专家与路由对比学习）；直接父变体 / Parent: B_clean_route_student_ratio0_corr_router_cfg_ref 完整方法。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 原实验续训 / same-run resume：入口固定 PROMOE_RESUME=1，使用 outputs/ProMoE_TC_L_clean_route_corr_router/004_ProMoE_L_clean_route_student_ratio0_corr_router/checkpoints/ 中本实验的已有 checkpoint。按当前阶段范围选取步数最大的非空 checkpoint，并固定该步加载；没有合格 checkpoint 或加载失败时直接退出。原配置名、模型名及输出目录保持不变，4 卡，训练超参数不变。latent 默认 /mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz，原训练脚本将其写入临时训练配置。
+2. 保留原实验：规模扩展 / scale-up：从 B 完整组合扩展到 L，使用原生 depth=24、hidden_size=1024、num_heads=16；routed/shared FFN hidden dim=2048，各为原生 dense FFN 的一半。沿用 B 方法超参数，包括 corrector hidden_dim=256、align_lam=5e-4、temperature=0.07，无延迟与 warmup。
+3. 剩余阶段 / Remaining steps：先完成 300K 及双 CFG 评估，再续训至 500K 并评估；没有同规模 300K FID 门槛。已保存且评估有效的阶段按原流程跳过。

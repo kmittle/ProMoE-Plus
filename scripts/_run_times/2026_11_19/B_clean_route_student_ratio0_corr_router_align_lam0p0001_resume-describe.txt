@@ -1,0 +1,8 @@
+实验 / Experiment: B_clean_route_student_ratio0_corr_router_align_lam0p0001_resume
+model_name: ProMoE_TC_B_clean_route_corr_router  |  config: configs/004_ProMoE_B_clean_route_student_ratio0_corr_router_align_lam0p0001.yaml
+基线 / Baseline: 基础 ProMoE-TC（原型 token 路由、shared/uncond 专家与路由对比学习）；直接父变体 / Parent: B_clean_route_student_ratio0_corr_router_cfg_ref 完整方法。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 原实验续训 / same-run resume：入口固定 PROMOE_RESUME=1，使用 outputs/ProMoE_TC_B_clean_route_corr_router/004_ProMoE_B_clean_route_student_ratio0_corr_router_align_lam0p0001/checkpoints/ 中本实验的已有 checkpoint。按当前阶段范围选取步数最大的非空 checkpoint，并固定该步加载；没有合格 checkpoint 或加载失败时直接退出。原配置名、模型名及输出目录保持不变，4 卡，训练超参数不变。latent 默认 /mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz，原训练脚本将其写入临时训练配置。
+2. 保留原实验：KL 幅度消融：仅将 clean_route_config.align_lam 从父方案的 5e-4 改为 0.0001。align_start_step=0、align_warmup_steps=0，从第 0 步使用固定系数，不混合时间调度因素。
+3. 剩余阶段 / Remaining steps：直接检查原 300K 双 CFG 结果，要求 FID < 30.86/9.73；通过后仅从步数至少为 300K 的 checkpoint 续训 500K 并评估。已保存且评估有效的阶段按原流程跳过。

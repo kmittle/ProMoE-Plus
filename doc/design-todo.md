@@ -35,7 +35,7 @@ history 首步无缓存，以零参考生成当前估计；refined 每步均以�
 
 ## 取消随机参考 dropout（2026-11-15，实验 2）
 
-启动索引：[`scripts/_run_times/2026_11_15/commands.md`](../scripts/_run_times/2026_11_15/commands.md)。已生成实验定义，尚未启动。
+启动入口移至 [2026-11-19 批次](../scripts/_run_times/2026_11_19/commands.md)，配置和输出目录沿用原定义。
 
 | 实验 | 直接对照 | 改动 | 要检验的问题 |
 |---|---|---|---|

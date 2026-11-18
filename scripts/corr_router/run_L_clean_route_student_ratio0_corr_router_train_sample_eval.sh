@@ -46,6 +46,7 @@ mkdir -p "$(dirname "$LOG")"
 export PROMOE_LATENT_PATH="${PROMOE_LATENT_PATH:-/mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz}"
 
 RESUME="${PROMOE_RESUME:-0}"
+PIN_RESUME="${PROMOE_PIN_RESUME_CHECKPOINT:-0}"
 if [[ "$RESUME" != "0" && "$RESUME" != "1" ]]; then
     echo "ERROR: PROMOE_RESUME must be 0 or 1, got: ${RESUME}" >&2
     exit 1
@@ -262,7 +263,16 @@ for i in "${!ALL_STEPS[@]}"; do
     # phase: the bucket check above already guarantees a fresh launch has no
     # checkpoint, and a constant value keeps the strict-provenance config hash
     # the same across phases.
-    "$PYTHON" - "$CONFIG" "$TARGET_NUM_STEPS" "$TEMP_CONFIG" "$GPU_IDS" <<'PY'
+    resume_step=""
+    if [[ "$RESUME" == 1 && "$PIN_RESUME" == 1 ]]; then
+        minimum_step=1
+        if (( i > 0 )); then
+            minimum_step="${ALL_STEPS[i-1]}"
+        fi
+        resume_step="$("$PYTHON" scripts/_resume_checkpoint_step.py "${OUTPUT_BASE}/checkpoints" "$minimum_step" "$step")"
+        echo "Resuming phase ${step} from checkpoint step ${resume_step}" | tee -a "$LOG"
+    fi
+    "$PYTHON" - "$CONFIG" "$TARGET_NUM_STEPS" "$TEMP_CONFIG" "$GPU_IDS" "$resume_step" <<'PY'
 import os, sys, yaml
 with open(sys.argv[1]) as f:
     cfg = yaml.safe_load(f)
@@ -270,6 +280,8 @@ cfg['num_steps'] = int(sys.argv[2])
 cfg['resume_checkpoint'] = True
 cfg['gpu_ids'] = [int(item) for item in sys.argv[4].split(',')]
 cfg['latent_data_path'] = os.environ['PROMOE_LATENT_PATH']
+if sys.argv[5]:
+    cfg['resume_checkpoint_step'] = int(sys.argv[5])
 with open(sys.argv[3], 'w') as f:
     yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
 PY
