@@ -1,0 +1,8 @@
+实验 / Experiment: B_estimated_route_student_corr_router_kl_detach_base_no_ref_drop_resume
+model_name: ProMoE_TC_B_clean_route_corr_router  |  config: configs/004_ProMoE_B_estimated_route_student_corr_router_kl_detach_base_no_ref_drop.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分流、原型余弦 token 路由、shared expert 与路由对比学习）；直接父变体 / Parent: B_estimated_route_student_corr_router_kl_detach_base（学生参考随机丢弃概率 0.5）。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 取消随机参考丢弃 / no random reference dropout：no_reference_prob=0.0、zero_reference_at_t1000=True，仅精确 t=1000 时将学生参考置零，矫正器继续运行。保留原路由矫正、t=0 的未掩码估计 teacher 与 KL 分数 stop_grad(s)+d；实际路由仍使用 s+d。
+2. 原实验续训 / Same-run resume：11 月 23 日入口保留原配置和 4 卡训练，从 outputs/ProMoE_TC_B_clean_route_corr_router/004_ProMoE_B_estimated_route_student_corr_router_kl_detach_base_no_ref_drop/checkpoints/ 中选取该阶段步数最高的非空 checkpoint 并锁定加载；没有合格 checkpoint 时退出。latent 默认 /mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz。
+3. 阶段 / Stages：复核已有 300K 双 CFG 结果；只有 CFG 1.0 和 1.5 的 FID 分别严格低于 30.86 和 9.73 才进入 500K。500K 评估仍为 CFG 1.0/1.5 各 50K 张，已完成的阶段沿用其结果。

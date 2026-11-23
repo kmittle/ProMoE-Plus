@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Resume the same run as scripts/_run_times/2026_11_15/B_estimated_route_student_corr_router_kl_detach_base.sh.
+# Checkpoints: outputs/ProMoE_TC_B_clean_route_corr_router/004_ProMoE_B_estimated_route_student_corr_router_kl_detach_base/checkpoints/
+# Date group: 2026_11_23   GPUs needed: 4
+# Claims 4 idle GPU(s) in id order and hands them to the semantic script,
+# so this runs unchanged on a 4-GPU or an 8-GPU machine.  A GPU counts as idle
+# when its used memory is under PROMOE_GPU_IDLE_MAX_MIB (100 by default, which
+# ignores the few MiB of driver residue an unused card reports) and no live
+# claim holds it.  Set PROMOE_GPU_IDS_OVERRIDE yourself to pick GPUs by hand.
+set -euo pipefail
+export PROMOE_RESUME=1
+export PROMOE_PIN_RESUME_CHECKPOINT=1
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${HERE}/../../.." && pwd)"
+source "${REPO_ROOT}/scripts/_run_times/claim_gpus.sh"
+
+if [[ -z "${PROMOE_GPU_IDS_OVERRIDE:-}" ]]; then
+    # Call it directly, never via $( ): in a subshell the EXIT trap would
+    # release the claim before the trainer ever starts.
+    promoe_claim_gpus 4
+    export PROMOE_GPU_IDS_OVERRIDE="${PROMOE_CLAIMED_GPUS}"
+fi
+echo "[$(date '+%H:%M:%S')] B_estimated_route_student_corr_router_kl_detach_base_resume: using GPU(s) ${PROMOE_GPU_IDS_OVERRIDE}"
+exec bash "${REPO_ROOT}/scripts/corr_router/run_B_estimated_route_student_corr_router_kl_detach_base_train_sample_eval.sh"

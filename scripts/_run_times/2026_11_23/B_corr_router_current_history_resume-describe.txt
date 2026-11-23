@@ -1,0 +1,8 @@
+实验 / Experiment: B_corr_router_current_history_resume
+model_name: ProMoE_TC_B_corr_router  |  config: configs/004_ProMoE_B_corr_router_current_history.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分流、原型余弦 token 路由、shared expert 与路由对比学习）；直接父变体 / Parent: B_corr_router_current_ref（当前步预估时使用零参考）。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 历史条件化当前参考 / history-conditioned current estimate：reference_mode=current_history。训练先模拟上一参考，再带历史参考预测当前速度和干净图；采样用上一正式 CFG 速度形成的缓存提供历史。正式前向使用当前步估计。保留矫正器和 50% 学生参考丢弃，不加 KL teacher。
+2. 原实验续训 / Same-run resume：11 月 23 日入口保留原配置和 4 卡训练，从 outputs/ProMoE_TC_B_corr_router/004_ProMoE_B_corr_router_current_history/checkpoints/ 中选取该阶段步数最高的非空 checkpoint 并锁定加载；没有合格 checkpoint 时退出。latent 默认 /mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz。
+3. 阶段 / Stages：复核已有 300K 双 CFG 结果；只有 CFG 1.0 和 1.5 的 FID 分别严格低于 30.86 和 9.73 才进入 500K。500K 评估仍为 CFG 1.0/1.5 各 50K 张，已完成的阶段沿用其结果。

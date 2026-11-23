@@ -1,0 +1,8 @@
+实验 / Experiment: L_clean_route_student_ratio0_corr_router_resume
+model_name: ProMoE_TC_L_clean_route_corr_router  |  config: configs/004_ProMoE_L_clean_route_student_ratio0_corr_router.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分流、原型余弦 token 路由、shared expert 与路由对比学习）；直接父变体 / Parent: B_clean_route_student_ratio0_corr_router_cfg_ref（B 版完整组合）。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 规模扩展 / scale-up：沿用真干净图 teacher 与学生路由矫正的完整组合，使用 L 主干和 2048 维 routed/shared FFN。KL 系数 5e-4、温度 0.07，无延迟和 warmup；采样用 CFG 速度形成下一步参考。
+2. 原实验续训 / Same-run resume：11 月 23 日入口保留原配置和 4 卡训练，从 outputs/ProMoE_TC_L_clean_route_corr_router/004_ProMoE_L_clean_route_student_ratio0_corr_router/checkpoints/ 中选取该阶段步数最高的非空 checkpoint 并锁定加载；没有合格 checkpoint 时退出。latent 默认 /mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz。
+3. 阶段 / Stages：沿用有效的 300K 双 CFG 结果，续训到 500K 并评估 CFG 1.0/1.5 各 50K 张。没有同规模的 300K FID 门槛，已完成的阶段沿用其结果。

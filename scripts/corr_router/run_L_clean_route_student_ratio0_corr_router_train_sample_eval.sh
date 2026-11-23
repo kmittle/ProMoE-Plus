@@ -94,9 +94,17 @@ custom_cfg_name = os.path.splitext(os.path.basename(cfg_path))[0]
 step_list = cfg.get("step_list_for_sample", [])
 step_str = ','.join(map(str, step_list)) if step_list else ""
 orig_num_steps = int(cfg.get("num_steps", 0))
-# sample.py names each CFG directory img..._cfg<scale>_...; empty disables the resume skip.
+# Match sample.py's sampling_folder_name so an ad hoc evaluation with other
+# sample settings cannot satisfy this run's phase.
 guide_scales = cfg.get("guide_scale_list") or []
-guide_str = ','.join(str(scale) for scale in guide_scales)
+reference_suffix = ""
+if cfg.get("corr_reference_velocity") == "cfg" and not cfg.get("corr_reference_separate_output", False):
+    reference_suffix = "_corr_ref_cfg"
+sample_folders = ','.join(
+    f"img{cfg['image_size']}_cfg{scale}_seed{cfg['global_seed']}_"
+    f"FID{int(num_fid_samples / 1000)}K_bs{cfg['sample_batch_size']}_ema{reference_suffix}"
+    for scale in guide_scales
+)
 
 print(model_name)
 print(custom_cfg_name)
@@ -105,7 +113,7 @@ print(eval_gpu)
 print(gpu_str)
 print(step_str)
 print(orig_num_steps)
-print(guide_str)
+print(sample_folders)
 PY
 )
 # The process substitution hides a Python failure from set -e; check the result.
@@ -121,7 +129,7 @@ EVAL_GPU="${YAML_INFO[3]}"
 GPU_IDS="${YAML_INFO[4]}"
 STEP_LIST_STR="${YAML_INFO[5]}"
 ORIG_NUM_STEPS="${YAML_INFO[6]}"
-GUIDE_SCALES_STR="${YAML_INFO[7]}"
+SAMPLE_FOLDERS_STR="${YAML_INFO[7]}"
 SAMPLE_BASE="${REPO_ROOT}/outputs/${MODEL_NAME}/${CUSTOM_CFG_NAME}/sample"
 OUTPUT_BASE="${SAMPLE_BASE%/sample}"
 
@@ -156,14 +164,12 @@ trap 'rm -rf "$TEMP_DIR"' EXIT
 
 # ── Helper: has every CFG of a step a valid evaluation already? ─────────────
 step_already_evaluated() {
-    local step=$1 scale eval_file
-    local scales=()
-    [[ -n "$GUIDE_SCALES_STR" ]] || return 1
-    IFS=',' read -ra scales <<< "$GUIDE_SCALES_STR"
-    for scale in "${scales[@]}"; do
-        eval_file="$(find "${SAMPLE_BASE}/step${step}" -mindepth 2 -maxdepth 2 \
-            -path "*_cfg${scale}_*/images_eval_openai.txt" -print -quit 2>/dev/null || true)"
-        [[ -n "$eval_file" ]] && promoe_eval_file_metrics_valid "$eval_file" || return 1
+    local step=$1 folder
+    local sample_folders=()
+    [[ -n "$SAMPLE_FOLDERS_STR" ]] || return 1
+    IFS=',' read -ra sample_folders <<< "$SAMPLE_FOLDERS_STR"
+    for folder in "${sample_folders[@]}"; do
+        promoe_eval_file_metrics_valid "${SAMPLE_BASE}/step${step}/${folder}/images_eval_openai.txt" || return 1
     done
 }
 
@@ -188,7 +194,7 @@ log_code_version() {
 
 # ── Helper: sample + eval one checkpoint step ────────────────────────────────
 sample_and_eval_step() {
-    local step=$1
+    local step=$1 sample_folder
     echo "[$(date '+%H:%M:%S')] Sample+eval step ${step} started" | tee -a "$LOG"
 
     CUDA_VISIBLE_DEVICES="${GPU_IDS}" "$PYTHON" sample.py \
@@ -197,6 +203,8 @@ sample_and_eval_step() {
 
     if [ -d "$SAMPLE_BASE" ]; then
         while IFS= read -r IMG_DIR; do
+            sample_folder="${IMG_DIR%/images}"
+            [[ ",${SAMPLE_FOLDERS_STR}," == *",${sample_folder##*/},"* ]] || continue
             echo "[$(date '+%H:%M:%S')] Evaluating: ${IMG_DIR}" | tee -a "$LOG"
             (cd evaluation && CUDA_VISIBLE_DEVICES="${EVAL_GPU}" \
                 "$PYTHON_EVAL" run_eval.py "$IMG_DIR" --count "${NUM_FID_SAMPLES}") \
@@ -232,6 +240,15 @@ for i in "${!ALL_STEPS[@]}"; do
     step="${ALL_STEPS[$i]}"
     phase=$((i + 1))
 
+    # Reuse 300K results after pruning only if a checkpoint can actually
+    # continue the next phase. Otherwise an earlier checkpoint can redo 300K.
+    if [[ "$RESUME" == 1 && "$PIN_RESUME" == 1 && "$step" == 300000 &&
+          ! -f "${OUTPUT_BASE}/checkpoints/ckpt_step_${step}.pth" ]] &&
+        step_already_evaluated "$step" &&
+        "$PYTHON" scripts/_resume_checkpoint_step.py "${OUTPUT_BASE}/checkpoints" "$step" "$ORIG_NUM_STEPS" >/dev/null 2>&1; then
+        echo "Phase ${phase}/${NUM_ALL_STEPS}: step ${step} is already evaluated; skipping" | tee -a "$LOG"
+        continue
+    fi
 
     # For intermediate steps: num_steps = step + 1 (train through step, save, exit).
     # For the final step: use original num_steps from config.
