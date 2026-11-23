@@ -1,0 +1,8 @@
+实验 / Experiment: B_estimated_route_student_corr_router_kl_detach_base_no_ref_drop_cfg_sweep_300k
+model_name: ProMoE_TC_B_clean_route_corr_router  |  config: configs/004_ProMoE_B_estimated_route_student_corr_router_kl_detach_base_no_ref_drop_cfg_sweep_300k.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分流、原型余弦 token 路由、shared expert 与路由对比学习）；直接对照 / Parent: B_estimated_route_student_corr_router_kl_detach_base_no_ref_drop（estimated teacher、KL detach-base、无随机参考丢弃）。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 采样 CFG 曲线 / CFG sweep：保留 CFG fusion 用于主更新和下一步参考，新增 CFG 1.15 / 1.25 / 1.35。与同权重已有的 1.0 / 1.5 比较五项指标，检验较优 FID 的 CFG 区间是否左移，以及 Precision–Recall 前沿是否外扩。
+2. 同权重重评 / same EMA：复用 outputs/ProMoE_TC_B_clean_route_corr_router/004_ProMoE_B_estimated_route_student_corr_router_kl_detach_base_no_ref_drop/checkpoints/ckpt_step_300000.pth，由 sample.py 严格加载 EMA。DiT_B_config 与父实验完全相同：估计 teacher 与 KL detach-base 是训练定义，推理只用路由矫正；首步仍给矫正器全零参考 latent。
+3. 独立输出 / separate evaluation：输出 outputs/ProMoE_TC_B_clean_route_corr_router/004_ProMoE_B_estimated_route_student_corr_router_kl_detach_base_no_ref_drop_cfg_sweep_300k/，保持标准内部目录。4 卡、seed=0、250 步、每档 CFG 50K 张、采样 batch 128；每档单独起采样进程，OpenAI evaluator 的 FID / sFID / IS / Precision / Recall 原样保留，resume 仅跳过五项均有效的档位。

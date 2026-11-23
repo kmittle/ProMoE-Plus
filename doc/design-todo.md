@@ -1,5 +1,54 @@
 # design-todo：ProMoE_TC 改进计划（MoE 主线）
 
+## 参考 dropout 与 CFG 的相互作用（2026-11-23）
+
+启动索引：[2026_11_23/commands.md](../scripts/_run_times/2026_11_23/commands.md)。
+本批新增四个从零训练实验和两个 300K 同权重重评，单独使用新输出目录。
+
+**动机。** B_estimated_route_student_corr_router_kl_detach_base_no_ref_drop 在 300K、CFG 1.0 相对其 50% dropout
+父实验将 FID 从 27.39 降到 23.07、IS 从 51.10 提到 57.75。对照真实干净
+teacher 的 B_clean_route_student_ratio0_corr_router_kl_detach_base
+（FID/IS 26.81/52.57），Precision/Recall 从 0.55660/0.65050 变为
+0.59526/0.63720。已有训练诊断也观察到 max_share 0.378→0.258、
+kl_b0 0.123→0.046、delta_abs_b0 0.199→0.358。
+
+CFG 1.5 下，no_ref_drop 的 IS 为 138.73（50% dropout 父实验 134.19，
+真实干净 teacher 对照 137.03），FID 却从父实验的 7.77 微升到 7.82，
+也高于真实干净 teacher 对照的 7.60。该档的 Precision/Recall 为
+0.78594/0.49050，对照为 0.77080/0.50490。与早期 conditional-reference
+欠引导时 FID 升高、IS 下滑的现象不同，这次值得检验的是：参考反馈叠加
+CFG 是否提高了 Precision 却压低了 Recall，首步零参考的训练覆盖是否不足。
+这些是待检验的解释，单次 0.05 的 FID 差本身不足以归因。
+
+| 实验 | 类型 | 与直接对照的差别 | 要检验的问题 |
+|---|---|---|---|
+| B_estimated_route_student_corr_router_kl_detach_base_no_ref_drop_cond_ref_300k | 300K 重评 | 同一 EMA，仅将参考速度改为 conditional；CFG 1.0 / 1.5 都独立重评 | 切断参考速度中的 CFG 项后，CFG 1.5 的 Recall 是否恢复、FID 是否回落？ |
+| B_estimated_route_student_corr_router_kl_detach_base_ref_drop0p05 | 从零训练 | no_ref_drop → 参考 dropout 0.05；采样保留 CFG reference | 5% 零参考覆盖能否改善 CFG 1.5 Recall 并保住 CFG 1.0 增益与低负载偏斜？ |
+| B_estimated_route_student_corr_router_kl_detach_base_ref_drop0p1 | 从零训练 | no_ref_drop → 参考 dropout 0.1；采样保留 CFG reference | 10% dropout 的路由诊断和 Precision/Recall 如何取舍？ |
+| B_estimated_route_student_corr_router_kl_detach_base_ref_drop0p25 | 从零训练 | no_ref_drop → 参考 dropout 0.25；采样保留 CFG reference | 25% dropout 能否提高 Recall，同时保留零 dropout 对 CFG 1.0 的主要收益？ |
+| B_corr_router_no_ref_drop | 从零训练 | 标准 previous 矫正器 only，去掉随机参考 dropout；采样对照用 B_corr_router_cfg_ref | 不含 KL 时是否也有 CFG 1.0 的收益和同样的 Precision/Recall 变化？ |
+| B_estimated_route_student_corr_router_kl_detach_base_no_ref_drop_cfg_sweep_300k | 300K 重评 | 同一 EMA 和 cfg_ref，补 CFG 1.15 / 1.25 / 1.35 | 与已有 1.0 / 1.5 拼合后，较优 FID 是否左移，Precision–Recall 前沿是否外扩？ |
+
+三个中间档仅改变 `no_reference_prob`，保留 `zero_reference_at_t1000: true`。
+该标记不改变连续时间分布或插入端点样本。估计 teacher 仍读取所有 conditional
+样本的未掩码估计，丢参考样本仍有 KL；原分数只在本层 KL 内 detach，权重
+5e-4、温度 0.07、无延迟或 warmup。四个训练实验均为 4 卡、seed=0、
+全局 batch 256、lr=1e-4、workers=16，latent 默认
+`/mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz`。
+先训至 300K，再以 250 步、CFG 1.0 / 1.5 各 50K 评估；两项 FID 严格低于
+30.86 / 9.73 才续训自身 checkpoint 至 500K 再评。持平或更差正常停止；
+缺失、无效或歧义报错，恢复时也复核 300K 门槛。已有 300K 之后的
+checkpoint 时直接核验原报告，不以重新评估替换；通过后续训也不会回退到 300K 之前。
+
+两项重评严格读取该 no_ref_drop 实验的 `ckpt_step_300000.pth` EMA，并在各自
+目录中逐 CFG 独立采样。四卡、seed=0、250 步、per-GPU sample batch 128、
+每档 50K，保留 OpenAI evaluator 的 FID / sFID / IS / Precision / Recall。
+conditional-reference 是用户指定的诊断例外，只改变生成下一步参考的速度；
+主 latent 更新仍按原 CFG。CFG 1.0 也重新评估作为同权重对照，不复用源报告。
+历史 CFG 1.5 在同一采样进程中排在 CFG 1.0 之后，沿用已推进的随机流；
+本批各档独立启动。因此与历史 CFG 1.5 的比较是同权重、同采样量的总体指标比较，
+不能视为噪声和类别逐样本配对，也不能把小幅差异直接归因于参考速度。
+
 ## 当前步参考退化的训练对照（2026-11-15）
 
 启动索引：[`scripts/_run_times/2026_11_15/commands.md`](../scripts/_run_times/2026_11_15/commands.md)。

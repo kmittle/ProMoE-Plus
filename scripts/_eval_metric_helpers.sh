@@ -59,6 +59,31 @@ promoe_eval_file_fid() {
     awk '/^FID:/{print $2; exit}' "$eval_file" 2>/dev/null || true
 }
 
+# A precision-recall comparison needs all five evaluator metrics before a
+# case can be considered complete.
+promoe_eval_file_full_metrics_valid() {
+    local eval_file=$1 extra sfid precision recall
+    promoe_eval_file_metrics_valid "$eval_file" || return 1
+    extra="$(awk '
+        /^(sFID|Precision|Recall):/ {
+            ++count[$1]
+            if ($0 !~ /^(sFID|Precision|Recall):[[:space:]]+[^[:space:]]+[[:space:]]*$/ || NF != 2)
+                malformed = 1
+            value[$1] = $2
+        }
+        END {
+            if (count["sFID:"] != 1 || count["Precision:"] != 1 || count["Recall:"] != 1 || malformed)
+                exit 1
+            print value["sFID:"] "\t" value["Precision:"] "\t" value["Recall:"]
+        }
+    ' "$eval_file" 2>/dev/null)" || return 1
+    IFS=$'\t' read -r sfid precision recall <<< "$extra"
+    promoe_metric_is_finite_nonnegative "$sfid" &&
+        promoe_metric_is_finite_nonnegative "$precision" &&
+        promoe_metric_is_finite_nonnegative "$recall" &&
+        awk -v p="$precision" -v r="$recall" 'BEGIN { exit !(p + 0 <= 1 && r + 0 <= 1) }'
+}
+
 # Canonical ProMoE-TC B gate. Return 0 only when BOTH 300K FIDs improve;
 # 1 is an ordinary scientific stop, 2 means missing/invalid/ambiguous results.
 # Callers opt in explicitly, so existing ungated pipelines are unaffected.

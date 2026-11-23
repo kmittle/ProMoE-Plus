@@ -923,13 +923,15 @@ class SamplingCheckpointTests(unittest.TestCase):
         from pathlib import Path
         import sample
 
-        with tempfile.TemporaryDirectory(dir=Path(__file__).parent, prefix=".corr_sampling_") as directory:
+        with tempfile.TemporaryDirectory(prefix="promoe-corr-sampling-") as directory:
             root = Path(directory)
             source = root / "training" / "checkpoints"
             destination = root / "inference"
             source.mkdir(parents=True)
             (destination / "checkpoints").mkdir(parents=True)
             expected = source / "ckpt_step_300000.pth"
+            (source / "ckpt_step_copy_300000.pth").write_bytes(b"backup checkpoint")
+            (source / "ckpt_step_0300000.pth").write_bytes(b"zero-padded alias")
             expected.write_bytes(b"source checkpoint placeholder")
             (source / "ckpt_step_500000.pth").write_bytes(b"later checkpoint placeholder")
             (destination / "checkpoints" / expected.name).write_bytes(b"wrong checkpoint placeholder")
@@ -973,7 +975,7 @@ class SamplingCheckpointTests(unittest.TestCase):
         from pathlib import Path
         import sample
 
-        with tempfile.TemporaryDirectory(dir=Path(__file__).parent, prefix=".corr_layout_") as directory:
+        with tempfile.TemporaryDirectory(prefix="promoe-corr-layout-") as directory:
             root = Path(directory)
             source = root / "training" / "checkpoints"
             source.mkdir(parents=True)

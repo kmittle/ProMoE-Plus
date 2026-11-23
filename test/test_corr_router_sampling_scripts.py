@@ -16,17 +16,28 @@ import yaml
 
 REPO = Path(__file__).resolve().parents[1]
 BASES = ("corr_router", "clean_route_student_ratio0_corr_router")
+DROP_BASE = "estimated_route_student_corr_router_kl_detach_base"
+DROP_TRAIN = ("corr_router_no_ref_drop", *(f"{DROP_BASE}_ref_drop{p}" for p in ("0p05", "0p1", "0p25")))
+DROP_INFERENCE = (
+    (f"{DROP_BASE}_no_ref_drop_cond_ref_300k", "conditional", [1.0, 1.5]),
+    (f"{DROP_BASE}_no_ref_drop_cfg_sweep_300k", "cfg", [1.15, 1.25, 1.35]),
+)
 
 
 @contextlib.contextmanager
-def fixture(base, inference=False):
-    with tempfile.TemporaryDirectory(dir=REPO / "test", prefix=".corr_shell_") as directory:
+def fixture(base, inference=False, *, reference_dropout=False):
+    with tempfile.TemporaryDirectory(prefix="promoe-corr-shell-") as directory:
         root = Path(directory)
-        tag = base + ("_cfg_ref" if inference else "_same_noise")
+        tag = base if reference_dropout else base + ("_cfg_ref" if inference else "_same_noise")
         script = f"scripts/corr_router/run_B_{tag}_{'sample_eval' if inference else 'train_sample_eval'}.sh"
-        paths = [script, "scripts/_eval_metric_helpers.sh", "scripts/corr_router/_dual_reference_eval.sh",
-                 f"configs/004_ProMoE_B_{tag}.yaml"]
-        if not inference:
+        paths = [script, "scripts/_eval_metric_helpers.sh", f"configs/004_ProMoE_B_{tag}.yaml"]
+        if reference_dropout:
+            paths.append("scripts/corr_router/_reference_dropout_"
+                         + ("300k_sample_eval.sh" if inference else "train_sample_eval.sh"))
+            if not inference:
+                paths.append("scripts/_resume_checkpoint_step.py")
+        elif not inference:
+            paths.append("scripts/corr_router/_dual_reference_eval.sh")
             paths += [f"configs/004_ProMoE_B_{tag}_{suffix}.yaml" for suffix in ("cond_ref", "cfg_ref")]
         for path in paths:
             target = root / path
@@ -54,7 +65,7 @@ p = argparse.ArgumentParser(); p.add_argument("--config"); a = p.parse_args()
 c = yaml.safe_load(Path(a.config).read_text())
 record("train", config=c)
 if not os.getenv("SKIP_CHECKPOINT"):
-    target = Path("outputs") / c["model_name"] / Path(a.config).stem / "checkpoints" / "ckpt_step_300000.pth"
+    target = Path("outputs") / c["model_name"] / Path(a.config).stem / "checkpoints" / f"ckpt_step_{c['num_steps'] - 1}.pth"
     target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(b"same checkpoint")
 ''')
         # Use the actual naming function so the shell must agree with sample.py.
@@ -70,13 +81,17 @@ p = argparse.ArgumentParser()
 for key in ("config", "step_list_for_sample", "guide_scale_list", "num_fid_samples", "corr-reference-velocity"):
     p.add_argument("--" + key)
 a = p.parse_args(); c = yaml.safe_load(Path(a.config).read_text())
-mode = a.corr_reference_velocity
-scales = [float(x) for x in a.guide_scale_list.split(",")]
+mode = a.corr_reference_velocity or c.get("corr_reference_velocity", "conditional")
+if c.get("corr_reference_separate_output"):
+    assert a.corr_reference_velocity == c["corr_reference_velocity"]
+scales = [float(x) for x in a.guide_scale_list.split(",")] if a.guide_scale_list else c["guide_scale_list"]
+if a.num_fid_samples:
+    c["num_fid_samples"] = int(a.num_fid_samples)
 steps = [int(x) for x in a.step_list_for_sample.split(",")]
 assert len(steps) == 1
 step = steps[0]
 output = Path(c.get("output_dir", "outputs")) / c["model_name"] / Path(a.config).stem
-source = Path(c["sample_checkpoint_dir"]) / f"ckpt_step_{step}.pth"
+source = Path(c.get("sample_checkpoint_dir", output / "checkpoints")) / f"ckpt_step_{step}.pth"
 assert source.is_file() and source.stat().st_size
 record("sample", mode=mode, step=step, scales=scales, source=str(source.resolve()), output=str(output.resolve()), seed=c["global_seed"])
 if os.getenv("FAIL_SAMPLE_MODE") == mode:
@@ -94,17 +109,20 @@ from stub_io import record
 p = argparse.ArgumentParser(); p.add_argument("images"); p.add_argument("--count"); a = p.parse_args()
 record("eval", images=a.images, count=int(a.count))
 metric = "nan" if os.getenv("BAD_METRICS") else "9.0"
-Path(a.images + "_eval_openai.txt").write_text("FID: " + metric + "\\nInception Score: 100.0\\n")
+Path(a.images + "_eval_openai.txt").write_text(
+    "FID: " + metric + "\\nInception Score: 100.0\\nsFID: 20.0\\nPrecision: 0.8\\nRecall: 0.5\\n"
+)
 ''')
         cfg = yaml.safe_load((root / f"configs/004_ProMoE_B_{tag}.yaml").read_text())
         output = root / "outputs" / cfg["model_name"] / f"004_ProMoE_B_{tag}"
         if inference:
-            for step in (300000, 500000):
+            for step in cfg["step_list_for_sample"]:
                 checkpoint = root / cfg["sample_checkpoint_dir"] / f"ckpt_step_{step}.pth"
                 checkpoint.parent.mkdir(parents=True, exist_ok=True)
                 checkpoint.write_bytes(f"original checkpoint {step}".encode())
         env = dict(os.environ, PATH=str(root / "bin") + os.pathsep + os.environ["PATH"],
                    PROMOE_GPU_IDS_OVERRIDE="4,5,6,7", PROMOE_LATENT_PATH="/input/latents", PROMOE_RESUME="0",
+                   PROMOE_PIN_RESUME_CHECKPOINT="0",
                    PYTHONPATH=str(root) + os.pathsep + os.environ.get("PYTHONPATH", ""), TMPDIR=str(root))
         if inference:
             env.pop("PROMOE_RESUME", None)  # Test the fresh-reevaluation default.
@@ -286,6 +304,111 @@ class SamplingScriptTests(unittest.TestCase):
             with self.subTest(overrides=overrides), fixture(BASES[0], inference=True) as (root, output, run, events):
                 self.assertNotEqual(run(**overrides).returncode, 0)
                 self.assertLessEqual(len(events()), 2)
+
+    def test_reference_dropout_300k_inference_modes_and_float_cfg_resume(self):
+        for arm, mode, scales in DROP_INFERENCE:
+            with self.subTest(arm=arm), fixture(arm, inference=True, reference_dropout=True) as (root, output, run, events):
+                self.assert_success(run())
+                rows = events()
+                self.assertEqual([row["kind"] for row in rows], ["sample", "eval"] * len(scales))
+                source = output.with_name(f"004_ProMoE_B_{DROP_BASE}_no_ref_drop") / "checkpoints/ckpt_step_300000.pth"
+                for scale, sampler, evaluator in zip(scales, rows[::2], rows[1::2]):
+                    self.assertEqual((sampler["step"], sampler["scales"], sampler["mode"]), (300000, [scale], mode))
+                    self.assertEqual((sampler["output"], sampler["source"]), (str(output), str(source)))
+                    self.assertEqual((sampler["gpu"], sampler["seed"]), ("4,5,6,7", 0))
+                    self.assertEqual((evaluator["gpu"], evaluator["count"]), ("4", 50000))
+                    report = Path(evaluator["images"] + "_eval_openai.txt")
+                    self.assertEqual(report.parent.name, f"img256_cfg{scale}_seed0_FID50K_bs128_ema")
+                    self.assertIn("Recall: 0.5", report.read_text())
+                self.assertEqual(source.read_bytes(), b"original checkpoint 300000")
+                self.assertIn("output bucket is not empty", run().stderr)
+                self.assert_success(run(PROMOE_RESUME="1"))
+                self.assertEqual(events(), rows)
+
+                # A partial five-metric report cannot mark a scale complete.
+                report.write_text("FID: 9.0\nInception Score: 100.0\nsFID: 20.0\nPrecision: 0.8\n")
+                self.assert_success(run(PROMOE_RESUME="1"))
+                added = events()[len(rows):]
+                self.assertEqual([row["kind"] for row in added], ["sample", "eval"])
+                self.assertEqual(added[0]["scales"], [scales[-1]])
+                report.unlink()
+                source.unlink()
+                before = events()
+                missing = run(PROMOE_RESUME="1")
+                self.assertNotEqual(missing.returncode, 0)
+                self.assertIn("missing or empty", missing.stderr)
+                self.assertEqual(events(), before)
+
+    def test_reference_dropout_train_arms_use_their_own_checkpoints_and_both_phases(self):
+        for arm in DROP_TRAIN:
+            with self.subTest(arm=arm), fixture(arm, reference_dropout=True) as (root, output, run, events):
+                self.assert_success(run())
+                rows = events()
+                self.assertEqual([row["kind"] for row in rows], ["train", "sample", "eval", "eval"] * 2)
+                self.assertEqual([row["config"]["num_steps"] for row in rows if row["kind"] == "train"], [300001, 500001])
+                self.assertNotIn("resume_checkpoint_step", rows[0]["config"])
+                self.assertEqual(rows[4]["config"]["resume_checkpoint_step"], 300000)
+                for row in rows:
+                    if row["kind"] == "train":
+                        self.assertEqual(row["config"]["gpu_ids"], [4, 5, 6, 7])
+                        self.assertEqual(row["config"]["latent_data_path"], "/input/latents")
+                    elif row["kind"] == "sample":
+                        self.assertEqual(row["scales"], [1.0, 1.5])
+                        self.assertEqual(row["mode"], "cfg")
+                        self.assertEqual(row["source"], str(output / f"checkpoints/ckpt_step_{row['step']}.pth"))
+                self.assert_success(run(PROMOE_RESUME="1"))
+                self.assertEqual(events(), rows)
+
+    def test_reference_dropout_resume_rechecks_dual_gate_before_existing_500k(self):
+        with fixture(DROP_TRAIN[1], reference_dropout=True) as (root, output, run, events):
+            self.assert_success(run())
+            before = events()
+            phase = output / "sample/step300000"
+            report = phase / "img256_cfg1.5_seed0_FID50K_bs128_ema_corr_ref_cfg/images_eval_openai.txt"
+            original = report.read_text()
+            flags = dict(PROMOE_RESUME="1")
+            report.write_text(original.replace("FID: 9.0", "FID: 9.73"))
+            stopped = run(**flags)
+            self.assert_success(stopped)
+            self.assertIn("300K gate STOP", stopped.stdout)
+            invalid = original.replace("FID: 9.0", "FID: nan")
+            report.write_text(invalid)
+            self.assertNotEqual(run(**flags).returncode, 0)
+            self.assertEqual(report.read_text(), invalid)
+            report.unlink()
+            self.assertNotEqual(run(**flags).returncode, 0)
+            report.write_text(original)
+            conflicting = phase / "img256_cfg1.5_seed0_FID5K_bs128_ema_corr_ref_cfg/images_eval_openai.txt"
+            conflicting.parent.mkdir()
+            conflicting.write_text(original)
+            ambiguous = run(**flags)
+            self.assertNotEqual(ambiguous.returncode, 0)
+            self.assertIn("requires exactly one", ambiguous.stdout)
+            self.assertEqual(events(), before)
+
+    def test_reference_dropout_resume_finishes_300k_then_pins_latest_later_step(self):
+        with fixture(DROP_TRAIN[1], reference_dropout=True) as (_, output, run, events):
+            bad_gpus = run(PROMOE_GPU_IDS_OVERRIDE="0,00,1,2")
+            self.assertNotEqual(bad_gpus.returncode, 0)
+            self.assertIn("distinct GPU ids", bad_gpus.stderr)
+            self.assertEqual(events(), [])
+            checkpoints = output / "checkpoints"
+            checkpoints.mkdir(parents=True)
+            (checkpoints / "ckpt_step_300000.pth").write_bytes(b"saved 300K")
+            self.assert_success(run(PROMOE_RESUME="1"))
+            rows = events()
+            self.assertEqual([e["kind"] for e in rows], ["sample", "eval", "eval", "train", "sample", "eval", "eval"])
+            self.assertEqual(rows[0]["step"], 300000)
+            self.assertEqual(rows[3]["config"]["resume_checkpoint_step"], 300000)
+            (checkpoints / "ckpt_step_500000.pth").unlink()
+            later = checkpoints / "ckpt_step_400000.pth"
+            later.write_bytes(b"saved 400K")
+            os.utime(later, (1, 1))
+            (checkpoints / "ckpt_step_250000.pth").write_bytes(b"newer mtime but earlier step")
+            self.assert_success(run(PROMOE_RESUME="1"))
+            added = events()[len(rows):]
+            self.assertEqual([e["kind"] for e in added], ["train", "sample", "eval", "eval"])
+            self.assertEqual(added[0]["config"]["resume_checkpoint_step"], 400000)
 
 
 if __name__ == "__main__":

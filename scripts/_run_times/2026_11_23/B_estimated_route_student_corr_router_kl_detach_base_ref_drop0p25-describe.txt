@@ -1,0 +1,8 @@
+实验 / Experiment: B_estimated_route_student_corr_router_kl_detach_base_ref_drop0p25
+model_name: ProMoE_TC_B_clean_route_corr_router  |  config: configs/004_ProMoE_B_estimated_route_student_corr_router_kl_detach_base_ref_drop0p25.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分流、原型余弦 token 路由、shared expert 与路由对比学习）；直接对照 / Parent: B_estimated_route_student_corr_router_kl_detach_base_no_ref_drop（estimated teacher、KL detach-base、无随机参考丢弃）。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 参考丢弃概率 / reference dropout：只将 no_reference_prob 从 0.0 改为 0.25。保留 zero_reference_at_t1000=True；随机丢弃和端点置零只改正式 conditional 学生的参考。零参考仍运行 MLP。
+2. 估计 teacher / estimated teacher：全部 conditional 样本都生成无梯度估计。t=0 的 teacher 仍读取未掩码估计，丢参考的学生照常计算 KL；KL 只在本层 detach 原分数，实际路由仍用可微的原分数加矫正。系数 5e-4、温度 0.07，无延迟或 warmup。采样参考沿用 CFG 速度。
+3. 四卡训练与评估 / pipeline：从新目录 outputs/ProMoE_TC_B_clean_route_corr_router/004_ProMoE_B_estimated_route_student_corr_router_kl_detach_base_ref_drop0p25/ 训练；300K 和 500K 都用 250 步、CFG 1.0 / 1.5 各 50K 样本。仅在 300K 双 FID 分别严格低于 30.86、9.73 时继续至 500K；恢复时也复核这一门槛。

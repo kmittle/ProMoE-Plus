@@ -1,0 +1,8 @@
+实验 / Experiment: B_corr_router_no_ref_drop
+model_name: ProMoE_TC_B_corr_router  |  config: configs/004_ProMoE_B_corr_router_no_ref_drop.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分流、原型余弦 token 路由、shared expert 与路由对比学习）；直接对照 / Parent: B_corr_router（50% 参考丢弃；比较采样时用 B_corr_router_cfg_ref）。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 去参考丢弃 / no reference dropout：no_reference_prob=0.0，zero_reference_at_t1000=True。正式 conditional 学生仅在精确 t=1000 时收到零参考；类别 dropout 未改，零参考不关闭 MLP。
+2. 纯矫正器 / corrector only：保留 previous / model_velocity 的两次无梯度参考估计、skip_intervals=[1,4,5,10,20,50] 和 256 维 MLP。以原分数加矫正做路由，不启用 KL teacher；采样参考用上一时刻的 CFG 融合速度。
+3. 四卡训练与评估 / pipeline：从新目录 outputs/ProMoE_TC_B_corr_router/004_ProMoE_B_corr_router_no_ref_drop/ 训练；300K 和 500K 都用 250 步、CFG 1.0 / 1.5 各 50K 样本。仅在 300K 双 FID 分别严格低于 30.86、9.73 时继续至 500K；恢复时也复核这一门槛。

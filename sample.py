@@ -185,19 +185,25 @@ def resolve_sampling_checkpoints(cfg):
             raise ValueError('corr_reference_separate_output requires a separate experiment output directory')
     checkpoint_dir = source or osp.join(cfg.output_dir, 'checkpoints')
     steps = getattr(cfg, 'step_list_for_sample', None)
-    if source and not steps:
-        raise ValueError('sample_checkpoint_dir requires explicit step_list_for_sample')
-    if steps:
-        paths, found_steps = load_specific_checkpoints(checkpoint_dir, steps)
-    else:
-        paths, found_steps = load_checkpoints_every_val_step(checkpoint_dir, cfg.sample_every_step)
     if source:
-        missing = set(steps) - set(found_steps)
+        if not steps:
+            raise ValueError('sample_checkpoint_dir requires explicit step_list_for_sample')
+        if any(type(step) is not int or step < 0 for step in steps):
+            raise ValueError('sample_checkpoint_dir requires nonnegative integer checkpoint steps')
+        # An explicit source selects the canonical EMA file for each step.
+        # Backups and zero-padded aliases must not write into the same step bucket.
+        found_steps = sorted(set(steps))
+        paths = [osp.join(checkpoint_dir, f'ckpt_step_{step}.pth') for step in found_steps]
+        missing = [step for step, path in zip(found_steps, paths) if not osp.exists(path)]
         if missing:
-            raise FileNotFoundError(f'Missing requested checkpoint steps {sorted(missing)} in {checkpoint_dir}')
+            raise FileNotFoundError(f'Missing requested checkpoint steps {missing} in {checkpoint_dir}')
         for path in paths:
             if not osp.isfile(path) or os.path.getsize(path) == 0:
                 raise FileNotFoundError(f'Empty or invalid sampling checkpoint: {path}')
+    elif steps:
+        paths, found_steps = load_specific_checkpoints(checkpoint_dir, steps)
+    else:
+        paths, found_steps = load_checkpoints_every_val_step(checkpoint_dir, cfg.sample_every_step)
     return checkpoint_dir, paths, found_steps
 
 
