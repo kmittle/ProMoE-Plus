@@ -1,5 +1,16 @@
 # design-todo：ProMoE_TC 改进计划（MoE 主线）
 
+## 无参考 dropout 权重的 CFG 右侧补测（2026-11-24）
+
+启动索引：[2026_11_24/commands.md](../scripts/_run_times/2026_11_24/commands.md)。
+复用 no_ref_drop 的 300K EMA，沿用前一组 sweep 的 CFG 参考、seed=0、4 卡和
+250 步采样。只补 CFG 1.6、1.7、2.0，各档独立采样并评估 50K，保留
+FID / sFID / IS / Precision / Recall。
+
+历史 CFG 1.5 的 FID 为 7.82。若右侧有点低于它，1.5 就不是已测档位的
+最低点；若三个点均高于它，1.5 仍是目前已测最优点，但不能据此定位连续曲线的
+最低点。历史 1.5 与新档位的采样随机流未逐样本配对，接近的 FID 需谨慎解释。
+
 ## 参考 dropout 与 CFG 的相互作用（2026-11-23）
 
 启动索引：[2026_11_23/commands.md](../scripts/_run_times/2026_11_23/commands.md)。
