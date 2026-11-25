@@ -45,6 +45,12 @@ reference, including those whose reference sigma was clamped to 1. This does
 not mask the estimated teacher input or change the timestep distribution.
 Previous-step sampling already starts with no reference at t=1000.
 
+``reference_dropout_mode: null_class`` uses the same draw but gives selected
+student images valid references at the original sigma_ref. The simulated
+previous latent is still conditional; only the velocity estimated there uses
+the null class. An estimated teacher always keeps the conditional estimate.
+This option is training-only and supports both previous-state constructions.
+
 ``x_prev`` is a function of ``x_t`` alone, as the previous point of a sampling
 trajectory is a function of the current one.  Building it from the clean
 latent with the same noise instead would put both points on the straight
@@ -161,6 +167,15 @@ def draw_reference_plan(sigma, labels, skip_intervals, no_reference_prob, genera
     return use_reference, (sigma + gaps).clamp(max=1.0)
 
 
+def _previous_reference_latent(predict_velocity, x, timestep, sigma, reference_sigma, y, labels,
+                               *, previous_state_mode, z, noise):
+    shape = (-1,) + (1,) * (x.dim() - 1)
+    if previous_state_mode == "same_noise":
+        return (1.0 - reference_sigma).view(shape) * z + reference_sigma.view(shape) * noise
+    velocity = predict_velocity(x, timestep, y, labels)
+    return x + (reference_sigma - sigma).view(shape) * velocity
+
+
 @torch.no_grad()
 def estimate_clean_latent(predict_velocity, x, timestep, sigma, reference_sigma, y, labels,
                           *, reference_mode="previous", previous_state_mode="model_velocity",
@@ -173,11 +188,10 @@ def estimate_clean_latent(predict_velocity, x, timestep, sigma, reference_sigma,
     shape = (-1,) + (1,) * (x.dim() - 1)
     if reference_mode == "current":
         return x - sigma.view(shape) * predict_velocity(x, timestep, y, labels)
-    if previous_state_mode == "same_noise":
-        previous = (1.0 - reference_sigma).view(shape) * z + reference_sigma.view(shape) * noise
-    else:
-        velocity = predict_velocity(x, timestep, y, labels)
-        previous = x + (reference_sigma - sigma).view(shape) * velocity
+    previous = _previous_reference_latent(
+        predict_velocity, x, timestep, sigma, reference_sigma, y, labels,
+        previous_state_mode=previous_state_mode, z=z, noise=noise,
+    )
     previous_velocity = predict_velocity(previous, reference_sigma * NUM_TRAIN_TIMESTEPS, y, labels)
     return previous - reference_sigma.view(shape) * previous_velocity
 
@@ -199,7 +213,7 @@ def parse_corr_router_config(corr_router_config):
     missing = [key for key in CORR_ROUTER_CONFIG_KEYS if key not in config]
     optional = {
         "previous_state_mode", "reference_mode", "use_reference_embedding", "use_score_input",
-        "zero_reference_at_t1000",
+        "zero_reference_at_t1000", "reference_dropout_mode",
     }
     unknown = sorted(set(config) - set(CORR_ROUTER_CONFIG_KEYS) - optional)
     if missing or unknown:
@@ -235,6 +249,11 @@ def parse_corr_router_config(corr_router_config):
         )
     if reference_mode in CURRENT_REFERENCE_MODES and previous_state_mode != "model_velocity":
         raise ValueError("current reference_mode requires previous_state_mode: model_velocity")
+    reference_dropout_mode = config.get("reference_dropout_mode", "zero")
+    if not isinstance(reference_dropout_mode, str) or reference_dropout_mode not in ("zero", "null_class"):
+        raise ValueError("corr_router_config.reference_dropout_mode must be 'zero' or 'null_class'")
+    if reference_dropout_mode == "null_class" and reference_mode != "previous":
+        raise ValueError("reference_dropout_mode: null_class requires reference_mode: previous")
     input_flags = {}
     for name in ("use_reference_embedding", "use_score_input"):
         value = config.get(name, True)
@@ -246,6 +265,7 @@ def parse_corr_router_config(corr_router_config):
         "skip_intervals": skip_intervals,
         "no_reference_prob": no_reference_prob,
         "zero_reference_at_t1000": zero_reference_at_t1000,
+        "reference_dropout_mode": reference_dropout_mode,
         "previous_state_mode": previous_state_mode,
         "reference_mode": reference_mode,
         **input_flags,
@@ -512,6 +532,8 @@ class DiT(nn.Module):
         if num_classes != UNCOND_LABEL:
             raise ValueError(f"corr_router assumes {UNCOND_LABEL} classes: the dropped label is the uncond label")
         settings = parse_corr_router_config(corr_router_config)
+        if settings["reference_dropout_mode"] == "null_class" and not class_dropout_prob > 0:
+            raise ValueError("reference_dropout_mode: null_class requires the null class embedding (class_dropout_prob > 0)")
         self.learn_sigma = learn_sigma
         self.in_channels = in_channels
         self.out_channels = in_channels * 2 if learn_sigma else in_channels
@@ -552,11 +574,13 @@ class DiT(nn.Module):
         self.skip_intervals = settings["skip_intervals"]
         self.no_reference_prob = settings["no_reference_prob"]
         self.zero_reference_at_t1000 = settings["zero_reference_at_t1000"]
+        self.reference_dropout_mode = settings["reference_dropout_mode"]
         self.previous_state_mode = settings["previous_state_mode"]
         self.reference_mode = settings["reference_mode"]
         # [reference images, prototype-routed images, summed sigma_ref - sigma
         # of the reference images] of the latest training step, for train.py.
         self.last_corr_reference = None
+        self.last_corr_null_ref_count = None
         self.is_corr_router_model = True
 
     def moe_blocks(self):
@@ -686,13 +710,44 @@ class DiT(nn.Module):
     def _reference_velocity(self, x, timestep, y, labels):
         return self._velocity(self._run(x, timestep, y, labels, self._no_reference(x)), x)
 
+    @torch.no_grad()
+    def _estimate_with_null_references(self, x, timestep, sigma, reference_sigma, y, labels,
+                                       dropped, *, z, noise, estimate_all):
+        """Keep the previous latent conditional; replace labels only in the endpoint estimate."""
+        previous = _previous_reference_latent(
+            self._reference_velocity, x, timestep, sigma, reference_sigma, y, labels,
+            previous_state_mode=self.previous_state_mode, z=z, noise=noise,
+        )
+        reference_t = reference_sigma * NUM_TRAIN_TIMESTEPS
+        null_y, null_labels = self.y_embedder(torch.full_like(labels[dropped], UNCOND_LABEL), False)
+        shape = (-1,) + (1,) * (x.dim() - 1)
+        if not estimate_all:
+            # y and labels are indexed copies, leaving the formal student's input intact.
+            y[dropped] = null_y
+            labels[dropped] = null_labels
+            velocity = self._reference_velocity(previous, reference_t, y, labels)
+            return previous - reference_sigma.view(shape) * velocity, None
+
+        # The teacher needs every conditional estimate. Append the null copies
+        # of the same previous points to estimate both sets in a single call.
+        null_previous = previous[dropped]
+        velocity = self._reference_velocity(
+            torch.cat((previous, null_previous)), torch.cat((reference_t, reference_t[dropped])),
+            torch.cat((y, null_y)), torch.cat((labels, null_labels)),
+        )
+        cond_velocity, null_velocity = velocity.split((previous.shape[0], null_previous.shape[0]))
+        return (
+            previous - reference_sigma.view(shape) * cond_velocity,
+            null_previous - reference_sigma[dropped].view(shape) * null_velocity,
+        )
+
     def _training_reference_with_estimate(self, x, timestep, sigma, y, labels, generator,
                                          *, z=None, noise=None, estimate_all=False):
         """Return (student reference, unmasked estimate).
 
         With estimate_all, every conditional image gets a meaningful teacher
-        estimate. Only the student's reference is then masked by the dropout
-        draw and optional t=1000 rule; absent references still have sigma_ref=1.
+        estimate. The dropout draw replaces only the student's reference.
+        Absent references (including the optional t=1000 rule) have sigma_ref=1.
         """
         batch = x.shape[0]
         device = x.device
@@ -708,26 +763,41 @@ class DiT(nn.Module):
         use_reference, previous_sigmas = draw_reference_plan(
             sigma, labels, self.skip_intervals, self.no_reference_prob, generator
         )
+        null_reference = routed & ~use_reference if self.reference_dropout_mode == "null_class" else None
         if self.zero_reference_at_t1000:
             # Test the current timestep, not the reference's clamped sigma.
             # Keep the draws unchanged and leave estimate_all's teacher intact.
-            use_reference = use_reference & (timestep.reshape(-1) != NUM_TRAIN_TIMESTEPS)
+            not_endpoint = timestep.reshape(-1) != NUM_TRAIN_TIMESTEPS
+            use_reference = use_reference & not_endpoint
+            if null_reference is not None:
+                null_reference = null_reference & not_endpoint
+        if null_reference is not None:
+            use_reference = use_reference | null_reference
         if self.reference_mode in ("current", "current_refined"):
             previous_sigmas = sigma
 
         reference_x0 = torch.zeros_like(x)
         reference_sigma = torch.ones(batch, device=device)
-        estimate_mask = routed if estimate_all else use_reference
+        # Keep every conditional previous point in the null ablation. The
+        # optional endpoint mask applies to the student reference, not the roll-back.
+        estimate_mask = routed if estimate_all or null_reference is not None else use_reference
+        null_estimate = None
         if bool(estimate_mask.any()):
             index = torch.where(estimate_mask)[0]
             current_sigma = sigma[index]
-            seed_mode = "current" if self.reference_mode in ("current", "current_refined") else "previous"
-            estimate = estimate_clean_latent(
-                self._reference_velocity, x[index], timestep[index], current_sigma, previous_sigmas[index],
-                y[index], labels[index], reference_mode=seed_mode,
-                previous_state_mode=self.previous_state_mode,
-                z=None if z is None else z[index], noise=None if noise is None else noise[index],
-            )
+            dropped = None if null_reference is None else null_reference[index]
+            inputs = (x[index], timestep[index], current_sigma, previous_sigmas[index], y[index], labels[index])
+            original = {"z": None if z is None else z[index], "noise": None if noise is None else noise[index]}
+            if dropped is not None and bool(dropped.any()):
+                estimate, null_estimate = self._estimate_with_null_references(
+                    *inputs, dropped=dropped, estimate_all=estimate_all, **original,
+                )
+            else:
+                seed_mode = "current" if self.reference_mode in ("current", "current_refined") else "previous"
+                estimate = estimate_clean_latent(
+                    self._reference_velocity, *inputs, reference_mode=seed_mode,
+                    previous_state_mode=self.previous_state_mode, **original,
+                )
             if self.reference_mode in ("current_history", "current_refined"):
                 # Refine at the unchanged current input, with either a simulated
                 # past reference or the first current-point estimate as seed.
@@ -744,9 +814,11 @@ class DiT(nn.Module):
                     estimate = current - current_sigma.view(shape) * velocity
             reference_x0[index] = estimate.to(reference_x0.dtype)
         full_estimate = reference_x0
-        if estimate_all:
+        if estimate_all or null_reference is not None:
             mask_shape = (-1,) + (1,) * (x.dim() - 1)
             reference_x0 = torch.where(use_reference.view(mask_shape), full_estimate, 0.0)
+        if null_estimate is not None:
+            reference_x0[null_reference] = null_estimate.to(reference_x0.dtype)
         final_sigmas = sigma if self.reference_mode in CURRENT_REFERENCE_MODES else previous_sigmas
         reference_sigma[use_reference] = final_sigmas[use_reference]
         self.last_corr_reference = torch.stack([
@@ -754,6 +826,9 @@ class DiT(nn.Module):
             routed.sum().float(),
             (reference_sigma - sigma)[use_reference].sum(),
         ]).detach()
+        self.last_corr_null_ref_count = (
+            reference_sigma.new_zeros(()) if null_reference is None else null_reference.sum().float()
+        )
         return (reference_x0, reference_sigma, use_reference, sigma), full_estimate
 
     def _eval_reference(self, x, reference_x0, reference_sigma):

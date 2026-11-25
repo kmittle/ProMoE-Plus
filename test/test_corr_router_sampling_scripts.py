@@ -18,6 +18,8 @@ REPO = Path(__file__).resolve().parents[1]
 BASES = ("corr_router", "clean_route_student_ratio0_corr_router")
 DROP_BASE = "estimated_route_student_corr_router_kl_detach_base"
 DROP_TRAIN = ("corr_router_no_ref_drop", *(f"{DROP_BASE}_ref_drop{p}" for p in ("0p05", "0p1", "0p25")))
+NULL_DROP_TRAIN = tuple(f"{DROP_BASE}_ref_null_drop{p}" for p in ("0p05", "0p1", "0p25"))
+DEPLOYMENT_LATENTS = "/mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz"
 DROP_INFERENCE = (
     (f"{DROP_BASE}_no_ref_drop_cond_ref_300k", "conditional", [1.0, 1.5]),
     (f"{DROP_BASE}_no_ref_drop_cfg_sweep_300k", "cfg", [1.15, 1.25, 1.35]),
@@ -340,9 +342,11 @@ class SamplingScriptTests(unittest.TestCase):
                 self.assertEqual(events(), before)
 
     def test_reference_dropout_train_arms_use_their_own_checkpoints_and_both_phases(self):
-        for arm in DROP_TRAIN:
+        for arm in DROP_TRAIN + NULL_DROP_TRAIN:
             with self.subTest(arm=arm), fixture(arm, reference_dropout=True) as (root, output, run, events):
-                self.assert_success(run())
+                is_null = arm in NULL_DROP_TRAIN
+                overrides = {"PROMOE_LATENT_PATH": ""} if is_null else {}
+                self.assert_success(run(**overrides))
                 rows = events()
                 self.assertEqual([row["kind"] for row in rows], ["train", "sample", "eval", "eval"] * 2)
                 self.assertEqual([row["config"]["num_steps"] for row in rows if row["kind"] == "train"], [300001, 500001])
@@ -351,12 +355,16 @@ class SamplingScriptTests(unittest.TestCase):
                 for row in rows:
                     if row["kind"] == "train":
                         self.assertEqual(row["config"]["gpu_ids"], [4, 5, 6, 7])
-                        self.assertEqual(row["config"]["latent_data_path"], "/input/latents")
+                        self.assertEqual(row["config"]["latent_data_path"], DEPLOYMENT_LATENTS if is_null else "/input/latents")
+                        self.assertEqual(
+                            row["config"]["DiT_B_config"]["corr_router_config"].get("reference_dropout_mode", "zero"),
+                            "null_class" if is_null else "zero",
+                        )
                     elif row["kind"] == "sample":
                         self.assertEqual(row["scales"], [1.0, 1.5])
                         self.assertEqual(row["mode"], "cfg")
                         self.assertEqual(row["source"], str(output / f"checkpoints/ckpt_step_{row['step']}.pth"))
-                self.assert_success(run(PROMOE_RESUME="1"))
+                self.assert_success(run(PROMOE_RESUME="1", **overrides))
                 self.assertEqual(events(), rows)
 
     def test_reference_dropout_resume_rechecks_dual_gate_before_existing_500k(self):

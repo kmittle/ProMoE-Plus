@@ -275,6 +275,7 @@ CORR_ROUTER_STAT_NAMES = (
     "corr_router_gate_neg_frac",
     "corr_router_ref_frac",
     "corr_router_ref_gap",
+    "corr_router_null_ref_frac",
 ) + tuple(
     f"corr_router_{field}_s{index}"
     for index in range(CORR_ROUTER_NUM_SIGMA_BINS)
@@ -1509,7 +1510,8 @@ def _collect_corr_router_stats(model):
     token "switched" when its top-1 under s + delta differs from its top-1
     under s; "ref" / "noref" split the tokens by whether their image had a
     reference this step.  ``ref_frac`` is the share of prototype-routed images
-    with a reference and ``ref_gap`` their mean sigma_ref - sigma.  The bins
+    with a reference and ``ref_gap`` their mean sigma_ref - sigma.
+    ``null_ref_frac`` counts null estimates over the same routed-image denominator. The bins
     split the image's sigma into equal widths on [0, 1]; a ratio without
     tokens reports 0.
     """
@@ -1518,10 +1520,12 @@ def _collect_corr_router_stats(model):
         return {}
 
     blocks = module.moe_blocks()
-    if module.last_corr_reference is None or any(block.last_corr_bins is None for block in blocks):
+    if (module.last_corr_reference is None or module.last_corr_null_ref_count is None
+            or any(block.last_corr_bins is None for block in blocks)):
         raise RuntimeError("corr_router diagnostics are missing: the training pass did not run")
     bins = torch.stack([block.last_corr_bins.detach().float() for block in blocks])
-    reference = module.last_corr_reference.detach().float()
+    reference = torch.cat((module.last_corr_reference.detach().float(),
+                           module.last_corr_null_ref_count.detach().float().reshape(1)))
     if dist.is_available() and dist.is_initialized():
         packed = torch.cat([bins.reshape(-1), reference.reshape(-1)])
         dist.all_reduce(packed, op=dist.ReduceOp.SUM)
@@ -1544,6 +1548,7 @@ def _collect_corr_router_stats(model):
         "corr_router_gate_neg_frac": _ratio(total[row["gate_negative"]], total[row["tokens"]]),
         "corr_router_ref_frac": _ratio(reference[0], reference[1]),
         "corr_router_ref_gap": _ratio(reference[2], reference[0]),
+        "corr_router_null_ref_frac": _ratio(reference[3], reference[1]),
     }
     for index in range(CORR_ROUTER_NUM_SIGMA_BINS):
         stats[f"corr_router_delta_abs_s{index}"] = _ratio(

@@ -1,0 +1,8 @@
+实验 / Experiment: B_clean_route_student_ratio0_corr_router_kl_detach_base_ref_drop0p1
+model_name: ProMoE_TC_B_clean_route_corr_router  |  config: configs/004_ProMoE_B_clean_route_student_ratio0_corr_router_kl_detach_base_ref_drop0p1.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分流、原型余弦 token 路由、shared expert 与路由对比学习）；直接对照 / Parent: B_clean_route_student_ratio0_corr_router_kl_detach_base_no_ref_drop（真实干净图 teacher、KL detach-base、无随机参考丢弃）。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 全零参考丢弃 / zero-reference dropout：只将 no_reference_prob 从 0.0 改为 0.1，抽中的 conditional 学生使用全零参考、sigma_ref=1，矫正 MLP 继续运行。保留 zero_reference_at_t1000: true；仅参考 sigma 截到 1 不会触发端点置零。
+2. 真实干净图 teacher / real-clean teacher：teacher 在 t=0 以未矫正路由监督学生；学生的 FM、对比学习和 detach-base KL 保持父配置，丢参考样本仍计算 KL。采样继续使用上一采样步的 CFG 融合速度作为参考。与 B_estimated_route_student_corr_router_kl_detach_base_ref_drop0p1 同概率对照，生效配置只差 teacher 来源。
+3. 四卡训练与评估 / pipeline：从 outputs/ProMoE_TC_B_clean_route_corr_router/004_ProMoE_B_clean_route_student_ratio0_corr_router_kl_detach_base_ref_drop0p1/ 独立训练。300K 与 500K 均评 250 步、CFG 1.0 / 1.5 各 50K；只有 300K 两档 FID 严格低于 30.86 / 9.73 才续训自身至 500K，恢复时也复核门槛。

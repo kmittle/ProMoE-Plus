@@ -1,5 +1,91 @@
 # design-todo：ProMoE_TC 改进计划（MoE 主线）
 
+## 参考侧 null-class dropout（2026-11-25，方案 A）
+
+启动索引：[2026_11_25/commands.md](../scripts/_run_times/2026_11_25/commands.md)。
+同一档 CFG 下，500K no_ref_drop 相对 real-clean teacher + detach-base 的 FID / IS
+在 CFG 1.0 为 17.28 / 73.63 对 20.54 / 66.70，在 CFG 1.5 为 5.49 / 177.14
+对 5.15 / 178.38。这个跨 teacher 对照提示低 CFG 的收益没有转移到固定 CFG 1.5，
+不能单独归因到参考 dropout。既有零张量参考组也观察到较高的专家负载偏斜
+（max_share 约 0.38–0.47）。本批检验：同样抽中一批 conditional 学生，用有内容的
+无类别参考替代全零参考，能否减轻负载偏斜、保留 CFG 1.0 的收益并改善 CFG 1.5。
+
+| 新实验 | 2026-11-23 零参考对照 | 抽换概率 |
+|---|---|---|
+| B_estimated_route_student_corr_router_kl_detach_base_ref_null_drop0p05 | B_estimated_route_student_corr_router_kl_detach_base_ref_drop0p05 | 0.05 |
+| B_estimated_route_student_corr_router_kl_detach_base_ref_null_drop0p1 | B_estimated_route_student_corr_router_kl_detach_base_ref_drop0p1 | 0.1 |
+| B_estimated_route_student_corr_router_kl_detach_base_ref_null_drop0p25 | B_estimated_route_student_corr_router_kl_detach_base_ref_drop0p25 | 0.25 |
+
+每对 YAML 唯一配置差别是新增 `corr_router_config.reference_dropout_mode: null_class`；
+原组缺省为 `zero`。两组复用同一套逐图 coin / gap、`previous` 与 `model_velocity`。
+Pass 1 用原类别回推同一个 x_prev；Pass 2 把全部 conditional 输入和抽中样本在
+同一 x_prev、同一 sigma_ref 的 null 输入沿 batch 拼接，一次无梯度前向分别
+生成两种估计。estimated teacher 只读取原类别估计，在 t=0 用未矫正路由；
+学生只替换随机抽中样本的参考，仍用原类别并照常计算 FM、路由对比学习和
+detach-base KL。当前 t=1000 的学生参考优先置零，截断到 sigma_ref=1 的正常参考
+保留。null 估计是有效参考，`corr_router_null_ref_frac` 单独按 conditional 学生
+统计；`max_share` 的正式路由统计口径保持不变。
+
+采样保留 `corr_reference_velocity: cfg`。三组从零训练，4 卡、seed=0、全局
+batch 256、lr=1e-4、workers=16，使用指定的 latent 路径。300K 以 250 步、
+CFG 1.0 / 1.5 各评 50K；两档 FID 严格低于 30.86 / 9.73 才从自身 checkpoint
+续训至 500K 并再评，恢复时复核门槛。旧实验配置和启动入口不变；跨阶段续训
+建议固定该作业原有的代码版本。
+
+这是对学生参考处理策略的单因素对照：它同时改变了抽中样本的参考 latent
+和有效参考的 sigma 输入。结果可用于判断这种替换是否改善负载和生成指标，
+不能把改善单独归因于标签语义，也不等于训练时模拟了 CFG 融合速度。
+
+## 真实干净图 teacher 取消参考 dropout（2026-11-25）
+
+启动入口见 [2026_11_25/commands.md](../scripts/_run_times/2026_11_25/commands.md)。
+在 KL detach-base、随机参考 dropout=0.5 下，real-clean teacher 的 300K FID
+为 26.81 / 7.60（CFG 1.0 / 1.5），低于 estimated teacher 的 27.39 / 7.77；
+real-clean 的 500K 为 20.54 / 5.15。此前 real-clean 对照的最大专家占比
+0.474 也高于 estimated 对照的 0.378。由于先前只在 estimated teacher 上
+取消过随机参考 dropout，需补齐 real-clean 一格，比较参考策略对两类 teacher
+的负载偏斜和各档 CFG 表现是否有不同影响。
+
+| Teacher | 随机参考 dropout 0.5 | 随机参考 dropout 0.0 |
+|---|---|---|
+| Real clean | B_clean_route_student_ratio0_corr_router_kl_detach_base | B_clean_route_student_ratio0_corr_router_kl_detach_base_no_ref_drop（新增） |
+| Estimated | B_estimated_route_student_corr_router_kl_detach_base | B_estimated_route_student_corr_router_kl_detach_base_no_ref_drop |
+
+新实验沿用 real-clean 父配置，唯一处理变化是取消随机学生参考丢弃并在
+当前 t=1000 保留全零参考，与 estimated 侧的 no-drop 定义对称。原始时间分布
+不变，不额外采样端点；0.5 和 0.0 的比较检验这套参考策略，不能单独区分
+随机丢弃和端点规则的作用。两种 teacher 都保留 `align_detach_base: true`，
+采样仍用 `corr_reference_velocity: cfg`。新实验从零用 4 卡训练，300K 以
+250 步、CFG 1.0 / 1.5 各评 50K；双 FID 严格低于 30.86 / 9.73 才续训
+自己的 checkpoint 至 500K 并再评，恢复时同样复核门槛。
+
+## 真实干净图 teacher 全零参考 dropout 扫描（2026-11-25）
+
+启动索引：[2026_11_25/commands.md](../scripts/_run_times/2026_11_25/commands.md)。
+在 real-clean no_ref_drop 上补齐 0.01、0.05、0.1、0.25 四档，和已有
+0.0 / 0.5 形成六点曲线，检验少量全零参考能否保住 CFG 1.0 的收益、
+改善 CFG 1.5 的表现，以及专家负载偏斜如何随概率变化。两种 teacher 在
+0.0 / 0.05 / 0.1 / 0.25 / 0.5 五档各有对应对照，0.01 是 real-clean
+侧单独新增的低概率点。参考侧 null-class 组不计入这条全零参考曲线。
+
+| 随机参考 dropout | Real-clean teacher | Estimated teacher |
+|---|---|---|
+| 0.0 | B_clean_route_student_ratio0_corr_router_kl_detach_base_no_ref_drop | B_estimated_route_student_corr_router_kl_detach_base_no_ref_drop |
+| 0.01 | B_clean_route_student_ratio0_corr_router_kl_detach_base_ref_drop0p01（新增） | — |
+| 0.05 | B_clean_route_student_ratio0_corr_router_kl_detach_base_ref_drop0p05（新增） | B_estimated_route_student_corr_router_kl_detach_base_ref_drop0p05 |
+| 0.1 | B_clean_route_student_ratio0_corr_router_kl_detach_base_ref_drop0p1（新增） | B_estimated_route_student_corr_router_kl_detach_base_ref_drop0p1 |
+| 0.25 | B_clean_route_student_ratio0_corr_router_kl_detach_base_ref_drop0p25（新增） | B_estimated_route_student_corr_router_kl_detach_base_ref_drop0p25 |
+| 0.5 | B_clean_route_student_ratio0_corr_router_kl_detach_base | B_estimated_route_student_corr_router_kl_detach_base |
+
+四份 YAML 相对 real-clean no_ref_drop 只改变 `corr_router_config.no_reference_prob`。
+抽中的 conditional 学生使用全零参考、`sigma_ref=1`，仍算 KL；
+`zero_reference_at_t1000: true` 保持不变。历史 0.5 两组沿用原配置，未启用
+精确 t=1000 置零，比较时保留这一边界差异。各组保留 KL detach-base、
+`corr_reference_velocity: cfg`，使用相同的标准 B 规模训练设置和指定 latent 路径。
+新四组均用 4 卡从零训练，300K / 500K 都评 250 步、CFG 1.0 / 1.5 各 50K；
+只有 300K 两档 FID 严格低于 30.86 / 9.73 才从各自 checkpoint 续训，
+恢复时也复核门槛。
+
 ## 无参考 dropout 权重的 CFG 右侧补测（2026-11-24）
 
 启动索引：[2026_11_24/commands.md](../scripts/_run_times/2026_11_24/commands.md)。

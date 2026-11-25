@@ -674,6 +674,7 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(set(stats), set(train.CORR_ROUTER_STAT_NAMES))
         counts = model.last_corr_reference
         torch.testing.assert_close(stats["corr_router_ref_frac"], counts[0] / counts[1])
+        self.assertEqual(float(stats["corr_router_null_ref_frac"]), 0.0)
         torch.testing.assert_close(stats["corr_router_delta_abs"], torch.tensor(5.0 / 4))
         self.assertEqual(train._collect_corr_router_stats(build_conference()), {})
 
@@ -1000,7 +1001,7 @@ class SamplingCheckpointTests(unittest.TestCase):
 
 
 def _ddp_worker(rank, world_size, init_file, output_dir, kind, previous_state_mode,
-                input_ablation=None, detach_correction=False):
+                input_ablation=None, detach_correction=False, reference_dropout_mode="zero"):
     """Two DDP steps as train.py runs them: bf16 forward, the stat collectives, backward, update.
 
     Rank 1 starts with a batch of uncond images only, so its first step trains
@@ -1011,10 +1012,14 @@ def _ddp_worker(rank, world_size, init_file, output_dir, kind, previous_state_mo
         import train  # the generator, stat collectors and reducer under test
 
         config = dict(previous_state_mode=previous_state_mode)
+        estimated_teacher = reference_dropout_mode == "null_class"
+        if estimated_teacher:
+            config.update(reference_dropout_mode=reference_dropout_mode, no_reference_prob=0.85)
         if input_ablation is not None:
             config[input_ablation] = False
         model = build_corr(**config) if kind == "corr" else build_clean_corr(
-            corr_overrides=config, align_lam=1.0, align_detach_correction=detach_correction
+            corr_overrides=config, align_lam=1.0, align_detach_correction=detach_correction,
+            teacher_input="estimated" if estimated_teacher else "clean",
         )
         model = perturb_correctors(perturb(model))
         ddp_model = DistributedDataParallel(model)
@@ -1052,6 +1057,7 @@ def _ddp_worker(rank, world_size, init_file, output_dir, kind, previous_state_mo
                 "missing_grads": sorted(trainable - with_grad),
                 "stats": {name: float(value) for name, value in stats.items()},
                 "reference_counts": model.last_corr_reference.tolist(),
+                "null_reference_count": model.last_corr_null_ref_count.item(),
             })
         torch.save(steps, os.path.join(output_dir, f"rank{rank}.pt"))
     finally:
@@ -1064,14 +1070,15 @@ class DistributedTests(unittest.TestCase):
         import train
 
         world_size = 2
-        for kind, mode in (
-            ("corr", "model_velocity"), ("corr", "same_noise"),
-            ("clean_corr", "model_velocity"), ("clean_corr", "same_noise"),
+        for kind, mode, dropout_mode in (
+            ("corr", "model_velocity", "zero"), ("corr", "same_noise", "zero"),
+            ("clean_corr", "model_velocity", "zero"), ("clean_corr", "same_noise", "zero"),
+            ("clean_corr", "model_velocity", "null_class"),
         ):
-            with self.subTest(kind=kind, mode=mode), tempfile.TemporaryDirectory() as output_dir:
+            with self.subTest(kind=kind, mode=mode, dropout_mode=dropout_mode), tempfile.TemporaryDirectory() as output_dir:
                 mp.spawn(
                     _ddp_worker,
-                    args=(world_size, os.path.join(output_dir, "init"), output_dir, kind, mode),
+                    args=(world_size, os.path.join(output_dir, "init"), output_dir, kind, mode, None, False, dropout_mode),
                     nprocs=world_size,
                     join=True,
                 )
@@ -1089,6 +1096,7 @@ class DistributedTests(unittest.TestCase):
                         self.assertAlmostEqual(results[1][step]["stats"][name], value, places=5, msg=name)
                 # The logged ratios are global: rank 1 had no routed image at step 0.
                 self.assertEqual(results[1][0]["reference_counts"], [0.0, 0.0, 0.0])
+                self.assertEqual(results[1][0]["null_reference_count"], 0.0)
                 for step in range(2):
                     counts = [results[rank][step]["reference_counts"] for rank in range(world_size)]
                     references = sum(count[0] for count in counts)
@@ -1096,6 +1104,12 @@ class DistributedTests(unittest.TestCase):
                     self.assertAlmostEqual(
                         results[0][step]["stats"]["corr_router_ref_frac"], references / routed, places=5
                     )
+                    null_references = sum(results[rank][step]["null_reference_count"] for rank in range(world_size))
+                    self.assertAlmostEqual(
+                        results[0][step]["stats"]["corr_router_null_ref_frac"], null_references / routed, places=5,
+                    )
+                if dropout_mode == "null_class":
+                    self.assertGreater(results[0][0]["stats"]["corr_router_null_ref_frac"], 0.0)
 
 
 class TrainingIntegrationTests(unittest.TestCase):

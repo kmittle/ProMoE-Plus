@@ -1,0 +1,8 @@
+实验 / Experiment: B_estimated_route_student_corr_router_kl_detach_base_ref_null_drop0p05
+model_name: ProMoE_TC_B_clean_route_corr_router  |  config: configs/004_ProMoE_B_estimated_route_student_corr_router_kl_detach_base_ref_null_drop0p05.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分流、原型余弦 token 路由、shared expert 与路由对比学习）；直接对照 / Parent: B_estimated_route_student_corr_router_kl_detach_base_ref_drop0p05（抽样概率 0.05，抽中的学生随机参考置零）。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 参考侧 null-class / reference-side null class：保持 no_reference_prob=0.05，只新增 reference_dropout_mode: null_class。用真实类别在 Pass 1 回推 x_prev；抽中的学生在同一个 x_prev 和 sigma_ref 上改用 UNCOND_LABEL=1000 的速度估计干净参考。当前 t=1000 仍优先置零，正常参考的 sigma_ref 保留。
+2. 同批估计与监督 / batched estimates and supervision：Pass 2 拼接全部 conditional 输入与抽中的 null 输入，只做一次无梯度前向。conditional 估计供 t=0 的 estimated teacher，null 估计只替换相应学生参考。正式学生类别、FM、路由对比学习和 detach-base KL 不变；采样仍用 cfg 参考速度，corr_router_null_ref_frac 单独统计。
+3. 四卡管线 / pipeline：从 outputs/ProMoE_TC_B_clean_route_corr_router/004_ProMoE_B_estimated_route_student_corr_router_kl_detach_base_ref_null_drop0p05/ 独立训练。300K 与 500K 都评 250 步、CFG 1.0 / 1.5 各 50K。仅在 300K 两档 FID 分别严格低于 30.86 / 9.73 时续训自身至 500K；恢复时复核门槛。
