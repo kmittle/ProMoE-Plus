@@ -1,0 +1,9 @@
+| 实验描述 | git分支 | 启动命令 | 输出位置 |
+|---|---|---|---|
+| 续训：纯矫正器去参考 dropout，补齐 300K 并按双 FID 门槛续训（4 卡） | repa | bash scripts/_run_times/2026_11_26/B_corr_router_no_ref_drop_resume.sh | outputs/ProMoE_TC_B_corr_router/004_ProMoE_B_corr_router_no_ref_drop/ |
+| 续训：估计 teacher 参考 dropout 0.05，补齐 300K 并按双 FID 门槛续训（4 卡） | repa | bash scripts/_run_times/2026_11_26/B_estimated_route_student_corr_router_kl_detach_base_ref_drop0p05_resume.sh | outputs/ProMoE_TC_B_clean_route_corr_router/004_ProMoE_B_estimated_route_student_corr_router_kl_detach_base_ref_drop0p05/ |
+| 续训：估计 teacher 参考 dropout 0.1，补齐 300K 并按双 FID 门槛续训（4 卡） | repa | bash scripts/_run_times/2026_11_26/B_estimated_route_student_corr_router_kl_detach_base_ref_drop0p1_resume.sh | outputs/ProMoE_TC_B_clean_route_corr_router/004_ProMoE_B_estimated_route_student_corr_router_kl_detach_base_ref_drop0p1/ |
+| 续训：估计 teacher 参考 dropout 0.25，补齐 300K 并按双 FID 门槛续训（4 卡） | repa | bash scripts/_run_times/2026_11_26/B_estimated_route_student_corr_router_kl_detach_base_ref_drop0p25_resume.sh | outputs/ProMoE_TC_B_clean_route_corr_router/004_ProMoE_B_estimated_route_student_corr_router_kl_detach_base_ref_drop0p25/ |
+| 续训：估计 teacher 与 KL detach-base，复核 300K 双 FID 后补齐 500K（4 卡） | repa | bash scripts/_run_times/2026_11_26/B_estimated_route_student_corr_router_kl_detach_base_resume.sh | outputs/ProMoE_TC_B_clean_route_corr_router/004_ProMoE_B_estimated_route_student_corr_router_kl_detach_base/ |
+| 续训：完整组合 L，补齐 500K 训练与评估（4 卡） | repa | bash scripts/_run_times/2026_11_26/L_clean_route_student_ratio0_corr_router_resume.sh | outputs/ProMoE_TC_L_clean_route_corr_router/004_ProMoE_L_clean_route_student_ratio0_corr_router/ |
+| 续训：完整组合 XL，补齐 500K 训练与评估（4 卡） | repa | bash scripts/_run_times/2026_11_26/XL_clean_route_student_ratio0_corr_router_resume.sh | outputs/ProMoE_TC_XL_clean_route_corr_router/004_ProMoE_XL_clean_route_student_ratio0_corr_router/ |

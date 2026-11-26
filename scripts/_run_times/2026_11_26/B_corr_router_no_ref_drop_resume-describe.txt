@@ -1,0 +1,8 @@
+实验 / Experiment: B_corr_router_no_ref_drop_resume
+model_name: ProMoE_TC_B_corr_router  |  config: configs/004_ProMoE_B_corr_router_no_ref_drop.yaml
+基线 / Baseline: 基础 ProMoE-TC（cond/uncond 分流、原型余弦 token 路由、shared expert 与路由对比学习）；直接对照 / Parent: B_corr_router（50% 参考丢弃；比较采样时用 B_corr_router_cfg_ref）。
+
+核心改动 / Core changes（相对基线，重点优先）:
+1. 原实验续训 / Same-run resume。11 月 26 日入口用 4 卡从 outputs/ProMoE_TC_B_corr_router/004_ProMoE_B_corr_router_no_ref_drop/checkpoints/ 选取当前阶段内步数最高的非空 checkpoint，锁定该步加载。找不到合格 checkpoint 时退出。latent 默认沿用 /mnt/data2/yujie/code/Dataset/ImageNet/sd-vae-ft-mse_Latents_256img_npz。
+2. 纯矫正器 / Corrector only。保留原有的上一时刻 CFG 参考矫正和无 KL 的训练。随机参考 dropout 为 0，正式 conditional 学生仅在当前 t 精确等于 1000 时收到零参考。
+3. 阶段 / Stages。补齐 300K 训练和双档评估，两档 FID 分别严格低于 30.86 和 9.73 后才续训自身至 500K 并评估。恢复进入 500K 前也会复核 300K 指标。使用 CFG 融合参考，CFG 1.0 和 1.5 各采样 50K 张，步数为 250。
